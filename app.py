@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import atexit
+import os
 import re
 import ipaddress
 import sqlite3
@@ -293,4 +295,7 @@ def download_resume(job_id):
 init_db()
 
 if __name__ == "__main__":
+    pid_file = INSTANCE / "app.pid"
+    pid_file.write_text(str(os.getpid()))
+    atexit.register(lambda: pid_file.unlink(missing_ok=True) if pid_file.exists() and pid_file.read_text().strip() == str(os.getpid()) else None)
     app.run(host="127.0.0.1", port=8787, debug=False)
