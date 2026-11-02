@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import atexit
+import hashlib
 import os
 import re
 import ipaddress
 import sqlite3
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -46,6 +49,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS profile (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS resume (id INTEGER PRIMARY KEY, filename TEXT, text TEXT NOT NULL, uploaded TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY, company TEXT, title TEXT, url TEXT, description TEXT, saved TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, summary TEXT NOT NULL, created TEXT NOT NULL);
         """)
         # Personal contact details live only in the ignored local database. Do
         # not put an individual's address, phone, or email into tracked code.
@@ -53,6 +57,7 @@ def init_db():
             "name": "", "email": "", "school": "", "degree": "",
             "graduation": "", "phone": "", "city": "", "state": "",
             "postal_code": "", "address": "", "work_authorization": "",
+            "watch_path": "", "watch_hash": "",
             "target_roles": "Software Engineering Intern, Backend Engineer Intern",
             "larp": "2",
         }
@@ -83,6 +88,33 @@ def resume_row():
     with db() as conn:
         row = conn.execute("SELECT * FROM resume ORDER BY id DESC LIMIT 1").fetchone()
         return dict(row) if row else None
+
+
+def log_activity(kind: str, summary: str):
+    with db() as conn:
+        conn.execute("INSERT INTO activity(kind,summary,created) VALUES(?,?,?)", (kind, summary[:300], datetime.now().isoformat(timespec="minutes")))
+
+
+def watch_resume_loop():
+    """Watch only the single resume file path explicitly chosen by the user."""
+    while True:
+        p = profile()
+        source = p.get("watch_path", "").strip()
+        if source:
+            path = Path(source).expanduser()
+            try:
+                if path.is_file() and path.stat().st_size <= 12 * 1024 * 1024:
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                    if digest != p.get("watch_hash", "") and path.suffix.lower().lstrip(".") in ALLOWED:
+                        text = extract_text(path, path.suffix.lower().lstrip(".")).strip()
+                        if text:
+                            with db() as conn:
+                                conn.execute("INSERT INTO resume(filename,text,uploaded) VALUES(?,?,?)", (path.name, text, datetime.now().isoformat(timespec="minutes")))
+                                conn.execute("INSERT INTO profile(key,value) VALUES('watch_hash',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (digest,))
+                                conn.execute("INSERT INTO activity(kind,summary,created) VALUES(?,?,?)", ("Resume updated", f"A saved change to {path.name} was recorded locally.", datetime.now().isoformat(timespec="minutes")))
+            except (OSError, ValueError, KeyError):
+                pass
+        time.sleep(4)
 
 
 def extract_text(path: Path, ext: str) -> str:
@@ -150,6 +182,7 @@ def home():
                 else:
                     with db() as conn:
                         conn.execute("INSERT INTO resume(filename,text,uploaded) VALUES(?,?,?)", (filename, text, datetime.now().isoformat(timespec="minutes")))
+                    log_activity("Resume imported", f"Imported {filename}")
                     flash("Resume imported. It is stored locally on this computer.", "success")
                     return redirect(url_for("home"))
         company, title = request.form.get("company", "").strip(), request.form.get("title", "").strip()
@@ -158,25 +191,42 @@ def home():
             with db() as conn:
                 cursor = conn.execute("INSERT INTO jobs(company,title,url,description,saved) VALUES(?,?,?,?,?)", (company, title, safe_http_url(request.form.get("url", "")), description, datetime.now().isoformat(timespec="minutes")))
                 job_id = cursor.lastrowid
+            log_activity("Role saved", f"Added {title or 'role'} at {company or 'company not set'}")
             return redirect(url_for("job", job_id=job_id))
     current = resume_row()
     with db() as conn:
         jobs = [dict(r) for r in conn.execute("SELECT * FROM jobs ORDER BY id DESC")]
+        activity = [dict(r) for r in conn.execute("SELECT * FROM activity ORDER BY id DESC LIMIT 8")]
     for item in jobs:
         item["score"] = analyze(item["description"])["score"]
     jobs.sort(key=lambda item: (item["score"], item["saved"]), reverse=True)
-    return render_template("index.html", profile=profile(), resume=current, jobs=jobs)
+    return render_template("index.html", profile=profile(), resume=current, jobs=jobs, activity=activity)
 
 
 @app.route("/profile", methods=["POST"])
 def save_profile():
     fields = ["name", "email", "school", "degree", "graduation", "phone", "city", "state", "postal_code", "address", "work_authorization", "target_roles", "larp"]
+    old_profile = profile()
+    watch_path = request.form.get("watch_path", "").strip()
     with db() as conn:
         for field in fields:
             value = request.form.get(field, "").strip()
             if value:
                 conn.execute("INSERT INTO profile(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (field, value))
+        conn.execute("INSERT INTO profile(key,value) VALUES('watch_path',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (watch_path,))
+        if watch_path != old_profile.get("watch_path", ""):
+            conn.execute("INSERT INTO profile(key,value) VALUES('watch_hash','') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    log_activity("Profile updated", "Updated application details or resume watch settings")
     flash("Profile saved locally.", "success")
+    return redirect(url_for("home"))
+
+
+@app.route("/memory/add", methods=["POST"])
+def add_memory():
+    task = request.form.get("task", "").strip()
+    if task:
+        log_activity("Task noted", task)
+        flash("Added to local memory.", "success")
     return redirect(url_for("home"))
 
 
@@ -206,6 +256,7 @@ def job(job_id):
 def delete_job(job_id):
     with db() as conn:
         conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+    log_activity("Role removed", "Removed a saved role")
     return redirect(url_for("home"))
 
 
@@ -253,6 +304,7 @@ def api_evaluate():
         else:
             cursor = conn.execute("INSERT INTO jobs(company,title,url,description,saved) VALUES(?,?,?,?,?)", (company, title, url, description, saved))
             saved_job_id = cursor.lastrowid
+    log_activity("Role scanned", f"Reviewed {title or 'role'} at {company or 'company not set'}")
     return {
         "title": title, "company": company, "url": url, "saved_job_id": saved_job_id,
         "score": report["score"], "voice": voice,
@@ -298,4 +350,5 @@ if __name__ == "__main__":
     pid_file = INSTANCE / "app.pid"
     pid_file.write_text(str(os.getpid()))
     atexit.register(lambda: pid_file.unlink(missing_ok=True) if pid_file.exists() and pid_file.read_text().strip() == str(os.getpid()) else None)
+    threading.Thread(target=watch_resume_loop, daemon=True, name="resume-file-watch").start()
     app.run(host="127.0.0.1", port=8787, debug=False)

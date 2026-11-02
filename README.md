@@ -6,6 +6,8 @@ A local-first resume and job tracker with a Chrome side panel. Import a resume, 
 
 Double-click `Apply Desk.command` in Finder to start the local service in the background and open the main dashboard. Use `Stop Apply Desk.command` to stop the service. The dashboard is the main application; the Chrome side panel is a helper for scanning a listing while you browse.
 
+Apply Desk remembers resume versions, saved roles, profile edits, and notes in its local database. To watch a resume you edit in another app, open **Profile & memory settings**, enter the full path to that one file, and save. Only that selected file is checked for changes. Add other work notes explicitly with **Add note**; Apply Desk does not watch general computer activity.
+
 For terminal use:
 
 ```bash
