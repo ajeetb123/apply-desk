@@ -13,6 +13,7 @@ The extension is unpacked source for local use; it is not signed, published, or 
 
 - `scan` or `scan this job`: read the visible job page and compare it with the resume imported in the local app.
 - `tailor this job`: show the same evidence-oriented role review.
+- `top 5` or `rank jobs`: rank roles you've already scanned and saved, using the same rough overlap heuristic.
 - `fill` or `fill my details`: ask for confirmation, then fill only empty, editable, clearly labelled contact/education text fields. Existing values are left alone. It never submits the page.
 - `help`: show supported commands.
 
@@ -24,4 +25,4 @@ The extension requests `sidePanel`, `activeTab`, and `scripting`. It does not re
 
 ## Current limits
 
-The extension can evaluate and fill selected fields; it does not discover jobs, create a rewritten resume, generate a PDF, answer screening questions, or submit applications. Job overlap is a text heuristic, not a hiring predictor. Form labelling varies between employers, so an unmatched field must be handled manually. Review every application before submission.
+The extension can evaluate and fill selected fields; it does not discover jobs automatically, create a rewritten resume, generate a PDF, answer screening questions, or submit applications. Scan listings yourself to build the saved-job list. Job overlap is a text heuristic, not a hiring predictor. Form labelling varies between employers, so an unmatched field must be handled manually. Review every application before submission.

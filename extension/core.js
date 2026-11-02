@@ -32,6 +32,10 @@ export function parseCommand(input) {
   const text = normalize(input);
   if (!text) return { action: "empty" };
   if (/^(help|commands|what can you do)$/.test(text)) return { action: "help" };
+  if (/\b(rank|top|best)\b/.test(text)) {
+    const match = text.match(/\b(?:top|best)\s+(\d{1,2})\b/) || text.match(/\brank\s+(\d{1,2})\b/);
+    return { action: "rank", limit: match ? Math.max(1, Math.min(Number(match[1]), 50)) : 10 };
+  }
   if (/\b(fill|autofill|apply|enter my details)\b/.test(text)) return { action: "fill" };
   if (/\b(scan|inspect|read)\b/.test(text)) return { action: "scan" };
   if (/\b(tailor|match|fit|review|evaluate)\b/.test(text)) return { action: "tailor" };
