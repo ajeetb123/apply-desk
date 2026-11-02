@@ -5,7 +5,7 @@ A local-first resume and job tracker with a Chrome side panel. Import a resume, 
 ## Run it
 
 ```bash
-cd apply-desk
+cd "Apply Desk"
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
