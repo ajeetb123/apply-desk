@@ -55,11 +55,33 @@ function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 }
 
+function safeHref(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? esc(url.href) : "#";
+  } catch { return "#"; }
+}
+
 function showEvaluation(data) {
   const evidence = data.evidence?.length ? `<ul class="evidence">${data.evidence.map(line => `<li>${esc(line)}</li>`).join("")}</ul>` : `<p class="muted">No matching resume lines found. Check your resume manually.</p>`;
   const chips = (items, good = false) => (items || []).slice(0, 8).map(item => `<span class="chip ${good ? "good" : ""}">${esc(item)}</span>`).join("") || `<span class="muted">None found</span>`;
-  result.innerHTML = `<article class="card"><div class="job-title">${esc(data.title || "Job posting")}</div><div class="job-sub">${esc(data.company || data.url || "Current page")}</div><div class="score-line"><span class="score">${Number(data.score) || 0}%</span><span class="score-caption">rough keyword overlap</span><span class="voice">${esc(data.voice)}</span></div><p>${esc(data.note)}</p></article><article class="card"><h2>Already in your resume</h2><div class="chips">${chips(data.matched, true)}</div>${evidence}</article><article class="card"><h2>Check before adding</h2><p>Only use these if your experience supports them.</p><div class="chips">${chips(data.missing)}</div></article>`;
+  const saved = data.saved_job_id ? `<p class="muted">Saved to your local job list. Use “top 5” to compare saved roles.</p>` : "";
+  result.innerHTML = `<article class="card"><div class="job-title">${esc(data.title || "Job posting")}</div><div class="job-sub">${esc(data.company || data.url || "Current page")}</div><div class="score-line"><span class="score">${Number(data.score) || 0}%</span><span class="score-caption">rough keyword overlap</span><span class="voice">${esc(data.voice)}</span></div><p>${esc(data.note)}</p>${saved}</article><article class="card"><h2>Already in your resume</h2><div class="chips">${chips(data.matched, true)}</div>${evidence}</article><article class="card"><h2>Check before adding</h2><p>Only use these if your experience supports them.</p><div class="chips">${chips(data.missing)}</div></article>`;
   result.hidden = false;
+}
+
+async function rankSavedJobs(limit = 10) {
+  say("Ranking roles saved from job pages…");
+  const response = await fetch(`${API}/api/jobs?limit=${encodeURIComponent(limit)}`, { cache: "no-store" });
+  if (!response.ok) throw new Error("Could not load saved roles.");
+  const data = await response.json();
+  if (!data.jobs?.length) {
+    result.innerHTML = `<article class="card"><h2>No saved roles yet</h2><p>Open a job listing and run “scan job” to add it to your local list.</p></article>`;
+  } else {
+    result.innerHTML = `<article class="card"><h2>Your top ${data.jobs.length} saved roles</h2><p class="muted">Ranked by text overlap only. Check role eligibility, deadline, and actual fit on each employer page.</p>${data.jobs.map((job, index) => `<div class="rank-row"><span class="rank-num">${index + 1}</span><div class="rank-info"><b>${esc(job.title || "Untitled role")}</b><span>${esc(job.company || "Company")}</span><a href="${safeHref(job.url)}" target="_blank" rel="noreferrer">Open employer listing ↗</a></div><b class="rank-score">${Number(job.score) || 0}%</b></div>`).join("")}</article>`;
+  }
+  result.hidden = false;
+  say(`${data.count} saved role(s). Scan more job pages to build your list.`);
 }
 
 async function evaluateCurrentPage() {
@@ -115,8 +137,9 @@ async function executeCommand(raw) {
   result.hidden = true;
   const parsed = parseCommand(raw);
   if (parsed.action === "scan" || parsed.action === "tailor") return evaluateCurrentPage();
+  if (parsed.action === "rank") return rankSavedJobs(parsed.limit);
   if (parsed.action === "fill") return fillCurrentForm();
-  if (parsed.action === "help") return say("Try “scan job”, “tailor resume”, or “fill fields”. Fill is limited to clearly labelled empty fields; it never submits.");
+  if (parsed.action === "help") return say("Try “scan job”, “tailor resume”, “top 5”, or “fill fields”. Fill is limited to clearly labelled empty fields; it never submits.");
   if (parsed.action === "empty") return say("Type scan, tailor, or fill.", true);
   throw new Error("I don’t recognize that. Try scan, tailor, or fill.");
 }

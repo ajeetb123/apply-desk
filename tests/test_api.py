@@ -77,6 +77,39 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(response.json["score"], 0)
         self.assertEqual(response.json["evidence"], [])
 
+    def test_evaluate_saves_and_updates_same_job_without_duplicates(self):
+        description = "Python backend internship using Flask and SQL in a collaborative team. " * 3
+        first = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Example", "url": "https://example.com/role", "description": description})
+        second = self.client.post("/api/evaluate", json={"title": "Backend Intern (Updated)", "company": "Example", "url": "https://example.com/role", "description": description})
+        self.assertEqual(first.json["saved_job_id"], second.json["saved_job_id"])
+        result = self.client.get("/api/jobs?limit=10").json
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["jobs"][0]["title"], "Backend Intern (Updated)")
+
+    def test_evaluate_discards_non_http_job_urls(self):
+        description = "Software engineering internship working on Python backend systems. " * 3
+        response = self.client.post("/api/evaluate", json={"url": "javascript:alert(1)", "description": description})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["url"], "")
+        self.assertEqual(self.client.get("/api/jobs").json["jobs"][0]["url"], "")
+
+    def test_ranked_job_limit_is_clamped_and_bad_value_is_safe(self):
+        for number in range(3):
+            description = f"Backend software internship with skill marker{number} and engineering team. " * 3
+            self.client.post("/api/evaluate", json={"title": f"Role {number}", "url": f"https://example.com/{number}", "description": description})
+        self.assertEqual(len(self.client.get("/api/jobs?limit=0").json["jobs"]), 1)
+        self.assertEqual(len(self.client.get("/api/jobs?limit=bad").json["jobs"]), 3)
+
+    def test_rank_places_synthetic_skill_match_above_unrelated_role(self):
+        self.add_resume("Built Python services with Flask and PostgreSQL; wrote automated tests.")
+        good = "Python Flask PostgreSQL backend services automated tests internship. " * 8
+        poor = "CNC machining casting welding manufacturing robotics internship. " * 8
+        self.client.post("/api/evaluate", json={"title": "Backend intern", "url": "https://example.com/backend", "description": good})
+        self.client.post("/api/evaluate", json={"title": "Manufacturing intern", "url": "https://example.com/factory", "description": poor})
+        ranked = self.client.get("/api/jobs?limit=2").json["jobs"]
+        self.assertEqual(ranked[0]["title"], "Backend intern")
+        self.assertGreater(ranked[0]["score"], ranked[1]["score"])
+
     def test_upload_rejects_unsupported_extension(self):
         response = self.client.post("/", data={"resume": (io.BytesIO(b"bad"), "resume.exe")}, content_type="multipart/form-data")
         self.assertEqual(response.status_code, 200)

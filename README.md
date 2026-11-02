@@ -18,7 +18,7 @@ Open <http://127.0.0.1:8787>. The app binds to localhost only. Uploaded files an
 
 1. Import a text PDF, DOCX, TXT, or LaTeX source resume.
 2. Install the unpacked Chrome side panel and open a job listing.
-3. Type `scan` or `tailor` to see matching resume lines and terms to verify.
+3. Type `scan` or `tailor` to see matching resume lines and terms to verify. Scanned roles are saved locally; type `top 5` to rank the roles you scanned.
 4. On an application page, type `fill` to fill clearly labelled empty contact/education fields after confirmation.
 5. Review every value and submit the application yourself.
 

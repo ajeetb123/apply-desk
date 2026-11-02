@@ -5,6 +5,7 @@ import ipaddress
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import Flask, flash, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
@@ -118,6 +119,17 @@ def analyze(description: str):
     return {"score": score, "matched": matched[:12], "missing": missing[:12], "terms": terms}
 
 
+def safe_http_url(value: str) -> str:
+    value = str(value or "").strip()[:2000]
+    try:
+        parsed = urlparse(value)
+        if parsed.scheme in {"http", "https"} and parsed.hostname:
+            return value
+    except ValueError:
+        pass
+    return ""
+
+
 @app.route("/", methods=["GET", "POST"])
 def home():
     if request.method == "POST":
@@ -142,7 +154,7 @@ def home():
         description = request.form.get("description", "").strip()
         if description:
             with db() as conn:
-                cursor = conn.execute("INSERT INTO jobs(company,title,url,description,saved) VALUES(?,?,?,?,?)", (company, title, request.form.get("url", "").strip(), description, datetime.now().isoformat(timespec="minutes")))
+                cursor = conn.execute("INSERT INTO jobs(company,title,url,description,saved) VALUES(?,?,?,?,?)", (company, title, safe_http_url(request.form.get("url", "")), description, datetime.now().isoformat(timespec="minutes")))
                 job_id = cursor.lastrowid
             return redirect(url_for("job", job_id=job_id))
     current = resume_row()
@@ -227,13 +239,39 @@ def api_evaluate():
             if clean and any(term in clean.lower() for term in report["matched"]):
                 relevant.append(clean)
     voice = "Direct" if report["score"] < 35 else "Confident" if report["score"] < 70 else "Assertive"
+    title = str(data.get("title", ""))[:200]
+    company = str(data.get("company", ""))[:200]
+    url = safe_http_url(data.get("url", ""))
+    saved = datetime.now().isoformat(timespec="minutes")
+    with db() as conn:
+        existing = conn.execute("SELECT id FROM jobs WHERE url=? AND url!=''", (url,)).fetchone() if url else None
+        if existing:
+            saved_job_id = existing["id"]
+            conn.execute("UPDATE jobs SET company=?,title=?,description=?,saved=? WHERE id=?", (company, title, description, saved, saved_job_id))
+        else:
+            cursor = conn.execute("INSERT INTO jobs(company,title,url,description,saved) VALUES(?,?,?,?,?)", (company, title, url, description, saved))
+            saved_job_id = cursor.lastrowid
     return {
-        "title": str(data.get("title", ""))[:200], "company": str(data.get("company", ""))[:200],
-        "url": str(data.get("url", ""))[:2000], "score": report["score"], "voice": voice,
+        "title": title, "company": company, "url": url, "saved_job_id": saved_job_id,
+        "score": report["score"], "voice": voice,
         "matched": report["matched"], "missing": report["missing"], "evidence": relevant[:12],
         "resume_loaded": bool(resume),
         "note": "Keyword overlap is a rough triage signal, not a hiring probability. Verify each claim against your experience.",
     }
+
+
+@app.get("/api/jobs")
+def api_rank_jobs():
+    try:
+        limit = max(1, min(int(request.args.get("limit", "10")), 50))
+    except ValueError:
+        limit = 10
+    with db() as conn:
+        items = [dict(row) for row in conn.execute("SELECT id,company,title,url,description,saved FROM jobs")]
+    for item in items:
+        item["score"] = analyze(item["description"])["score"]
+    items.sort(key=lambda item: (item["score"], item["saved"]), reverse=True)
+    return {"jobs": [{key: item[key] for key in ("id", "company", "title", "url", "saved", "score")} for item in items[:limit]], "count": len(items)}
 
 
 @app.route("/job/<int:job_id>/resume.txt")
