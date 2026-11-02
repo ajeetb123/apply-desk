@@ -110,6 +110,66 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(ranked[0]["title"], "Backend intern")
         self.assertGreater(ranked[0]["score"], ranked[1]["score"])
 
+    def test_profile_saves_editable_matching_preferences_and_can_clear_them(self):
+        response = self.client.post("/profile", data={
+            "graduation": "December 2028", "skills": "Python, C++, SQL",
+            "career_goals": "backend infrastructure, cybersecurity",
+            "target_roles": "Software Engineering Intern", "role_campaigns": "Wave 2, Defense, Seed-stage startups",
+        })
+        self.assertEqual(response.status_code, 302)
+        saved = application.profile()
+        self.assertEqual(saved["graduation"], "December 2028")
+        self.assertEqual(saved["skills"], "Python, C++, SQL")
+        self.assertEqual(saved["career_goals"], "backend infrastructure, cybersecurity")
+        self.assertEqual(saved["role_campaigns"], "Wave 2, Defense, Seed-stage startups")
+        self.client.post("/profile", data={"skills": "", "career_goals": "", "role_campaigns": ""})
+        saved = application.profile()
+        self.assertEqual(saved["skills"], "")
+        self.assertEqual(saved["career_goals"], "")
+        self.assertEqual(saved["role_campaigns"], "")
+
+    def test_match_uses_skills_campaign_and_graduation_window(self):
+        self.add_resume("Python, C++, cybersecurity and backend infrastructure project experience")
+        self.client.post("/profile", data={"graduation": "December 2028", "skills": "Python, C++, cybersecurity",
+                                           "career_goals": "cybersecurity", "target_roles": "Software Engineering Intern",
+                                           "role_campaigns": "Wave 2, Defense, Seed-stage startups"})
+        description = "Software Engineering Intern for graduating students in 2027 to 2029. Build cybersecurity infrastructure with Python and C++. " * 2
+        response = self.client.post("/api/evaluate", json={"title": "Software Engineering Intern", "company": "DefenseCo",
+            "url": "https://example.com/defense", "description": description, "wave": "Defense", "sector": "cybersecurity", "funding_stage": "Seed"})
+        self.assertEqual(response.status_code, 200)
+        data = response.json
+        self.assertEqual(data["eligibility"], "likely eligible")
+        self.assertGreaterEqual(data["fit_breakdown"]["skills"], 60)
+        self.assertEqual(data["fit_breakdown"]["campaign"], 100)
+        self.assertIn("review", data["fit_status"].lower())
+        with application.db() as conn:
+            job = conn.execute("SELECT wave,sector,funding_stage FROM jobs WHERE id=?", (data["saved_job_id"],)).fetchone()
+        self.assertEqual(tuple(job), ("Defense", "cybersecurity", "Seed"))
+
+    def test_match_flags_explicit_graduation_year_mismatch_for_review(self):
+        self.add_resume("Python software engineering intern project")
+        self.client.post("/profile", data={"graduation": "December 2028", "target_roles": "Software Engineering Intern"})
+        description = "Software Engineering Intern for students graduating in 2025. Build software systems. " * 4
+        response = self.client.post("/api/evaluate", json={"title": "Software Engineering Intern", "description": description})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["eligibility"], "possible mismatch")
+        self.assertEqual(response.json["fit_status"], "Check eligibility")
+
+    def test_saved_role_campaign_tags_can_be_changed_after_scan(self):
+        description = "Software engineering intern building Python backend services and APIs. " * 4
+        created = self.client.post("/api/evaluate", json={"title": "Backend Intern", "description": description})
+        job_id = created.json["saved_job_id"]
+        response = self.client.post(f"/job/{job_id}/campaign", data={"wave": "Wave 2", "sector": "AI infrastructure", "funding_stage": "Seed"})
+        self.assertEqual(response.status_code, 302)
+        with application.db() as conn:
+            saved = conn.execute("SELECT wave,sector,funding_stage FROM jobs WHERE id=?", (job_id,)).fetchone()
+        self.assertEqual(tuple(saved), ("Wave 2", "AI infrastructure", "Seed"))
+        page = self.client.get(f"/job/{job_id}")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Edit this role", page.data)
+        self.assertIn(b"AI infrastructure", page.data)
+        self.assertEqual(self.client.post("/job/999/campaign", data={}).status_code, 404)
+
     def test_upload_rejects_unsupported_extension(self):
         response = self.client.post("/", data={"resume": (io.BytesIO(b"bad"), "resume.exe")}, content_type="multipart/form-data")
         self.assertEqual(response.status_code, 200)

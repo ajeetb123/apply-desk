@@ -1,6 +1,6 @@
 # Apply Desk — Resume and application studio
 
-A local-first resume and job tracker with a Chrome side panel. Import a resume, keep candidate details in a local SQLite profile, compare a job page with the resume, and fill a conservative set of clearly labelled application fields.
+A local-first resume and job tracker with a Chrome side panel. Import a resume, save your skills, graduation date, career goals and target campaigns, compare roles against that profile, and fill a conservative set of clearly labelled application fields.
 
 ## Run it
 
@@ -23,12 +23,12 @@ Open <http://127.0.0.1:8787>. The app binds to localhost only. Uploaded files an
 ## Current workflow
 
 1. Import a text PDF, DOCX, TXT, or LaTeX source resume.
-2. Install the unpacked Chrome side panel and open a job listing.
-3. Type `scan` or `tailor` to see matching resume lines and terms to verify. Scanned roles are saved locally; type `top 5` to rank the roles you scanned.
-4. On an application page, type `fill` to fill clearly labelled empty contact/education fields after confirmation.
-5. Review every value and submit the application yourself.
+2. In Profile & matching preferences, set graduation, skills, goals, target roles, and editable campaign names such as Wave 1, Wave 2, Defense, or Seed-stage startups.
+3. Install the unpacked Chrome side panel and open a job listing. Type `scan` or `tailor` to save it; type `top 5` to rank the roles you have scanned.
+4. Add campaign, sector, and funding-stage notes when known. These fields are editable because job listings often omit them.
+5. Review the role fit breakdown and eligibility hints. On an application page, type `fill` to fill clearly labelled empty fields after confirmation; check every value and submit the application yourself.
 
-The overlap score is deliberately labeled a heuristic. It is not an ATS score, ranking from a recruiter, or interview probability. Keyword matching does not establish proficiency. The user must confirm each skill, eligibility rule, and answer against their actual records. The tool does not generate a polished rewritten resume or discover/rank live jobs yet.
+The fit score weights resume skill overlap (40%), target-role alignment (25%), career-goal terms (15%), campaign alignment (10%), and graduation-window evidence (10%). It is a transparent triage aid, not an ATS score, recruiter ranking, or hiring probability. Keyword matching does not establish proficiency; graduation parsing only flags explicit year clues and can miss employer-specific rules. Confirm eligibility and each answer against your actual records. The app ranks roles you paste or scan while browsing; it does not discover listings across job boards or submit applications automatically. Strong matches are queued for your review. It does not generate a polished rewritten resume.
 
 “Save & review role” saves the description locally and opens a comparison page. That page shows matching resume terms, terms to verify, and source resume lines that may be relevant. It does not tailor or rewrite the resume yet.
 

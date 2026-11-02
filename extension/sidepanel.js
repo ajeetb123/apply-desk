@@ -66,7 +66,7 @@ function showEvaluation(data) {
   const evidence = data.evidence?.length ? `<ul class="evidence">${data.evidence.map(line => `<li>${esc(line)}</li>`).join("")}</ul>` : `<p class="muted">No matching resume lines found. Check your resume manually.</p>`;
   const chips = (items, good = false) => (items || []).slice(0, 8).map(item => `<span class="chip ${good ? "good" : ""}">${esc(item)}</span>`).join("") || `<span class="muted">None found</span>`;
   const saved = data.saved_job_id ? `<p class="muted">Saved to your local job list. Use “top 5” to compare saved roles.</p>` : "";
-  result.innerHTML = `<article class="card"><div class="job-title">${esc(data.title || "Job posting")}</div><div class="job-sub">${esc(data.company || data.url || "Current page")}</div><div class="score-line"><span class="score">${Number(data.score) || 0}%</span><span class="score-caption">rough keyword overlap</span><span class="voice">${esc(data.voice)}</span></div><p>${esc(data.note)}</p>${saved}</article><article class="card"><h2>Already in your resume</h2><div class="chips">${chips(data.matched, true)}</div>${evidence}</article><article class="card"><h2>Check before adding</h2><p>Only use these if your experience supports them.</p><div class="chips">${chips(data.missing)}</div></article>`;
+  result.innerHTML = `<article class="card"><div class="job-title">${esc(data.title || "Job posting")}</div><div class="job-sub">${esc(data.company || data.url || "Current page")}</div><div class="score-line"><span class="score">${Number(data.fit_score) || 0}%</span><span class="score-caption">profile fit · ${esc(data.fit_status || "review")}</span><span class="voice">${esc(data.voice)}</span></div><p>${esc((data.fit_reasons || []).join(" ") || data.note)}</p>${saved}</article><article class="card"><h2>Already in your resume</h2><div class="chips">${chips(data.matched, true)}</div>${evidence}</article><article class="card"><h2>Check before adding</h2><p>Only use these if your experience supports them.</p><div class="chips">${chips(data.missing)}</div></article>`;
   result.hidden = false;
 }
 
@@ -78,7 +78,7 @@ async function rankSavedJobs(limit = 10) {
   if (!data.jobs?.length) {
     result.innerHTML = `<article class="card"><h2>No saved roles yet</h2><p>Open a job listing and run “scan job” to add it to your local list.</p></article>`;
   } else {
-    result.innerHTML = `<article class="card"><h2>Your top ${data.jobs.length} saved roles</h2><p class="muted">Ranked by text overlap only. Check role eligibility, deadline, and actual fit on each employer page.</p>${data.jobs.map((job, index) => `<div class="rank-row"><span class="rank-num">${index + 1}</span><div class="rank-info"><b>${esc(job.title || "Untitled role")}</b><span>${esc(job.company || "Company")}</span><a href="${safeHref(job.url)}" target="_blank" rel="noreferrer">Open employer listing ↗</a></div><b class="rank-score">${Number(job.score) || 0}%</b></div>`).join("")}</article>`;
+    result.innerHTML = `<article class="card"><h2>Your top ${data.jobs.length} saved roles</h2><p class="muted">Ranked by profile fit. Check eligibility, deadlines, and every application detail yourself.</p>${data.jobs.map((job, index) => `<div class="rank-row"><span class="rank-num">${index + 1}</span><div class="rank-info"><b>${esc(job.title || "Untitled role")}</b><span>${esc(job.company || "Company")} · ${esc(job.fit_status || "Review")}</span><a href="${safeHref(job.url)}" target="_blank" rel="noreferrer">Open employer listing ↗</a></div><b class="rank-score">${Number(job.score) || 0}%</b></div>`).join("")}</article>`;
   }
   result.hidden = false;
   say(`${data.count} saved role(s). Scan more job pages to build your list.`);
@@ -93,7 +93,7 @@ async function evaluateCurrentPage() {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "Could not evaluate this job.");
   showEvaluation(data);
-  say(data.resume_loaded ? "Review the evidence and gaps below. The overlap score is only a rough comparison." : "Job scanned. Import your resume in profile settings to compare experience.");
+  say(data.resume_loaded ? "Review the fit signals and evidence below. Check eligibility and every answer before applying." : "Job scanned. Import your resume in profile settings to compare experience.");
 }
 
 async function fillCurrentForm() {
