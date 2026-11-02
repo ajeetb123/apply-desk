@@ -48,7 +48,7 @@ def init_db():
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS profile (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS resume (id INTEGER PRIMARY KEY, filename TEXT, text TEXT NOT NULL, uploaded TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY, company TEXT, title TEXT, url TEXT, description TEXT, saved TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY, company TEXT, title TEXT, url TEXT, description TEXT, saved TEXT NOT NULL, wave TEXT NOT NULL DEFAULT '', sector TEXT NOT NULL DEFAULT '', funding_stage TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, summary TEXT NOT NULL, created TEXT NOT NULL);
         """)
         # Personal contact details live only in the ignored local database. Do
@@ -59,10 +59,18 @@ def init_db():
             "postal_code": "", "address": "", "work_authorization": "",
             "watch_path": "", "watch_hash": "",
             "target_roles": "Software Engineering Intern, Backend Engineer Intern",
+            "skills": "",
+            "career_goals": "",
+            "role_campaigns": "Wave 1, Wave 2, Defense, Seed-stage startups",
             "larp": "2",
         }
         for key, value in defaults.items():
             conn.execute("INSERT OR IGNORE INTO profile(key,value) VALUES(?,?)", (key, value))
+        # Additive migration for databases created by earlier Apply Desk versions.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+        for column in ("wave", "sector", "funding_stage"):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         # Split legacy "City, ST" profile entries so the extension doesn't
         # put the whole string in a city-only field.
         values = {row["key"]: row["value"] for row in conn.execute("SELECT * FROM profile")}
@@ -166,6 +174,82 @@ def analyze(description: str):
     return {"score": score, "matched": matched[:12], "missing": missing[:12], "terms": terms}
 
 
+def match_role(description: str, title: str = "", wave: str = "", sector: str = "", funding_stage: str = ""):
+    """Explainable candidate-to-role triage; never a hiring probability."""
+    p = profile()
+    resume = resume_row()
+    if not resume:
+        return {"score": 0, "status": "Add a resume", "eligibility": "unknown", "breakdown": {"skills": 0, "role": 0, "goals": 0, "campaign": 0, "graduation": 0}, "matched_skills": [], "reasons": ["Add a resume to compare role requirements with your experience."]}
+    body = f"{title} {description}".lower()
+    resume_text = resume["text"].lower()
+    explicit_skills = [x.strip().lower() for x in re.split(r"[,;\n]", p.get("skills", "")) if x.strip()]
+    inferred_skills = keywords(resume["text"])
+    candidate_skills = list(dict.fromkeys(explicit_skills + inferred_skills))
+    matched_skills = [skill for skill in candidate_skills if skill in body]
+    skill_score = round(100 * len(matched_skills) / max(1, min(8, len(candidate_skills)))) if candidate_skills else 0
+    targets = [x.strip().lower() for x in re.split(r"[,;\n]", p.get("target_roles", "")) if x.strip()]
+    role_hits = [target for target in targets if target in title.lower() or (len(target.split()) > 1 and target in body)]
+    role_score = 100 if role_hits else (35 if any(word in body for word in ("intern", "internship", "early career", "new grad")) else 0)
+    goals = [x.strip().lower() for x in re.split(r"[,;\n]", p.get("career_goals", "")) if x.strip()]
+    goal_hits = [goal for goal in goals if goal in body]
+    goal_score = round(100 * len(goal_hits) / len(goals)) if goals else 50
+    campaigns = [x.strip() for x in re.split(r"[,;\n]", p.get("role_campaigns", "")) if x.strip()]
+    campaign_text = " ".join([wave, sector, funding_stage, title, description]).lower()
+    campaign_hits = [campaign for campaign in campaigns if campaign.lower() in campaign_text]
+    campaign_score = 100 if (wave and any(wave.lower() == c.lower() for c in campaigns)) else (70 if campaign_hits else 30)
+
+    grad = re.search(r"\b(20\d{2})\b", p.get("graduation", ""))
+    graduation_context_years = []
+    for marker in re.finditer(r"graduat\w*|class\s+of", description, flags=re.IGNORECASE):
+        snippet = description[max(0, marker.start() - 50):min(len(description), marker.end() + 100)]
+        graduation_context_years.extend(int(y) for y in re.findall(r"\b20\d{2}\b", snippet))
+    grad_year = int(grad.group(1)) if grad else None
+    eligibility = "unknown"
+    grad_score = 50
+    reasons = []
+    if grad_year and len(graduation_context_years) >= 2:
+        low, high = min(graduation_context_years), max(graduation_context_years)
+        if low <= grad_year <= high:
+            eligibility, grad_score = "likely eligible", 100
+            reasons.append(f"Your {grad_year} graduation year falls within the listed {low}–{high} window.")
+        elif grad_year < low or grad_year > high:
+            eligibility, grad_score = "possible mismatch", 0
+            reasons.append(f"The listing mentions {low}–{high}; verify whether your {grad_year} graduation year is eligible.")
+    elif grad_year and graduation_context_years:
+        year = graduation_context_years[0]
+        if year == grad_year:
+            eligibility, grad_score = "likely eligible", 100
+            reasons.append(f"The listing mentions your {grad_year} graduation year.")
+        elif abs(year - grad_year) <= 1:
+            eligibility, grad_score = "verify", 35
+            reasons.append(f"The listing mentions {year}; check the employer's exact graduation rules for your {grad_year} year.")
+        else:
+            eligibility, grad_score = "possible mismatch", 0
+            reasons.append(f"The listing mentions {year}, while your profile says {grad_year}; verify eligibility before applying.")
+
+    breakdown = {"skills": skill_score, "role": role_score, "goals": goal_score, "campaign": campaign_score, "graduation": grad_score}
+    score = round(skill_score * .40 + role_score * .25 + goal_score * .15 + campaign_score * .10 + grad_score * .10)
+    if eligibility == "possible mismatch":
+        status = "Check eligibility"
+    elif score >= 60:
+        status = "Strong match — review application"
+    elif score >= 40:
+        status = "Potential match — review details"
+    else:
+        status = "Low match"
+    if matched_skills:
+        reasons.append("Resume evidence found for: " + ", ".join(matched_skills[:5]) + ".")
+    if role_hits:
+        reasons.append("Target role alignment: " + ", ".join(role_hits[:3]) + ".")
+    if goal_hits:
+        reasons.append("Career goal terms found: " + ", ".join(goal_hits[:3]) + ".")
+    if wave:
+        reasons.append(f"Campaign: {wave}" + (f" · {sector}" if sector else "") + (f" · {funding_stage}" if funding_stage else "") + ".")
+    if not reasons:
+        reasons.append("Few configured role, skill, or goal signals matched this listing.")
+    return {"score": score, "status": status, "eligibility": eligibility, "breakdown": breakdown, "matched_skills": matched_skills[:12], "reasons": reasons[:5]}
+
+
 def safe_http_url(value: str) -> str:
     value = str(value or "").strip()[:2000]
     try:
@@ -205,8 +289,11 @@ def home():
         company, title = request.form.get("company", "").strip(), request.form.get("title", "").strip()
         description = request.form.get("description", "").strip()
         if description:
+            wave = request.form.get("wave", "").strip()[:80]
+            sector = request.form.get("sector", "").strip()[:80]
+            funding_stage = request.form.get("funding_stage", "").strip()[:80]
             with db() as conn:
-                cursor = conn.execute("INSERT INTO jobs(company,title,url,description,saved) VALUES(?,?,?,?,?)", (company, title, safe_http_url(request.form.get("url", "")), description, datetime.now().isoformat(timespec="minutes")))
+                cursor = conn.execute("INSERT INTO jobs(company,title,url,description,saved,wave,sector,funding_stage) VALUES(?,?,?,?,?,?,?,?)", (company, title, safe_http_url(request.form.get("url", "")), description, datetime.now().isoformat(timespec="minutes"), wave, sector, funding_stage))
                 job_id = cursor.lastrowid
             log_activity("Role saved", f"Added {title or 'role'} at {company or 'company not set'}")
             return redirect(url_for("job", job_id=job_id))
@@ -215,20 +302,22 @@ def home():
         jobs = [dict(r) for r in conn.execute("SELECT * FROM jobs ORDER BY id DESC")]
         activity = [dict(r) for r in conn.execute("SELECT * FROM activity ORDER BY id DESC LIMIT 8")]
     for item in jobs:
-        item["score"] = analyze(item["description"])["score"]
+        item["match"] = match_role(item["description"], item["title"], item.get("wave", ""), item.get("sector", ""), item.get("funding_stage", ""))
+        item["score"] = item["match"]["score"]
     jobs.sort(key=lambda item: (item["score"], item["saved"]), reverse=True)
-    return render_template("index.html", profile=profile(), resume=current, jobs=jobs, activity=activity)
+    return render_template("index.html", profile=profile(), resume=current, jobs=jobs, activity=activity,
+                           campaign_options=[x.strip() for x in re.split(r"[,;\n]", profile().get("role_campaigns", "")) if x.strip()])
 
 
 @app.route("/profile", methods=["POST"])
 def save_profile():
-    fields = ["name", "email", "school", "degree", "graduation", "phone", "city", "state", "postal_code", "address", "work_authorization", "target_roles", "larp"]
+    fields = ["name", "email", "school", "degree", "graduation", "phone", "city", "state", "postal_code", "address", "work_authorization", "target_roles", "skills", "career_goals", "role_campaigns", "larp"]
     old_profile = profile()
     watch_path = request.form.get("watch_path", "").strip()
     with db() as conn:
         for field in fields:
-            value = request.form.get(field, "").strip()
-            if value:
+            if field in request.form:
+                value = request.form.get(field, "").strip()[:2000]
                 conn.execute("INSERT INTO profile(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (field, value))
         conn.execute("INSERT INTO profile(key,value) VALUES('watch_path',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (watch_path,))
         if watch_path != old_profile.get("watch_path", ""):
@@ -255,6 +344,7 @@ def job(job_id):
         return "Job not found", 404
     item = dict(row)
     report = analyze(item["description"])
+    match = match_role(item["description"], item.get("title", ""), item.get("wave", ""), item.get("sector", ""), item.get("funding_stage", ""))
     resume = resume_row()
     relevant = []
     if resume:
@@ -266,7 +356,9 @@ def job(job_id):
     voice_note = {"Direct": "The current resume has limited direct keyword evidence for this posting. Keep wording plain and claims tightly scoped.",
                   "Confident": "Lead with the strongest relevant work already on the resume; use clear action and outcome language where the source supports it.",
                   "Assertive": "Several posting terms already appear in the resume. Put those proven skills and outcomes first, without inflating scope or metrics."}[voice]
-    return render_template("job.html", job=item, report=report, resume=resume, profile=profile(), relevant=relevant[:12], voice=voice, voice_note=voice_note)
+    p = profile()
+    return render_template("job.html", job=item, report=report, match=match, resume=resume, profile=p, relevant=relevant[:12], voice=voice, voice_note=voice_note,
+                           campaign_options=[x.strip() for x in re.split(r"[,;\n]", p.get("role_campaigns", "")) if x.strip()])
 
 
 @app.route("/job/<int:job_id>/delete", methods=["POST"])
@@ -275,6 +367,20 @@ def delete_job(job_id):
         conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
     log_activity("Role removed", "Removed a saved role")
     return redirect(url_for("home"))
+
+
+@app.route("/job/<int:job_id>/campaign", methods=["POST"])
+def update_job_campaign(job_id):
+    wave = request.form.get("wave", "").strip()[:80]
+    sector = request.form.get("sector", "").strip()[:80]
+    funding_stage = request.form.get("funding_stage", "").strip()[:80]
+    with db() as conn:
+        updated = conn.execute("UPDATE jobs SET wave=?,sector=?,funding_stage=? WHERE id=?", (wave, sector, funding_stage, job_id)).rowcount
+    if not updated:
+        return "Job not found", 404
+    log_activity("Role campaign updated", "Updated a role's campaign, sector, or funding notes")
+    flash("Role campaign details saved.", "success")
+    return redirect(url_for("job", job_id=job_id))
 
 
 @app.get("/api/health")
@@ -312,19 +418,25 @@ def api_evaluate():
     title = str(data.get("title", ""))[:200]
     company = str(data.get("company", ""))[:200]
     url = safe_http_url(data.get("url", ""))
+    wave = str(data.get("wave", ""))[:80].strip()
+    sector = str(data.get("sector", ""))[:80].strip()
+    funding_stage = str(data.get("funding_stage", ""))[:80].strip()
     saved = datetime.now().isoformat(timespec="minutes")
     with db() as conn:
         existing = conn.execute("SELECT id FROM jobs WHERE url=? AND url!=''", (url,)).fetchone() if url else None
         if existing:
             saved_job_id = existing["id"]
-            conn.execute("UPDATE jobs SET company=?,title=?,description=?,saved=? WHERE id=?", (company, title, description, saved, saved_job_id))
+            conn.execute("UPDATE jobs SET company=?,title=?,description=?,saved=?,wave=?,sector=?,funding_stage=? WHERE id=?", (company, title, description, saved, wave, sector, funding_stage, saved_job_id))
         else:
-            cursor = conn.execute("INSERT INTO jobs(company,title,url,description,saved) VALUES(?,?,?,?,?)", (company, title, url, description, saved))
+            cursor = conn.execute("INSERT INTO jobs(company,title,url,description,saved,wave,sector,funding_stage) VALUES(?,?,?,?,?,?,?,?)", (company, title, url, description, saved, wave, sector, funding_stage))
             saved_job_id = cursor.lastrowid
+    match = match_role(description, title, wave, sector, funding_stage)
     log_activity("Role scanned", f"Reviewed {title or 'role'} at {company or 'company not set'}")
     return {
         "title": title, "company": company, "url": url, "saved_job_id": saved_job_id,
         "score": report["score"], "voice": voice,
+        "fit_score": match["score"], "fit_status": match["status"], "eligibility": match["eligibility"],
+        "fit_breakdown": match["breakdown"], "fit_reasons": match["reasons"], "matched_skills": match["matched_skills"],
         "matched": report["matched"], "missing": report["missing"], "evidence": relevant[:12],
         "resume_loaded": bool(resume),
         "note": "Keyword overlap is a rough triage signal, not a hiring probability. Verify each claim against your experience.",
@@ -338,11 +450,14 @@ def api_rank_jobs():
     except ValueError:
         limit = 10
     with db() as conn:
-        items = [dict(row) for row in conn.execute("SELECT id,company,title,url,description,saved FROM jobs")]
+        items = [dict(row) for row in conn.execute("SELECT * FROM jobs")]
     for item in items:
-        item["score"] = analyze(item["description"])["score"]
+        match = match_role(item["description"], item.get("title", ""), item.get("wave", ""), item.get("sector", ""), item.get("funding_stage", ""))
+        item["score"] = match["score"]
+        item["fit_status"] = match["status"]
+        item["eligibility"] = match["eligibility"]
     items.sort(key=lambda item: (item["score"], item["saved"]), reverse=True)
-    return {"jobs": [{key: item[key] for key in ("id", "company", "title", "url", "saved", "score")} for item in items[:limit]], "count": len(items)}
+    return {"jobs": [{key: item.get(key, "") for key in ("id", "company", "title", "url", "saved", "score", "fit_status", "eligibility")} for item in items[:limit]], "count": len(items)}
 
 
 @app.route("/job/<int:job_id>/resume.txt")

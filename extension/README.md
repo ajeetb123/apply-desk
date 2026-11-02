@@ -25,4 +25,4 @@ The extension requests `sidePanel`, `activeTab`, and `scripting`. It does not re
 
 ## Current limits
 
-The extension can evaluate and fill selected fields; it does not discover jobs automatically, create a rewritten resume, generate a PDF, answer screening questions, or submit applications. Scan listings yourself to build the saved-job list. Job overlap is a text heuristic, not a hiring predictor. Form labelling varies between employers, so an unmatched field must be handled manually. Review every application before submission.
+The extension can evaluate and fill selected fields; it does not discover jobs automatically, create a rewritten resume, generate a PDF, answer screening questions, or submit applications. Scan listings yourself to build the saved-job list. Role ranking uses your configured profile, target campaigns, resume text, and any explicit graduation-year clues. The fit score is a triage aid, not a hiring predictor. Form labelling varies between employers, so an unmatched field must be handled manually. Review every application before submission.
