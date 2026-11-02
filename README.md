@@ -4,6 +4,10 @@ A local-first resume and job tracker with a Chrome side panel. Import a resume, 
 
 ## Run it
 
+Double-click `Apply Desk.command` in Finder to start the local service in the background and open the main dashboard. Use `Stop Apply Desk.command` to stop the service. The dashboard is the main application; the Chrome side panel is a helper for scanning a listing while you browse.
+
+For terminal use:
+
 ```bash
 cd "Apply Desk"
 python3 -m venv .venv
@@ -23,6 +27,8 @@ Open <http://127.0.0.1:8787>. The app binds to localhost only. Uploaded files an
 5. Review every value and submit the application yourself.
 
 The overlap score is deliberately labeled a heuristic. It is not an ATS score, ranking from a recruiter, or interview probability. Keyword matching does not establish proficiency. The user must confirm each skill, eligibility rule, and answer against their actual records. The tool does not generate a polished rewritten resume or discover/rank live jobs yet.
+
+“Save & review role” saves the description locally and opens a comparison page. That page shows matching resume terms, terms to verify, and source resume lines that may be relevant. It does not tailor or rewrite the resume yet.
 
 ## Profile data
 
