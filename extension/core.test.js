@@ -12,7 +12,8 @@ test("normalization handles missing and noisy labels", () => {
 test("command parser accepts plain-language commands and rejects unrelated text", () => {
   for (const phrase of ["scan", "scan this job", "read this page"]) assert.equal(parseCommand(phrase).action, "scan");
   for (const phrase of ["tailor", "fit this job", "review the posting", "match job"]) assert.equal(parseCommand(phrase).action, "tailor");
-  for (const phrase of ["fill", "autofill my details", "apply", "enter my details"]) assert.equal(parseCommand(phrase).action, "fill");
+  for (const phrase of ["fill", "autofill my details", "enter my details"]) assert.equal(parseCommand(phrase).action, "fill");
+  assert.equal(parseCommand("apply").action, "unknown");
   assert.deepEqual(parseCommand("show top 5 jobs"), { action: "rank", limit: 5 });
   assert.deepEqual(parseCommand("rank jobs"), { action: "rank", limit: 10 });
   assert.deepEqual(parseCommand("best 99"), { action: "rank", limit: 50 });
