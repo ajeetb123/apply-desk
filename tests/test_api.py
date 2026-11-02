@@ -116,6 +116,86 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertIn(b"Upload a PDF", response.data)
         self.assertFalse(self.client.get("/api/health").json["resume_loaded"])
 
+    def test_upload_rejects_corrupt_pdf_without_server_error(self):
+        response = self.client.post("/", data={"resume": (io.BytesIO(b"not a pdf"), "resume.pdf")}, content_type="multipart/form-data")
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(self.client.get("/api/health").json["resume_loaded"])
+
+    def test_manual_memory_note_is_saved_and_bounded(self):
+        response = self.client.post("/memory/add", data={"task": "Finished the database lab" + "x" * 500})
+        self.assertEqual(response.status_code, 302)
+        import sqlite3
+        with sqlite3.connect(application.DB) as conn:
+            kind, summary = conn.execute("SELECT kind,summary FROM activity ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(kind, "Task noted")
+        self.assertLessEqual(len(summary), 300)
+
+    def test_watched_resume_versions_only_record_content_changes(self):
+        import sqlite3
+        source = Path(self.temp.name) / "source.txt"
+        source.write_text("Built a small Python project")
+        with sqlite3.connect(application.DB) as conn:
+            conn.execute("UPDATE profile SET value=? WHERE key='watch_path'", (str(source),))
+        self.assertTrue(application.sync_watched_resume_once())
+        self.assertFalse(application.sync_watched_resume_once())
+        source.write_text("Built a larger Python project and added tests")
+        self.assertTrue(application.sync_watched_resume_once())
+        self.assertFalse(application.sync_watched_resume_once())
+        with sqlite3.connect(application.DB) as conn:
+            versions = conn.execute("SELECT COUNT(*) FROM resume").fetchone()[0]
+            latest = conn.execute("SELECT text FROM resume ORDER BY id DESC LIMIT 1").fetchone()[0]
+            updates = conn.execute("SELECT COUNT(*) FROM activity WHERE kind='Resume updated'").fetchone()[0]
+        self.assertEqual(versions, 2)
+        self.assertIn("added tests", latest)
+        self.assertEqual(updates, 2)
+
+    def test_watcher_ignores_missing_unsupported_and_oversized_paths(self):
+        import sqlite3
+        with sqlite3.connect(application.DB) as conn:
+            conn.execute("UPDATE profile SET value=? WHERE key='watch_path'", (str(Path(self.temp.name) / "missing.txt"),))
+        self.assertFalse(application.sync_watched_resume_once())
+        unsupported = Path(self.temp.name) / "file.rtf"
+        unsupported.write_text("text")
+        with sqlite3.connect(application.DB) as conn:
+            conn.execute("UPDATE profile SET value=? WHERE key='watch_path'", (str(unsupported),))
+        self.assertFalse(application.sync_watched_resume_once())
+        large = Path(self.temp.name) / "large.txt"
+        with large.open("wb") as stream:
+            stream.truncate(13 * 1024 * 1024)
+        with sqlite3.connect(application.DB) as conn:
+            conn.execute("UPDATE profile SET value=? WHERE key='watch_path'", (str(large),))
+        self.assertFalse(application.sync_watched_resume_once())
+
+    def test_role_review_download_preserves_source_and_labels_it_not_a_rewrite(self):
+        source = "Built a Python API for a student project."
+        self.add_resume(source)
+        description = "Python API intern building backend tools and writing automated tests with a small team. " * 3
+        created = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Example Co", "url": "https://example.com/role", "description": description})
+        self.assertEqual(created.status_code, 200)
+        response = self.client.get(f"/job/{created.json['saved_job_id']}/resume.txt")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"ROLE REVIEW NOTES", response.data)
+        self.assertIn(b"NOT A REWRITTEN RESUME", response.data)
+        self.assertIn(source.encode(), response.data)
+        self.assertIn(b"Relevant existing resume lines", response.data)
+        self.assertIn("review-notes.txt", response.headers["Content-Disposition"])
+        response.close()
+
+    def test_resume_upload_versions_txt_and_docx_content(self):
+        from docx import Document
+        document = Document()
+        document.add_paragraph("Implemented a search endpoint in Python")
+        buffer = io.BytesIO()
+        document.save(buffer)
+        for file_bytes, filename in [(b"Designed a cache in Go", "resume.txt"), (buffer.getvalue(), "resume.docx")]:
+            response = self.client.post("/", data={"resume": (io.BytesIO(file_bytes), filename)}, content_type="multipart/form-data")
+            self.assertEqual(response.status_code, 302)
+        current = application.resume_row()
+        self.assertIn("search endpoint", current["text"])
+        import sqlite3
+        with sqlite3.connect(application.DB) as conn:
+            self.assertIn("cache in Go", conn.execute("SELECT text FROM resume ORDER BY id ASC LIMIT 1").fetchone()[0])
+
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})
         self.assertEqual(response.status_code, 421)

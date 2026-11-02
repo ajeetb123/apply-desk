@@ -4,7 +4,7 @@ A local-first resume and job tracker with a Chrome side panel. Import a resume, 
 
 ## Run it
 
-Double-click `Apply Desk.command` in Finder to start the local service in the background and open the main dashboard. Use `Stop Apply Desk.command` to stop the service. The dashboard is the main application; the Chrome side panel is a helper for scanning a listing while you browse.
+Double-click `Start Apply Desk.command` in Finder to start the local service in the background and open the main dashboard. Use `Stop Apply Desk.command` to stop the service. The dashboard is the main application; the Chrome side panel is a helper for scanning a listing while you browse.
 
 Apply Desk remembers resume versions, saved roles, profile edits, and notes in its local database. To watch a resume you edit in another app, open **Profile & memory settings**, enter the full path to that one file, and save. Only that selected file is checked for changes. Add other work notes explicitly with **Add note**; Apply Desk does not watch general computer activity.
 
@@ -54,6 +54,8 @@ The resume-voice recommendation is per role and based only on the crude overlap 
 - [Early Career Radar](https://earlycareerradar.com/) describes internship/new-grad discovery and links to employer sources; its [terms](https://earlycareerradar.com/terms) say jobseekers should verify details on the employer page.
 - [Google resume writing tips](https://services.google.com/fh/files/misc/resume-writing-tips-for-veterans-2021.pdf) recommends concise, consistent bullets, action words and impact, a short resume for limited experience, and no physical address requirement.
 - [Google interns' resume tips](https://students.googleblog.com/2015/07/google-interns-top-5-resume-tips.html) encourages concrete metrics when appropriate and within confidentiality limits.
+- [MIT CAPD first-year resume guidance](https://capd.mit.edu/blog/2023/09/01/enhance-your-resume-a-guide-for-first-year-undergraduates/) recommends action + relevant task + result, with quantification when supportable.
+- [MIT ATS-friendly resume guide](https://capd.mit.edu/resources/make-your-resume-ats-friendly/) recommends job-specific language and checking the plain-text extraction. These structural patterns are used as guidance; the app does not copy another applicant's resume wording.
 - [Jake's Resume on Overleaf](https://www.overleaf.com/latex/templates/jakes-resume/syzfjbzwjncs) identifies Jake Gutierrez as the template author and links the source repository.
 - [r/EngineeringResumes](https://www.reddit.com/r/EngineeringResumes/) is an anecdotal peer-feedback source, useful for concrete critiques but not a representative hiring study.
 

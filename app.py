@@ -95,25 +95,38 @@ def log_activity(kind: str, summary: str):
         conn.execute("INSERT INTO activity(kind,summary,created) VALUES(?,?,?)", (kind, summary[:300], datetime.now().isoformat(timespec="minutes")))
 
 
+def sync_watched_resume_once() -> bool:
+    """Import a changed resume only when its exact path was configured."""
+    p = profile()
+    source = p.get("watch_path", "").strip()
+    if not source:
+        return False
+    path = Path(source).expanduser()
+    try:
+        if not path.is_file() or path.stat().st_size > 12 * 1024 * 1024:
+            return False
+        ext = path.suffix.lower().lstrip(".")
+        if ext not in ALLOWED:
+            return False
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest == p.get("watch_hash", ""):
+            return False
+        text = extract_text(path, ext).strip()
+        if not text:
+            return False
+        with db() as conn:
+            conn.execute("INSERT INTO resume(filename,text,uploaded) VALUES(?,?,?)", (path.name, text, datetime.now().isoformat(timespec="minutes")))
+            conn.execute("INSERT INTO profile(key,value) VALUES('watch_hash',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (digest,))
+            conn.execute("INSERT INTO activity(kind,summary,created) VALUES(?,?,?)", ("Resume updated", f"A saved change to {path.name} was recorded locally.", datetime.now().isoformat(timespec="minutes")))
+        return True
+    except Exception:
+        return False
+
+
 def watch_resume_loop():
-    """Watch only the single resume file path explicitly chosen by the user."""
+    """Poll only the single resume file path explicitly chosen by the user."""
     while True:
-        p = profile()
-        source = p.get("watch_path", "").strip()
-        if source:
-            path = Path(source).expanduser()
-            try:
-                if path.is_file() and path.stat().st_size <= 12 * 1024 * 1024:
-                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                    if digest != p.get("watch_hash", "") and path.suffix.lower().lstrip(".") in ALLOWED:
-                        text = extract_text(path, path.suffix.lower().lstrip(".")).strip()
-                        if text:
-                            with db() as conn:
-                                conn.execute("INSERT INTO resume(filename,text,uploaded) VALUES(?,?,?)", (path.name, text, datetime.now().isoformat(timespec="minutes")))
-                                conn.execute("INSERT INTO profile(key,value) VALUES('watch_hash',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (digest,))
-                                conn.execute("INSERT INTO activity(kind,summary,created) VALUES(?,?,?)", ("Resume updated", f"A saved change to {path.name} was recorded locally.", datetime.now().isoformat(timespec="minutes")))
-            except (OSError, ValueError, KeyError):
-                pass
+        sync_watched_resume_once()
         time.sleep(4)
 
 
@@ -176,7 +189,11 @@ def home():
             else:
                 path = INSTANCE / ("resume_upload." + ext)
                 file.save(path)
-                text = extract_text(path, ext).strip()
+                try:
+                    text = extract_text(path, ext).strip()
+                except Exception:
+                    flash("That file could not be read. Try a valid text-based PDF, DOCX, TXT, or LaTeX file.", "error")
+                    return redirect(url_for("home"))
                 if not text:
                     flash("I could not read text from this file. Try a text-based PDF or DOCX.", "error")
                 else:
@@ -336,12 +353,12 @@ def download_resume(job_id):
     if not row or not resume:
         return "Job or resume not found", 404
     report = analyze(row["description"])
-    lines = [resume["text"].strip(), "", "--- Tailoring notes (review before using) ---", f"Role: {row['title']} at {row['company']}", f"Fit signal: {report['score']}% keyword overlap (rough heuristic, not a hiring probability)", "", "Relevant existing resume lines:"]
+    lines = ["ROLE REVIEW NOTES — NOT A REWRITTEN RESUME", f"Role: {row['title']} at {row['company']}", f"Text overlap: {report['score']}% (rough heuristic, not a hiring probability)", "", "Existing resume text (unchanged):", resume["text"].strip(), "", "Relevant existing resume lines:"]
     lines += ["• " + line for line in [l.strip(" •*-\t") for l in resume["text"].splitlines() if l.strip() and any(t in l.lower() for t in report["matched"])][:12]]
     lines += ["", "Potential keywords to add only if supported by your actual experience:", ", ".join(report["missing"][:12])]
     path = INSTANCE / "tailored_draft.txt"
     path.write_text("\n".join(lines))
-    return send_file(path, as_attachment=True, download_name=f"{secure_filename(row['company'] or 'role')}-{secure_filename(row['title'] or 'resume')}-draft.txt")
+    return send_file(path, as_attachment=True, download_name=f"{secure_filename(row['company'] or 'role')}-{secure_filename(row['title'] or 'role')}-review-notes.txt")
 
 
 init_db()
