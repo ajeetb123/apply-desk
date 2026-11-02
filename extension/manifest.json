@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Apply Desk",
+  "version": "0.2.0",
+  "description": "Review a role and fill clearly identified application fields from your local profile.",
+  "minimum_chrome_version": "116",
+  "permissions": ["sidePanel", "activeTab", "scripting"],
+  "host_permissions": ["http://127.0.0.1:8787/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_title": "Open Apply Desk"},
+  "commands": {
+    "open-apply-desk": {
+      "suggested_key": {"default": "Ctrl+Shift+Y", "mac": "Command+Shift+Y"},
+      "description": "Open the Apply Desk side panel"
+    }
+  },
+  "side_panel": {"default_path": "sidepanel.html"}
+}
