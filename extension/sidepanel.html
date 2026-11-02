@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Apply Desk</title><link rel="stylesheet" href="sidepanel.css"></head>
+<body><header><a class="brand" href="#"><span class="icon">A</span><span>Apply Desk</span></a><span id="connection" class="status"><i></i> checking</span></header>
+<main>
+  <section class="intro"><p class="overline">JOB APPLICATION HELPER</p><h1>What should I do?</h1><p>Type a short command. I’ll read the current job page, compare it with your resume, or fill clearly labelled fields from your local profile.</p></section>
+  <section class="commands" aria-label="Quick commands"><button data-command="scan this job">Scan job</button><button data-command="tailor my resume">Tailor review</button><button data-command="fill my details">Fill fields</button></section>
+  <form id="command-form"><label for="command">Command</label><div class="input-row"><input id="command" name="command" placeholder="e.g. tailor this job" autocomplete="off"><button id="run" type="submit" aria-label="Run command">Run</button></div><small>Nothing is submitted. You review and submit every application yourself.</small></form>
+  <div id="message" class="message" role="status" aria-live="polite">Open a job posting, then scan it.</div>
+  <section id="result" hidden></section>
+  <section class="setup"><h2>Before you start</h2><ol><li>Start the local Apply Desk app and import your resume.</li><li>Open a job listing in this tab.</li><li>Use Scan or Tailor. Use Fill only on an application form.</li></ol><a href="http://127.0.0.1:8787/" target="_blank" rel="noreferrer">Open profile and resume settings ↗</a></section>
+  <footer><span>Local profile · no AI rewrite · no auto-submit</span><button id="refresh" type="button">Check connection</button></footer>
+</main><script type="module" src="sidepanel.js"></script></body></html>
