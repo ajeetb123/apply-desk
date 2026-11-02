@@ -1,4 +1,4 @@
-# Signal — Resume and application studio
+# Apply Desk — Resume and application studio
 
 A local-first resume and job tracker with a Chrome side panel. Import a resume, keep candidate details in a local SQLite profile, compare a job page with the resume, and fill a conservative set of clearly labelled application fields.
 
@@ -24,7 +24,7 @@ Open <http://127.0.0.1:8787>. The app binds to localhost only. Uploaded files an
 
 The overlap score is deliberately labeled a heuristic. It is not an ATS score, ranking from a recruiter, or interview probability. Keyword matching does not establish proficiency. The user must confirm each skill, eligibility rule, and answer against their actual records. The tool does not generate a polished rewritten resume or discover/rank live jobs yet.
 
-## Profile defaults
+## Profile data
 
 Contact and education details are saved in the ignored local database after you enter them in the profile form. They are not embedded in tracked source files. Use an email you expect to keep after graduation; keep a street address in the local profile only if an employer form requests it. Family members' birthplaces are not collected because they are unrelated to work authorization.
 
