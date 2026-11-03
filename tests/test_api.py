@@ -462,6 +462,28 @@ class ApplyDeskApiTests(unittest.TestCase):
         job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "description": self.POSTING}).json["saved_job_id"]
         self.assertIn(b"Honest odds as a freshman", self.client.get(f"/job/{job_id}").data)
 
+    def test_background_answers_and_current_job_from_resume(self):
+        ask = application.applying.standard_key
+        self.assertEqual(ask("Have you ever taken a polygraph examination?"), "polygraph")
+        self.assertEqual(ask("Are you willing to undergo a polygraph and obtain a clearance?"), "clearance_eligible")
+        self.assertEqual(ask("Are you currently employed?"), "currently_employed")
+        self.assertEqual(ask("Are you currently employed by Acme or its subsidiaries?"), "previously_employed")
+        self.assertEqual(ask("Are you currently employed by the U.S. Government?"), "government_employee")
+        self.assertEqual(ask("Do you have any other employment or outside business activities?"), "other_employment")
+        self.assertEqual(ask("Do you have any relatives employed by Acme?"), "relatives")
+        self.add_resume(self.JAKE.replace(r"\resumeSubheading{SWE Intern}{2025}", r"\resumeSubheading{SWE Intern}{Jan. 2026 -- Present}"))
+        self.client.post("/profile", data={"relatives": "None", "polygraph": "No"})
+        job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Northwind", "description": self.POSTING}).json["saved_job_id"]
+        answers = {a["key"]: a for a in self.client.get(f"/api/fill-plan?job_id={job_id}").json["answers"]}
+        self.assertEqual(answers["relatives"]["options"][:2], ["None", "No"])  # "None" in a text box, "No" in a Yes/No list
+        self.assertEqual(answers["polygraph"]["options"][0], "No")
+        self.assertEqual((answers["current_employer"]["answer"], answers["current_title"]["answer"]), ("Acme", "Software Engineering Intern"))  # from the tuned resume
+        self.assertEqual(answers["currently_employed"]["answer"], "Yes")
+        self.assertEqual(answers["previously_employed"]["answer"], "")  # Northwind isn't where they work
+        same = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme Corp", "description": self.POSTING}).json["saved_job_id"]
+        answers = {a["key"]: a for a in self.client.get(f"/api/fill-plan?job_id={same}").json["answers"]}
+        self.assertEqual(answers["previously_employed"]["answer"], "Yes")
+
     def test_application_copy_is_saved_downloaded_and_removed_with_role(self):
         self.add_resume(self.JAKE)
         job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "url": "https://boards.example.com/acme/jobs/4012345",

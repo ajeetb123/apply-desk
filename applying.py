@@ -28,6 +28,9 @@ STANDARD_QUESTIONS = [
      "pattern": r"authori[sz]ed to work|eligib\w* (to work|for employment)|right to work|legally (able|permitted|eligible) to work|work authori[sz]ation"},
     {"key": "needs_sponsorship", "label": "Will need visa sponsorship", "default": "",
      "pattern": r"sponsor"},
+    # Having taken one, not being willing to ("willing to undergo a polygraph" is left for the user).
+    {"key": "polygraph", "label": "Ever taken a polygraph", "default": "",
+     "pattern": r"(have you|had|taken|passed|completed|current|active|hold|possess)[^.]{0,40}polygraph|polygraph (status|type|level|completed|date|history)"},
     {"key": "clearance_eligible", "label": "Able to obtain a security clearance", "default": "",
      "pattern": r"\b(eligib\w*|able|willing)\b.{0,80}\b(obtain|get|apply for|be granted|receive|maintain)\b.{0,40}clearance|eligib\w* for .{0,30}clearance|clearance eligib"},
     {"key": "has_clearance", "label": "Hold a security clearance", "default": "",
@@ -41,7 +44,14 @@ STANDARD_QUESTIONS = [
     {"key": "heard_about", "label": "How you heard about roles", "default": "",
      "pattern": r"how did you (hear|learn|find)|hear about (us|this)|where did you (hear|find|learn)|referral source|^source$|candidate source"},
     {"key": "previously_employed", "label": "Previously worked for the employer", "default": "",
-     "pattern": r"(previously|ever|formerly) (worked|been employed|employed)|former employee|worked (for|at) (this|our|the) (organization|company)|current or former (employee|intern)"},
+     "pattern": r"(previously|ever|formerly) (worked|been employed|employed)|former employee|worked (for|at) (this|our|the) (organization|company)|current or former (employee|intern)|(currently|presently) (employed|working) (by|for|at|with)"},
+    {"key": "currently_employed", "label": "Currently employed", "default": "",
+     "pattern": r"^(are you )?(currently|presently) (employed|working)$|^(current )?employment status$"},
+    {"key": "current_employer", "label": "Current employer", "default": "",
+     "pattern": r"current (employer|company)( name)?|who is your (current )?employer|where do you (currently )?work"},
+    {"key": "current_title", "label": "Current job title", "default": "", "pattern": r"current (job )?title|current (position|role)( title)?$"},
+    {"key": "other_employment", "label": "Other or outside employment", "default": "",
+     "pattern": r"(other|outside|additional|secondary) (employment|jobs?|work|business)|second job|moonlight|conflicts? of interest"},
     {"key": "phone_type", "label": "Phone type", "default": "Mobile", "pattern": r"phone (device )?type|type of phone"},
     {"key": "country", "label": "Country", "default": "United States of America", "pattern": r"^country( or region|/region)?$|country of residence"},
     {"key": "country_code", "label": "Country phone code", "default": "United States of America (+1)", "pattern": r"country (phone )?code|phone country"},
@@ -146,6 +156,12 @@ def option_variants(key: str, answer: str) -> list[str]:
         return [answer, "Bachelor", "Bachelor's", "Undergraduate"]
     if key == "phone_type" and lower in {"mobile", "cell"}:
         return ["Mobile", "Cell", "Cellular", "Personal Cell"]
+    if key == "relatives" and lower in {"none", "no", "n/a", "na"}:
+        return ["None", "No", "N/A", "Not applicable"]
+    if key in {"polygraph", "other_employment"} and (no or lower in {"none", "n/a"}):
+        return ["No", "None", "I have not", "Never", "N/A", "Not applicable"]
+    if key == "currently_employed" and yes:
+        return ["Yes", "Employed", "Currently employed"]
     if key == "class_year":
         years = {"freshman": ["Freshman", "First Year", "First-year", "1st Year", "Year 1"], "sophomore": ["Sophomore", "Second Year", "Second-year", "2nd Year", "Year 2"],
                  "junior": ["Junior", "Third Year", "Third-year", "3rd Year", "Year 3"], "senior": ["Senior", "Fourth Year", "Fourth-year", "4th Year", "Year 4"]}
