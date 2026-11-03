@@ -2,7 +2,6 @@ import AppKit
 import Foundation
 import WebKit
 
-@main
 final class ApplyDeskMenuBar: NSObject, NSApplicationDelegate, WKUIDelegate, NSToolbarDelegate {
     private let dashboardURL = URL(string: "http://127.0.0.1:8787/")!
     private let apiURL = URL(string: "http://127.0.0.1:8787/api/evaluate")!
@@ -20,6 +19,7 @@ final class ApplyDeskMenuBar: NSObject, NSApplicationDelegate, WKUIDelegate, NST
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        NSLog("Apply Desk starting its workspace window")
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.title = "Apply Desk"
@@ -63,8 +63,11 @@ final class ApplyDeskMenuBar: NSObject, NSApplicationDelegate, WKUIDelegate, NST
             workspaceView = view
         }
         workspaceView?.load(URLRequest(url: url))
-        appWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        appWindow?.orderFrontRegardless()
+        appWindow?.makeKeyAndOrderFront(nil)
+        NSLog("Apply Desk window presented at %@", url.absoluteString)
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
