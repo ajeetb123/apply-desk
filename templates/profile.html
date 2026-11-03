@@ -1,0 +1,53 @@
+{% extends 'base.html' %}
+{% import '_ui.html' as ui %}
+{% block body %}
+{% set placeholders = {'name': 'First and last name', 'email': 'you@school.edu', 'phone': '(555) 010-0100', 'address': 'Street and number', 'city': 'City', 'state': 'TX', 'postal_code': '78701', 'school': 'University name', 'degree': 'B.S. Computer Science', 'graduation': 'May 2028', 'work_authorization': 'U.S. citizen', 'linkedin': 'linkedin.com/in/you', 'github': 'github.com/you', 'website': 'you.dev'} %}
+{% set wide = ('name', 'email', 'address', 'school', 'degree', 'website') %}
+<section class="page-head with-mark">
+  <span class="vault" data-reveal aria-hidden="true">{{ ui.orb() }}<span class="vault-lock">{{ ui.icon('lock') }}</span></span>
+  <div>
+    <p class="eyebrow" data-reveal>Only you</p>
+    <h1 data-reveal style="--i:1">Your details</h1>
+    <p class="lede" data-reveal style="--i:2">Apply Desk fills applications and scores roles with what you save here. It's stored on this Mac and never sent anywhere.</p>
+  </div>
+</section>
+
+<form class="profile-form" action="/profile" method="post" data-dirty-form>
+  <div class="profile-grid">
+    <div class="profile-main">
+      {% for title, note, fields in groups %}
+      <section class="panel" data-reveal style="--i: {{ loop.index + 2 }}">
+        <header class="panel-head"><div><h2>{{ title }}</h2><p class="sub">{{ note }}</p></div></header>
+        <div class="fields">
+          {% for key, label in fields %}<label class="{{ 'wide' if key in wide }}"><span>{{ label }}</span><input name="{{ key }}" value="{{ profile.get(key, '') }}" placeholder="{{ placeholders.get(key, '') }}" autocomplete="off" spellcheck="false" data-fill-source="{{ key }}"></label>{% endfor %}
+        </div>
+      </section>
+      {% endfor %}
+
+      <section class="panel" data-reveal style="--i:6">
+        <header class="panel-head"><div><h2>What you're looking for</h2><p class="sub">Shapes the fit score. Separate entries with commas.</p></div></header>
+        <div class="fields">
+          <label class="wide"><span>Target roles</span><input name="target_roles" value="{{ profile.get('target_roles', '') }}" placeholder="Software Engineering Intern, Backend Engineer Intern"></label>
+          <label class="wide"><span>Skills</span><input name="skills" value="{{ profile.get('skills', '') }}" placeholder="Python, C++, SQL, React" data-chips-source></label>
+          <div class="wide chips chips-live" data-chips aria-hidden="true"></div>
+          <label class="wide"><span>Career goals</span><input name="career_goals" value="{{ profile.get('career_goals', '') }}" placeholder="Backend systems, AI infrastructure"></label>
+          <label class="wide"><span>Search campaigns</span><input name="role_campaigns" value="{{ profile.get('role_campaigns', '') }}" placeholder="Wave 1, Wave 2, Defense, Seed-stage startups"></label>
+          <label class="wide tone"><span>Resume writing tone <b data-tone-label>Confident</b></span><input name="larp" type="range" min="1" max="4" value="{{ profile.get('larp', '2') }}" data-tone><small class="fine">Suggestions always stay true to your experience.</small></label>
+        </div>
+      </section>
+    </div>
+
+    <aside class="rail">
+      <section class="panel autofill" data-reveal style="--i:4">
+        <header class="panel-head"><div><p class="eyebrow">{{ ui.icon('bolt') }} Autofill</p><h2>What ⌃⌥F fills</h2></div></header>
+        <p class="sub">On an application open in Chrome, Apply Desk types these into empty, clearly labeled fields. You review and submit.</p>
+        <ul class="fill-list">
+          {% for key, label in autofill_fields if key != 'work_authorization' %}<li class="{{ 'is-set' if profile.get(key) }}" data-fill-for="{{ key }}"><i>{{ ui.icon('check') }}</i>{{ label }}</li>{% endfor %}
+        </ul>
+        <p class="fine">Never filled: sponsorship or work-authorization questions, demographics, or any screening answer.</p>
+      </section>
+    </aside>
+  </div>
+  <div class="savebar" data-savebar><span data-save-state>All changes saved</span><button class="button primary">{{ ui.icon('check') }}<span>Save details</span></button></div>
+</form>
+{% endblock %}

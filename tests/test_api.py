@@ -1,4 +1,5 @@
 import io
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +10,10 @@ import app as application
 class ApplyDeskApiTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        # Keep uploads and the database out of the real data folder.
+        application.INSTANCE = Path(self.temp.name)
         application.DB = Path(self.temp.name) / "test.sqlite3"
+        application.APP_TOKEN = ""
         application.init_db()
         application.app.config.update(TESTING=True)
         self.client = application.app.test_client()
@@ -171,7 +175,7 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(self.client.post("/job/999/campaign", data={}).status_code, 404)
 
     def test_upload_rejects_unsupported_extension(self):
-        response = self.client.post("/", data={"resume": (io.BytesIO(b"bad"), "resume.exe")}, content_type="multipart/form-data")
+        response = self.client.post("/", data={"resume": (io.BytesIO(b"bad"), "resume.exe")}, content_type="multipart/form-data", follow_redirects=True)
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Upload a PDF", response.data)
         self.assertFalse(self.client.get("/api/health").json["resume_loaded"])
@@ -255,6 +259,61 @@ class ApplyDeskApiTests(unittest.TestCase):
         import sqlite3
         with sqlite3.connect(application.DB) as conn:
             self.assertIn("cache in Go", conn.execute("SELECT text FROM resume ORDER BY id ASC LIMIT 1").fetchone()[0])
+
+    def test_app_token_is_required_when_configured(self):
+        application.APP_TOKEN = "secret-token"
+        self.assertEqual(self.client.get("/api/profile").status_code, 403)
+        self.assertEqual(self.client.get("/api/profile", headers={"X-Apply-Desk-Token": "wrong"}).status_code, 403)
+        self.assertEqual(self.client.get("/api/profile", headers={"X-Apply-Desk-Token": "secret-token"}).status_code, 200)
+        self.client.set_cookie("apply_desk_token", "secret-token", domain="localhost")
+        self.assertEqual(self.client.get("/").status_code, 200)
+
+    def test_pages_render_with_and_without_data(self):
+        for path in ("/", "/resume", "/profile"):
+            self.assertEqual(self.client.get(path).status_code, 200, path)
+        self.add_resume("EDUCATION\nState University\nEXPERIENCE\nLab Assistant\n• Built Python tools")
+        created = self.client.post("/api/evaluate", json={"title": "Backend Intern", "description": "Python backend internship building APIs and tools. " * 4})
+        for path in ("/", "/resume", "/profile", f"/job/{created.json['saved_job_id']}"):
+            self.assertEqual(self.client.get(path).status_code, 200, path)
+
+    def test_profile_saves_links_without_clearing_watch_path(self):
+        import sqlite3
+        with sqlite3.connect(application.DB) as conn:
+            conn.execute("UPDATE profile SET value='/tmp/resume.pdf' WHERE key='watch_path'")
+        self.client.post("/profile", data={"linkedin": "linkedin.com/in/example", "github": "github.com/example"})
+        saved = application.profile()
+        self.assertEqual(saved["watch_path"], "/tmp/resume.pdf")
+        self.assertEqual(self.client.get("/api/profile").json["linkedin"], "linkedin.com/in/example")
+
+    def test_tuning_reorders_only_existing_lines(self):
+        resume = ("Jordan Lee\nEXPERIENCE\nHelp Desk  Sep 2024 – Present\n• Resolved weekly tickets\n"
+                  "• Wrote a Python script with Flask and PostgreSQL\nTECHNICAL SKILLS\nLanguages: Java, Python, SQL")
+        tuned = application.tune_resume(resume, "Python Flask PostgreSQL backend internship. " * 4, "Backend Intern")
+        lines = tuned["text"].splitlines()
+        self.assertLess(lines.index("• Wrote a Python script with Flask and PostgreSQL"), lines.index("• Resolved weekly tickets"))
+        self.assertIn("Languages: Python, Java, SQL", lines)
+        source_words = sorted(re.findall(r"\w+", resume.lower()))
+        tuned_words = sorted(w for w in re.findall(r"\w+", tuned["text"].lower()))
+        self.assertEqual(source_words, tuned_words)
+        self.assertTrue(tuned["changes"])
+
+    def test_latex_tuning_keeps_jakes_resume_structure(self):
+        source = (r"\begin{document}\section{Experience}\resumeSubheading{Lab}{2024}{Assistant}{Austin}"
+                  "\n\\resumeItemListStart\n  \\resumeItem{Answered tickets}\n  \\resumeItem{Built \\textbf{Python} Flask APIs}\n\\resumeItemListEnd\n"
+                  r"\section{Technical Skills}\textbf{Languages}{: Java, Python}\end{document}")
+        tuned = application.tune_resume(source, "Python Flask API internship. " * 4)
+        self.assertEqual(tuned["extension"], "tex")
+        self.assertLess(tuned["text"].index("Flask APIs"), tuned["text"].index("Answered tickets"))
+        self.assertIn(r"\textbf{Languages}{: Python, Java}", tuned["text"])
+        self.assertEqual(len(tuned["text"]), len(source) + 0)
+
+    def test_tuned_resume_download(self):
+        self.add_resume("EXPERIENCE\nLab\n• Answered tickets\n• Built Python APIs")
+        created = self.client.post("/api/evaluate", json={"title": "Intern", "company": "Example", "description": "Python API internship building services. " * 4})
+        response = self.client.get(f"/job/{created.json['saved_job_id']}/tuned")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment", response.headers["Content-Disposition"])
+        self.assertLess(response.data.index(b"Built Python APIs"), response.data.index(b"Answered tickets"))
 
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})

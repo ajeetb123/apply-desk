@@ -1,17 +1,19 @@
 #!/bin/zsh
+# Opens Apply Desk, building and installing it first when the source is newer.
 set -e
 ROOT="${0:A:h}"
-URL="http://127.0.0.1:8787/"
-mkdir -p "$ROOT/instance"
-if ! /usr/bin/curl -fsS "$URL" >/dev/null 2>&1; then
-  nohup "$ROOT/.venv/bin/python" "$ROOT/app.py" >> "$ROOT/instance/app.log" 2>&1 &
-  echo $! > "$ROOT/instance/app.pid"
-  for attempt in {1..40}; do
-    if /usr/bin/curl -fsS "$URL" >/dev/null 2>&1; then break; fi
-    /bin/sleep 0.25
+APP=""
+for candidate in "/Applications/Apply Desk.app" "$HOME/Applications/Apply Desk.app"; do
+  [[ -d "$candidate" ]] && APP="$candidate" && break
+done
+needs_build=0
+[[ -z "$APP" ]] && needs_build=1
+if (( ! needs_build )); then
+  for source in "$ROOT"/app.py "$ROOT"/macos/**/*.swift "$ROOT"/templates/* "$ROOT"/static/* "$ROOT/Build Apply Desk App.command"; do
+    if [[ "$source" -nt "$APP/Contents/MacOS/ApplyDesk" ]]; then needs_build=1; break; fi
   done
 fi
-if [[ ! -d "$ROOT/Apply Desk.app" || "$ROOT/macos/ApplyDeskMenuBar.swift" -nt "$ROOT/Apply Desk.app/Contents/MacOS/ApplyDesk" ]]; then
+if (( needs_build )); then
   "$ROOT/Build Apply Desk App.command"
 fi
-/usr/bin/open -a "$ROOT/Apply Desk.app"
+/usr/bin/open -b com.ajeet.applydesk

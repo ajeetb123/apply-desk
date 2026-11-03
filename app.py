@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import atexit
 import hashlib
+import hmac
+import ipaddress
 import os
 import re
-import ipaddress
 import sqlite3
 import threading
 import time
@@ -12,17 +13,32 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from flask import Flask, flash, redirect, render_template, request, send_file, url_for
+from flask import Flask, Response, flash, redirect, render_template, request, send_file, url_for
+from markupsafe import Markup, escape
 from werkzeug.utils import secure_filename
 
 ROOT = Path(__file__).resolve().parent
-INSTANCE = ROOT / "instance"
-INSTANCE.mkdir(exist_ok=True)
+# The Mac app keeps data in ~/Library/Application Support/Apply Desk so the
+# bundled service stays read-only; running app.py from a checkout uses ./instance.
+INSTANCE = Path(os.environ.get("APPLY_DESK_DATA") or ROOT / "instance").expanduser()
+INSTANCE.mkdir(parents=True, exist_ok=True)
 DB = INSTANCE / "resume_tailor.sqlite3"
+# The Mac app passes a private token; when set, every request must carry it so
+# other local software and web pages can't read or change the profile.
+APP_TOKEN = os.environ.get("APPLY_DESK_TOKEN", "")
 ALLOWED = {"pdf", "docx", "txt", "tex"}
 app = Flask(__name__)
-app.secret_key = "local-resume-tailor-session"
+app.secret_key = APP_TOKEN or "local-resume-tailor-session"
 app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
+
+CONTACT_FIELDS = [("name", "Full name"), ("email", "Email"), ("phone", "Mobile phone"), ("address", "Street address"),
+                  ("city", "City"), ("state", "State"), ("postal_code", "ZIP code")]
+EDUCATION_FIELDS = [("school", "School"), ("degree", "Degree"), ("graduation", "Expected graduation"),
+                    ("work_authorization", "Work authorization")]
+LINK_FIELDS = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("website", "Portfolio or website")]
+# Values the Mac app may type into clearly labeled, empty application fields.
+AUTOFILL_FIELDS = [key for key, _ in CONTACT_FIELDS + EDUCATION_FIELDS + LINK_FIELDS]
+PROFILE_FIELDS = AUTOFILL_FIELDS + ["target_roles", "skills", "career_goals", "role_campaigns", "larp"]
 
 
 @app.before_request
@@ -35,6 +51,10 @@ def restrict_to_loopback():
     host = request.host.split(":", 1)[0].strip("[]").lower()
     if not remote_is_local or host not in {"127.0.0.1", "localhost"}:
         return "Local Apply Desk accepts requests from this computer only.", 421
+    if APP_TOKEN:
+        supplied = request.headers.get("X-Apply-Desk-Token") or request.cookies.get("apply_desk_token") or ""
+        if not hmac.compare_digest(supplied, APP_TOKEN):
+            return "Open Apply Desk from the Mac app.", 403
 
 
 def db():
@@ -57,6 +77,7 @@ def init_db():
             "name": "", "email": "", "school": "", "degree": "",
             "graduation": "", "phone": "", "city": "", "state": "",
             "postal_code": "", "address": "", "work_authorization": "",
+            "linkedin": "", "github": "", "website": "",
             "watch_path": "", "watch_hash": "",
             "target_roles": "Software Engineering Intern, Backend Engineer Intern",
             "skills": "",
@@ -145,7 +166,14 @@ def extract_text(path: Path, ext: str) -> str:
     if ext == "docx":
         from docx import Document
         doc = Document(path)
-        return "\n".join(p.text for p in doc.paragraphs)
+        lines = []
+        for paragraph in doc.paragraphs:
+            # Word stores bullets as list formatting, not text; keep a marker
+            # so resume tuning can tell bullets from entry headings.
+            style = (paragraph.style.name or "").lower() if paragraph.style is not None else ""
+            numbered = paragraph._p.pPr is not None and paragraph._p.pPr.numPr is not None
+            lines.append(("• " + paragraph.text) if paragraph.text.strip() and (style.startswith("list") or numbered) else paragraph.text)
+        return "\n".join(lines)
     return path.read_text(errors="replace")
 
 
@@ -162,12 +190,344 @@ def keywords(text: str) -> list[str]:
     return [k for k, _ in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))[:40]]
 
 
+# ---------------------------------------------------------------------------
+# Resume structure. Tuning only reorders the user's own lines; it never adds
+# words, so every claim in a tuned resume already appears in the source.
+
+BULLET = re.compile(r"^\s*(?:[•●▪◦‣∙·*–—-]|\d{1,2}[.)])\s+")
+KNOWN_HEADINGS = {
+    "education", "experience", "work experience", "professional experience", "relevant experience", "employment",
+    "projects", "personal projects", "technical projects", "academic projects", "selected projects",
+    "skills", "technical skills", "skills and interests", "skills and tools", "languages", "interests",
+    "leadership", "leadership experience", "activities", "leadership and activities", "involvement",
+    "campus involvement", "awards", "honors", "honors and awards", "awards and honors", "certifications",
+    "publications", "research", "research experience", "relevant coursework", "coursework", "summary",
+    "objective", "volunteer", "volunteering", "volunteer experience", "extracurriculars", "extracurricular activities",
+}
+LATEX_COMMANDS = re.compile(r"\\(section|resumeSubheading|resumeSubSubheading|resumeProjectHeading|resumeSubItem|resumeItem|textbf)\b")
+LATEX_ARGS = {"section": 1, "resumeSubheading": 4, "resumeSubSubheading": 2, "resumeProjectHeading": 2, "resumeItem": 1, "resumeSubItem": 1}
+
+
+def is_latex(text: str) -> bool:
+    return "\\resumeItem" in text or "\\documentclass" in text or "\\section{" in text
+
+
+def heading_kind(title: str) -> str:
+    lower = title.lower()
+    if "skill" in lower or lower in {"languages", "interests"}:
+        return "skills"
+    if "project" in lower:
+        return "projects"
+    if "education" in lower or "coursework" in lower:
+        return "education"
+    if lower in {"summary", "objective"}:
+        return "summary"
+    return "experience"
+
+
+def as_heading(line: str) -> str | None:
+    text = line.strip().rstrip(":").strip()
+    if not text or len(text) > 42 or BULLET.match(line) or re.search(r"\d", text):
+        return None
+    normalized = re.sub(r"\s+", " ", text.lower().replace("&", "and"))
+    return text if normalized in KNOWN_HEADINGS else None
+
+
+def read_groups(source: str, index: int, count: int):
+    """Read `count` consecutive {…} groups from a LaTeX string."""
+    groups = []
+    for _ in range(count):
+        while index < len(source) and source[index].isspace():
+            index += 1
+        if index >= len(source) or source[index] != "{":
+            return None, index
+        depth, start = 0, index
+        while index < len(source):
+            char = source[index]
+            if char == "\\":
+                index += 2
+                continue
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            index += 1
+        if depth:
+            return None, index
+        groups.append(source[start + 1:index])
+        index += 1
+    return groups, index
+
+
+def latex_plain(value: str) -> str:
+    value = re.sub(r"(?<!\\)%.*", "", value)
+    value = re.sub(r"\\(?:vspace|hspace)\*?\{[^{}]*\}", " ", value)
+    value = re.sub(r"\\(?:begin|end)\{[^{}]*\}(?:\{[^{}]*\})?", " ", value)
+    value = re.sub(r"\\href\{[^{}]*\}", "", value)
+    value = value.replace("\\\\", " ").replace("$|$", "|").replace("--", "–").replace("~", " ")
+    value = re.sub(r"(?<!\\)\$", "", value)
+    for escaped in "&%$#_":
+        value = value.replace("\\" + escaped, escaped)
+    value = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?", " ", value)
+    value = value.replace("{", "").replace("}", "")
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def latex_outline(source: str):
+    """Turn a Jake's-style LaTeX resume into header lines and sections."""
+    body = source.split("\\begin{document}", 1)[-1].split("\\end{document}", 1)[0]
+    body = re.sub(r"(?<!\\)%.*", "", body)
+    first = body.find("\\section")
+    header = body[:first] if first >= 0 else ""
+    preamble = [line for line in (latex_plain(part) for part in header.split("\\\\")) if line]
+    sections, current, pos = [], None, max(first, 0)
+    while True:
+        match = LATEX_COMMANDS.search(body, pos)
+        if not match:
+            break
+        command = match.group(1)
+        if command == "textbf":
+            groups, end = read_groups(body, match.end(), 2)
+            if not groups or not groups[1].lstrip().startswith(":"):
+                pos = match.end()
+                continue
+            line = f"{latex_plain(groups[0])}: {latex_plain(groups[1].lstrip()[1:])}"
+            if current is not None:
+                current["entries"].append({"header": [line], "bullets": []})
+            pos = end
+            continue
+        groups, end = read_groups(body, match.end(), LATEX_ARGS[command])
+        if groups is None:
+            pos = match.end()
+            continue
+        plain = [latex_plain(group) for group in groups]
+        if command == "section":
+            current = {"title": plain[0], "kind": heading_kind(plain[0]), "entries": []}
+            sections.append(current)
+        elif current is not None and command in {"resumeItem", "resumeSubItem"}:
+            if not current["entries"]:
+                current["entries"].append({"header": [], "bullets": []})
+            current["entries"][-1]["bullets"].append(plain[0])
+        elif current is not None:
+            pairs = [" · ".join(part for part in plain[i:i + 2] if part) for i in range(0, len(plain), 2)]
+            current["entries"].append({"header": [pair for pair in pairs if pair], "bullets": []})
+        pos = end
+    return preamble, sections
+
+
+def text_outline(text: str):
+    """Split plain resume text into header lines and section → entry → bullets."""
+    preamble, sections, current = [], [], None
+    last_length = 0
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        title = as_heading(line)
+        if title:
+            current = {"title": title, "kind": heading_kind(title), "entries": []}
+            sections.append(current)
+            continue
+        if current is None:
+            preamble.append(line)
+            continue
+        entries = current["entries"]
+        bullet = BULLET.match(raw)
+        if bullet:
+            if not entries:
+                entries.append({"header": [], "bullets": []})
+            entries[-1]["bullets"].append(BULLET.sub("", line, count=1).strip())
+            last_length = len(line)
+        elif entries and entries[-1]["bullets"] and (line[:1].islower() or (
+                last_length >= 72 and "|" not in line and not re.search(r"\b(?:19|20)\d{2}\b|present\b", line, re.IGNORECASE))):
+            # A wrapped bullet from PDF extraction continues on the next line.
+            entries[-1]["bullets"][-1] += " " + line
+            last_length = len(line)
+        else:
+            if not entries or entries[-1]["bullets"]:
+                entries.append({"header": [], "bullets": []})
+            entries[-1]["header"].append(line)
+    return preamble, sections
+
+
+def resume_outline(text: str):
+    return latex_outline(text) if is_latex(text) else text_outline(text)
+
+
+def outline_text(preamble, sections) -> str:
+    parts = ["\n".join(preamble)] if preamble else []
+    for section in sections:
+        lines = [section["title"].upper()]
+        for entry in section["entries"]:
+            lines += entry["header"] + ["• " + bullet for bullet in entry["bullets"]]
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def resume_plain(text: str) -> str:
+    """Resume text for matching; LaTeX markup would otherwise read as skills."""
+    return outline_text(*latex_outline(text)) if is_latex(text) else text
+
+
+def term_hits(text: str, terms) -> list[str]:
+    lower = text.lower()
+    return [term for term in terms if re.search(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", lower)]
+
+
+# Posting boilerplate that says nothing about a candidate's evidence.
+TUNING_NOISE = set("intern interns students student graduating graduate candidates candidate role roles company join help new who looking opportunity".split())
+
+
+def tuning_terms(description: str, title: str = "") -> list[str]:
+    terms = [term for term in keywords(f"{title} {description}") if term not in TUNING_NOISE]
+    skills = [x.strip().lower() for x in re.split(r"[,;\n]", profile().get("skills", "")) if x.strip()]
+    body = f"{title} {description}".lower()
+    return list(dict.fromkeys(terms + [skill for skill in skills if skill in body]))
+
+
+def reorder_list_items(items: str, terms) -> tuple[str, list[str]]:
+    parts = [part.strip() for part in items.split(",") if part.strip()]
+    if len(parts) < 2:
+        return items, []
+    lead = [part for part in parts if term_hits(part, terms)]
+    if not lead or parts[:len(lead)] == lead:
+        return items, []
+    return ", ".join(lead + [part for part in parts if part not in lead]), lead
+
+
+def relevance_sort(lines, terms):
+    """Stable sort by matched job terms; returns new order and whether it moved."""
+    scored = sorted(enumerate(lines), key=lambda pair: -len(term_hits(pair[1], terms)))
+    order = [line for _, line in scored]
+    return order, order != list(lines)
+
+
+def entry_label(entry) -> str:
+    first = entry["header"][0] if entry["header"] else ""
+    return re.split(r"\s{2,}| \| | · |\s+(?:[A-Z][a-z]{2}\.? )?(?:19|20)\d{2}\b", first)[0].strip()[:60]
+
+
+def section_name(section) -> str:
+    return section["title"].title() if section["title"].isupper() else section["title"]
+
+
+def tune_text_resume(text: str, terms):
+    preamble, sections = text_outline(text)
+    changes = []
+    for section in sections:
+        if section["kind"] in {"education", "summary"}:
+            continue
+        if section["kind"] == "skills":
+            for entry in section["entries"]:
+                for key in ("header", "bullets"):
+                    updated = []
+                    for line in entry[key]:
+                        label, colon, items = line.partition(":")
+                        new_items, lead = reorder_list_items(items if colon else line, terms)
+                        if lead:
+                            changes.append(f"{section_name(section)}: led {label.strip() if colon else 'the list'} with {', '.join(lead[:4])}.")
+                        updated.append(f"{label}: {new_items}" if colon else new_items)
+                    entry[key] = updated
+            continue
+        for entry in section["entries"]:
+            entry["bullets"], moved = relevance_sort(entry["bullets"], terms)
+            if moved:
+                lead = term_hits(entry["bullets"][0], terms)[:3]
+                changes.append(f"{entry_label(entry) or section_name(section)}: opened with the bullet on {', '.join(lead)}.")
+        if section["kind"] == "projects" and len(section["entries"]) > 1:
+            ranked = sorted(section["entries"], key=lambda entry: -sum(len(term_hits(line, terms)) for line in entry["header"] + entry["bullets"]))
+            if ranked != section["entries"]:
+                section["entries"] = ranked
+                changes.append(f"{section_name(section)}: moved {entry_label(ranked[0]) or 'the most relevant project'} to the top.")
+    return outline_text(preamble, sections), changes
+
+
+def tune_latex_resume(source: str, terms):
+    changes = []
+
+    def reorder_block(match):
+        body = match.group(2)
+        spans, pos = [], 0
+        while True:
+            item = re.compile(r"\\resume(?:Sub)?Item\b").search(body, pos)
+            if not item:
+                break
+            groups, end = read_groups(body, item.end(), 1)
+            if groups is None:
+                return match.group(0)
+            spans.append((item.start(), end))
+            pos = end
+        gaps = [body[spans[i][1]:spans[i + 1][0]] for i in range(len(spans) - 1)]
+        if len(spans) < 2 or any(gap.strip() for gap in gaps):
+            return match.group(0)
+        items = [body[start:end] for start, end in spans]
+        ordered, moved = relevance_sort(items, terms)
+        if not moved:
+            return match.group(0)
+        before = source[:match.start()]
+        heading = max(before.rfind("\\resumeSubheading"), before.rfind("\\resumeProjectHeading"))
+        label = ""
+        if heading >= 0:
+            groups, _ = read_groups(before, before.index("{", heading), 1)
+            label = latex_plain(groups[0]).split("|")[0].strip() if groups else ""
+        lead = term_hits(latex_plain(ordered[0]), terms)[:3]
+        changes.append(f"{label or 'Bullet list'}: opened with the bullet on {', '.join(lead)}.")
+        rebuilt = body[:spans[0][0]] + "".join(ordered[i] + (gaps[i] if i < len(gaps) else "") for i in range(len(ordered))) + body[spans[-1][1]:]
+        return match.group(1) + rebuilt + match.group(3)
+
+    def reorder_skills(match):
+        new_items, lead = reorder_list_items(match.group(2), terms)
+        if not lead:
+            return match.group(0)
+        changes.append(f"Skills: led {latex_plain(match.group(1)) or 'the list'} with {', '.join(latex_plain(x) for x in lead[:4])}.")
+        return "\\textbf{" + match.group(1) + "}{: " + new_items + "}"
+
+    tuned = re.sub(r"(\\resumeItemListStart)(.*?)(\\resumeItemListEnd)", reorder_block, source, flags=re.S)
+    tuned = re.sub(r"\\textbf\{([^{}]*)\}\{:\s*([^{}]*)\}", reorder_skills, tuned)
+    return tuned, changes
+
+
+def tune_resume(text: str, description: str, title: str = ""):
+    """Reorder the user's own resume so evidence relevant to this role leads."""
+    terms = tuning_terms(description, title)
+    latex = is_latex(text)
+    tuned, changes = tune_latex_resume(text, terms) if latex else tune_text_resume(text, terms)
+    preamble, sections = resume_outline(tuned)
+    plain = outline_text(preamble, sections)
+    present = term_hits(plain, terms)
+    for section in sections:
+        for entry in section["entries"]:
+            entry["bullets"] = [{"text": bullet, "hits": len(term_hits(bullet, present))} for bullet in entry["bullets"]]
+    return {"text": tuned, "extension": "tex" if latex else "txt", "preamble": preamble, "sections": sections,
+            "changes": changes, "terms": present}
+
+
+def highlight(text: str, terms) -> Markup:
+    """Escape resume text and mark job terms that it already contains."""
+    safe = str(escape(text))
+    if not terms:
+        return Markup(safe)
+    pattern = re.compile(r"(?<![a-z0-9&#])(" + "|".join(re.escape(str(escape(t))) for t in sorted(terms, key=len, reverse=True)) + r")(?![a-z0-9])", re.IGNORECASE)
+    return Markup(pattern.sub(r"<mark>\1</mark>", safe))
+
+
+def tier(score) -> str:
+    score = int(score or 0)
+    return "high" if score >= 60 else "mid" if score >= 40 else "low"
+
+
+app.jinja_env.filters["highlight"] = highlight
+app.jinja_env.filters["tier"] = tier
+
+
 def analyze(description: str):
     resume = resume_row()
     if not resume:
         return {"score": 0, "matched": [], "missing": [], "terms": []}
     terms = keywords(description)
-    rtext = resume["text"].lower()
+    rtext = resume_plain(resume["text"]).lower()
     matched = [term for term in terms if term in rtext]
     missing = [term for term in terms if term not in rtext]
     score = round(100 * len(matched) / max(1, len(terms)))
@@ -181,9 +541,8 @@ def match_role(description: str, title: str = "", wave: str = "", sector: str = 
     if not resume:
         return {"score": 0, "status": "Add a resume", "eligibility": "unknown", "breakdown": {"skills": 0, "role": 0, "goals": 0, "campaign": 0, "graduation": 0}, "matched_skills": [], "reasons": ["Add a resume to compare role requirements with your experience."]}
     body = f"{title} {description}".lower()
-    resume_text = resume["text"].lower()
     explicit_skills = [x.strip().lower() for x in re.split(r"[,;\n]", p.get("skills", "")) if x.strip()]
-    inferred_skills = keywords(resume["text"])
+    inferred_skills = keywords(resume_plain(resume["text"]))
     candidate_skills = list(dict.fromkeys(explicit_skills + inferred_skills))
     matched_skills = [skill for skill in candidate_skills if skill in body]
     skill_score = round(100 * len(matched_skills) / max(1, min(8, len(candidate_skills)))) if candidate_skills else 0
@@ -261,31 +620,61 @@ def safe_http_url(value: str) -> str:
     return ""
 
 
+def campaign_options(p=None):
+    return [x.strip() for x in re.split(r"[,;\n]", (p or profile()).get("role_campaigns", "")) if x.strip()]
+
+
+def scored_jobs():
+    with db() as conn:
+        jobs = [dict(r) for r in conn.execute("SELECT * FROM jobs ORDER BY id DESC")]
+    for item in jobs:
+        item["match"] = match_role(item["description"], item["title"], item.get("wave", ""), item.get("sector", ""), item.get("funding_stage", ""))
+        item["score"] = item["match"]["score"]
+    jobs.sort(key=lambda item: (item["score"], item["saved"]), reverse=True)
+    return jobs
+
+
+@app.context_processor
+def navigation_counts():
+    with db() as conn:
+        roles = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        has_resume = conn.execute("SELECT COUNT(*) FROM resume").fetchone()[0] > 0
+    return {"nav": {"roles": roles, "resume": has_resume}}
+
+
+def save_resume_upload():
+    """Store an uploaded resume version; every outcome returns to the resume page."""
+    file = request.files.get("resume")
+    if not file or not file.filename:
+        flash("Choose a resume file to import.", "error")
+        return redirect(url_for("resume_page"))
+    filename = secure_filename(file.filename)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in ALLOWED:
+        flash("Upload a PDF, DOCX, TXT, or LaTeX resume.", "error")
+        return redirect(url_for("resume_page"))
+    path = INSTANCE / ("resume_upload." + ext)
+    file.save(path)
+    try:
+        text = extract_text(path, ext).strip()
+    except Exception:
+        flash("That file could not be read. Try a valid text-based PDF, DOCX, TXT, or LaTeX file.", "error")
+        return redirect(url_for("resume_page"))
+    if not text:
+        flash("I could not read text from this file. Try a text-based PDF or DOCX.", "error")
+        return redirect(url_for("resume_page"))
+    with db() as conn:
+        conn.execute("INSERT INTO resume(filename,text,uploaded) VALUES(?,?,?)", (filename, text, datetime.now().isoformat(timespec="minutes")))
+    log_activity("Resume imported", f"Imported {filename}")
+    flash("Resume imported. It stays on this Mac.", "success")
+    return redirect(url_for("resume_page"))
+
+
 @app.route("/", methods=["GET", "POST"])
 def home():
     if request.method == "POST":
-        file = request.files.get("resume")
-        if file and file.filename:
-            filename = secure_filename(file.filename)
-            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-            if ext not in ALLOWED:
-                flash("Upload a PDF, DOCX, TXT, or LaTeX resume.", "error")
-            else:
-                path = INSTANCE / ("resume_upload." + ext)
-                file.save(path)
-                try:
-                    text = extract_text(path, ext).strip()
-                except Exception:
-                    flash("That file could not be read. Try a valid text-based PDF, DOCX, TXT, or LaTeX file.", "error")
-                    return redirect(url_for("home"))
-                if not text:
-                    flash("I could not read text from this file. Try a text-based PDF or DOCX.", "error")
-                else:
-                    with db() as conn:
-                        conn.execute("INSERT INTO resume(filename,text,uploaded) VALUES(?,?,?)", (filename, text, datetime.now().isoformat(timespec="minutes")))
-                    log_activity("Resume imported", f"Imported {filename}")
-                    flash("Resume imported. It is stored locally on this computer.", "success")
-                    return redirect(url_for("home"))
+        if "resume" in request.files:
+            return save_resume_upload()
         company, title = request.form.get("company", "").strip(), request.form.get("title", "").strip()
         description = request.form.get("description", "").strip()
         if description:
@@ -297,34 +686,60 @@ def home():
                 job_id = cursor.lastrowid
             log_activity("Role saved", f"Added {title or 'role'} at {company or 'company not set'}")
             return redirect(url_for("job", job_id=job_id))
-    current = resume_row()
+    p = profile()
+    jobs = scored_jobs()
     with db() as conn:
-        jobs = [dict(r) for r in conn.execute("SELECT * FROM jobs ORDER BY id DESC")]
         activity = [dict(r) for r in conn.execute("SELECT * FROM activity ORDER BY id DESC LIMIT 8")]
-    for item in jobs:
-        item["match"] = match_role(item["description"], item["title"], item.get("wave", ""), item.get("sector", ""), item.get("funding_stage", ""))
-        item["score"] = item["match"]["score"]
-    jobs.sort(key=lambda item: (item["score"], item["saved"]), reverse=True)
-    return render_template("index.html", profile=profile(), resume=current, jobs=jobs, activity=activity,
-                           campaign_options=[x.strip() for x in re.split(r"[,;\n]", profile().get("role_campaigns", "")) if x.strip()])
+    resume = resume_row()
+    stats = {"count": len(jobs), "strong": sum(1 for j in jobs if j["score"] >= 60),
+             "average": round(sum(j["score"] for j in jobs) / len(jobs)) if jobs else 0}
+    setup = [("Add your resume", bool(resume), "/resume"),
+             ("Fill in your details", bool(p.get("name") and p.get("email")), "/profile"),
+             ("Open a job listing in Chrome", bool(jobs), "")]
+    constellation = [{"id": j["id"], "title": j["title"] or "Untitled role", "company": j["company"] or "", "score": j["score"]} for j in jobs[:24]]
+    return render_template("index.html", page="today", title="Today", profile=p, resume=resume, jobs=jobs, activity=activity,
+                           stats=stats, setup=setup, constellation=constellation, campaign_options=campaign_options(p),
+                           first_name=(p.get("name", "").split() or [""])[0])
 
 
-@app.route("/profile", methods=["POST"])
-def save_profile():
-    fields = ["name", "email", "school", "degree", "graduation", "phone", "city", "state", "postal_code", "address", "work_authorization", "target_roles", "skills", "career_goals", "role_campaigns", "larp"]
-    old_profile = profile()
-    watch_path = request.form.get("watch_path", "").strip()
+@app.route("/resume", methods=["GET", "POST"])
+def resume_page():
+    if request.method == "POST":
+        return save_resume_upload()
+    resume = resume_row()
     with db() as conn:
-        for field in fields:
+        versions = [dict(r) for r in conn.execute("SELECT id,filename,uploaded,length(text) AS size FROM resume ORDER BY id DESC LIMIT 6")]
+    outline = None
+    if resume:
+        preamble, sections = resume_outline(resume["text"])
+        outline = {"preamble": preamble, "sections": sections,
+                   "words": len(re.findall(r"\w+", outline_text(preamble, sections))),
+                   "bullets": sum(len(e["bullets"]) for s in sections for e in s["entries"])}
+    return render_template("resume.html", page="resume", title="Resume", resume=resume, outline=outline, versions=versions, profile=profile())
+
+
+@app.route("/profile", methods=["GET", "POST"])
+def profile_page():
+    if request.method == "GET":
+        return render_template("profile.html", page="profile", title="Profile", profile=profile(),
+                               groups=[("Contact", "Used to fill application forms.", CONTACT_FIELDS),
+                                       ("Education", "Checked against graduation windows.", EDUCATION_FIELDS),
+                                       ("Links", "Filled into LinkedIn, GitHub, and portfolio fields.", LINK_FIELDS)],
+                               autofill_fields=CONTACT_FIELDS + EDUCATION_FIELDS + LINK_FIELDS)
+    old_profile = profile()
+    with db() as conn:
+        for field in PROFILE_FIELDS:
             if field in request.form:
                 value = request.form.get(field, "").strip()[:2000]
                 conn.execute("INSERT INTO profile(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (field, value))
-        conn.execute("INSERT INTO profile(key,value) VALUES('watch_path',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (watch_path,))
-        if watch_path != old_profile.get("watch_path", ""):
-            conn.execute("INSERT INTO profile(key,value) VALUES('watch_hash','') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        if "watch_path" in request.form:
+            watch_path = request.form.get("watch_path", "").strip()
+            conn.execute("INSERT INTO profile(key,value) VALUES('watch_path',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (watch_path,))
+            if watch_path != old_profile.get("watch_path", ""):
+                conn.execute("INSERT INTO profile(key,value) VALUES('watch_hash','') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
     log_activity("Profile updated", "Updated application details or resume watch settings")
-    flash("Profile saved locally.", "success")
-    return redirect(url_for("home"))
+    flash("Saved on this Mac.", "success")
+    return redirect(url_for("resume_page") if request.form.get("next") == "resume" else url_for("profile_page"))
 
 
 @app.route("/memory/add", methods=["POST"])
@@ -332,7 +747,7 @@ def add_memory():
     task = request.form.get("task", "").strip()
     if task:
         log_activity("Task noted", task)
-        flash("Added to local memory.", "success")
+        flash("Note saved.", "success")
     return redirect(url_for("home"))
 
 
@@ -346,19 +761,14 @@ def job(job_id):
     report = analyze(item["description"])
     match = match_role(item["description"], item.get("title", ""), item.get("wave", ""), item.get("sector", ""), item.get("funding_stage", ""))
     resume = resume_row()
-    relevant = []
-    if resume:
-        for line in resume["text"].splitlines():
-            clean = line.strip(" •*-\t")
-            if clean and any(term in clean.lower() for term in report["matched"]):
-                relevant.append(clean)
+    tuned = tune_resume(resume["text"], item["description"], item.get("title", "")) if resume else None
     voice = "Direct" if report["score"] < 35 else "Confident" if report["score"] < 70 else "Assertive"
     voice_note = {"Direct": "The current resume has limited direct keyword evidence for this posting. Keep wording plain and claims tightly scoped.",
                   "Confident": "Lead with the strongest relevant work already on the resume; use clear action and outcome language where the source supports it.",
                   "Assertive": "Several posting terms already appear in the resume. Put those proven skills and outcomes first, without inflating scope or metrics."}[voice]
     p = profile()
-    return render_template("job.html", job=item, report=report, match=match, resume=resume, profile=p, relevant=relevant[:12], voice=voice, voice_note=voice_note,
-                           campaign_options=[x.strip() for x in re.split(r"[,;\n]", p.get("role_campaigns", "")) if x.strip()])
+    return render_template("job.html", page="job", title=item["title"] or "Role", job=item, report=report, match=match, resume=resume,
+                           tuned=tuned, profile=p, voice=voice, voice_note=voice_note, campaign_options=campaign_options(p))
 
 
 @app.route("/job/<int:job_id>/delete", methods=["POST"])
@@ -379,24 +789,22 @@ def update_job_campaign(job_id):
     if not updated:
         return "Job not found", 404
     log_activity("Role campaign updated", "Updated a role's campaign, sector, or funding notes")
-    flash("Role campaign details saved.", "success")
+    flash("Role tags saved.", "success")
     return redirect(url_for("job", job_id=job_id))
 
 
 @app.get("/api/health")
 def api_health():
     current = resume_row()
-    return {"ok": True, "resume_loaded": bool(current), "resume_filename": current["filename"] if current else None}
+    # "protected" tells the Mac app this service is its own, not an older copy.
+    return {"ok": True, "protected": bool(APP_TOKEN), "resume_loaded": bool(current), "resume_filename": current["filename"] if current else None}
 
 
 @app.get("/api/profile")
 def api_profile():
     # This endpoint is reachable only through the loopback app.
     p = profile()
-    return {key: p.get(key, "") for key in (
-        "name", "email", "phone", "city", "state", "postal_code", "address",
-        "school", "degree", "graduation", "work_authorization"
-    )}
+    return {key: p.get(key, "") for key in AUTOFILL_FIELDS}
 
 
 @app.post("/api/evaluate")
@@ -409,7 +817,7 @@ def api_evaluate():
     resume = resume_row()
     relevant = []
     if resume:
-        for line in resume["text"].splitlines():
+        for line in resume_plain(resume["text"]).splitlines():
             clean = line.strip(" •*-\t")
             if clean and any(term in clean.lower() for term in report["matched"]):
                 relevant.append(clean)
@@ -459,6 +867,20 @@ def api_rank_jobs():
     return {"jobs": [{key: item.get(key, "") for key in ("id", "company", "title", "url", "saved", "score", "fit_status", "eligibility")} for item in items[:limit]], "count": len(items)}
 
 
+@app.route("/job/<int:job_id>/tuned")
+def download_tuned_resume(job_id):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    resume = resume_row()
+    if not row or not resume:
+        return "Job or resume not found", 404
+    tuned = tune_resume(resume["text"], row["description"], row["title"] or "")
+    name = f"{secure_filename(row['company'] or 'role')}-{secure_filename(row['title'] or 'role')}-resume.{tuned['extension']}"
+    log_activity("Resume tuned", f"Exported a tuned resume for {row['title'] or 'a role'}")
+    return Response(tuned["text"], mimetype="application/x-tex" if tuned["extension"] == "tex" else "text/plain",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
 @app.route("/job/<int:job_id>/resume.txt")
 def download_resume(job_id):
     with db() as conn:
@@ -482,4 +904,4 @@ if __name__ == "__main__":
     pid_file.write_text(str(os.getpid()))
     atexit.register(lambda: pid_file.unlink(missing_ok=True) if pid_file.exists() and pid_file.read_text().strip() == str(os.getpid()) else None)
     threading.Thread(target=watch_resume_loop, daemon=True, name="resume-file-watch").start()
-    app.run(host="127.0.0.1", port=8787, debug=False)
+    app.run(host="127.0.0.1", port=int(os.environ.get("APPLY_DESK_PORT", "8787")), debug=False)
