@@ -47,6 +47,7 @@ echo "Compiling the Mac app…"
 TARGET="$(/usr/bin/uname -m)-apple-macos14.0"
 /usr/bin/swiftc -O -target "$TARGET" -framework AppKit -framework WebKit -framework SwiftUI -framework ServiceManagement -framework Carbon \
   "$ROOT"/macos/*.swift -o "$CONTENTS/MacOS/ApplyDesk"
+/usr/bin/swiftc -O -target "$TARGET" "$ROOT/macos/tools/pdftext.swift" -o "$CONTENTS/MacOS/pdftext"
 
 echo "Drawing the icon…"
 /usr/bin/swiftc -O -target "$TARGET" "$ROOT/macos/tools/make_icon.swift" -o "$WORK/make_icon"
@@ -70,7 +71,9 @@ cp "$ROOT/macos/autofill.js" "$RESOURCES/"
 # Ad-hoc signatures change with every build, which makes macOS forget (or
 # silently refuse) Automation access to Chrome. Pinning the designated
 # requirement to the bundle ID keeps that permission across rebuilds.
-/usr/bin/codesign --force --deep --sign - -r="designated => identifier \"$BUNDLE_ID\"" "$APP" >/dev/null
+# The PDF helper is signed on its own first, so the app's seal records its final form.
+/usr/bin/codesign --force --sign - --identifier "$BUNDLE_ID.pdftext" "$CONTENTS/MacOS/pdftext" >/dev/null
+/usr/bin/codesign --force --sign - -r="designated => identifier \"$BUNDLE_ID\"" "$APP" >/dev/null
 
 # Stop the running app and any older Terminal-started service before replacing it.
 if /usr/bin/pgrep -qf "$APP_NAME/Contents/MacOS/ApplyDesk"; then

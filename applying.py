@@ -14,16 +14,28 @@ MONTHS = {name: i for i, names in enumerate([("jan", "january"), ("feb", "februa
                                               ("oct", "october"), ("nov", "november"), ("dec", "december")], start=1) for name in names}
 
 # Questions most applications ask, the profile key that answers each, and the
-# option labels that count as that answer in a dropdown or radio group.
+# option labels that count as that answer in a dropdown or radio group. The
+# first pattern that matches a question owns it, so specific questions come
+# before general ones; a question whose answer is blank is left for the user.
 # Voluntary self-identification (race, gender, veteran, disability) is never
 # answered for the user.
 STANDARD_QUESTIONS = [
+    {"key": "us_citizen", "label": "U.S. citizen", "default": "",
+     "pattern": r"are you (a |an )?(u\.? ?s\.?|united states) citizen|citizenship status|^(u\.? ?s\.? |united states )?citizen(ship)?$"},
     {"key": "authorized_us", "label": "Authorized to work in the U.S.", "default": "",
-     "pattern": r"authori[sz]ed to work|eligib\w* to work|right to work|legally (able|permitted) to work|work authori[sz]ation"},
+     "pattern": r"authori[sz]ed to work|eligib\w* (to work|for employment)|right to work|legally (able|permitted|eligible) to work|work authori[sz]ation"},
     {"key": "needs_sponsorship", "label": "Will need visa sponsorship", "default": "",
      "pattern": r"sponsor"},
+    {"key": "clearance_eligible", "label": "Able to obtain a security clearance", "default": "",
+     "pattern": r"\b(eligib\w*|able|willing)\b.{0,80}\b(obtain|get|apply for|be granted|receive|maintain)\b.{0,40}clearance|eligib\w* for .{0,30}clearance|clearance eligib"},
     {"key": "has_clearance", "label": "Hold a security clearance", "default": "",
      "pattern": r"clearance"},
+    {"key": "foreign_official", "label": "Foreign government official, or close to one", "default": "",
+     "pattern": r"foreign (government )?official|(non.?u\.? ?s\.?|foreign) government|official of a foreign|politically exposed"},
+    {"key": "dod_official", "label": "Current or former DoD official", "default": "",
+     "pattern": r"\bdod\b|department of defen[cs]e"},
+    {"key": "government_employee", "label": "Ever employed by the U.S. government", "default": "",
+     "pattern": r"post.?government|(employed|worked) (by|for|with) (the |a )?(u\.? ?s\.? |united states |federal )?government|government employ|federal (government )?(employ|service)|civil servant"},
     {"key": "heard_about", "label": "How you heard about roles", "default": "",
      "pattern": r"how did you (hear|learn|find)|hear about (us|this)|where did you (hear|find|learn)|referral source|^source$|candidate source"},
     {"key": "previously_employed", "label": "Previously worked for the employer", "default": "",
@@ -31,7 +43,11 @@ STANDARD_QUESTIONS = [
     {"key": "phone_type", "label": "Phone type", "default": "Mobile", "pattern": r"phone (device )?type|type of phone"},
     {"key": "country", "label": "Country", "default": "United States of America", "pattern": r"^country( or region|/region)?$|country of residence"},
     {"key": "country_code", "label": "Country phone code", "default": "United States of America (+1)", "pattern": r"country (phone )?code|phone country"},
-    {"key": "enrollment_status", "label": "Enrollment status", "default": "", "pattern": r"enrollment status|are you currently enrolled|degree (are you )?(currently )?pursuing|student status"},
+    {"key": "enrollment_status", "label": "Enrollment status", "default": "", "pattern": r"enrollment status|(degree|level) (are you )?(currently )?(pursuing|working towards?)|student status"},
+    {"key": "currently_student", "label": "Currently a student", "default": "",
+     "pattern": r"currently (working towards?|pursuing|enrolled|attending|a student)|are you (a )?(current )?(college |university )?student"},
+    {"key": "degree_recent", "label": "Earned a degree in the last 2 years", "default": "",
+     "pattern": r"(obtain|obtained|earn|earned|receive|received|complete|completed|graduate|graduated)( this| your| a)?( degree)? (with)?in the (last|past) \d+ (months|years)|recent graduate"},
     {"key": "gpa", "label": "GPA", "default": "", "pattern": r"\bgpa\b|grade point|overall result"},
     {"key": "over_18", "label": "18 or older", "default": "", "pattern": r"(18|eighteen) (years|or older)|at least 18|over (the age of )?18"},
     {"key": "relatives", "label": "Relatives employed there", "default": "", "pattern": r"relative|family members? (currently )?employed"},
@@ -46,6 +62,13 @@ ORG_WORDS = r"\b(university|college|institute|school|inc|llc|ltd|corp|corporatio
 TITLE_WORDS = r"\b(intern|engineer|developer|assistant|analyst|researcher|technician|lead|manager|associate|fellow|consultant|scientist|designer|tutor|instructor|specialist|coordinator|officer|president|founder|volunteer|representative|cashier|counselor)\b"
 
 
+# "How did you hear about us" needs an answer but rarely the exact one: these
+# are tried in order after the user's own, most relevant for a student first.
+HEARD_ABOUT = ["University Career Center", "Career Center", "Campus", "University", "College", "Career Fair", "Handshake",
+               "School", "Student", "Job Board", "LinkedIn", "Indeed", "Company Website", "Careers Website", "Career Site",
+               "Website", "Internet", "Online", "Other"]
+
+
 def option_variants(key: str, answer: str) -> list[str]:
     """Option labels that mean `answer` for a standard question."""
     answer = answer.strip()
@@ -55,6 +78,14 @@ def option_variants(key: str, answer: str) -> list[str]:
     yes, no = lower in {"yes", "y", "true"}, lower in {"no", "n", "false"}
     if key == "has_clearance" and (no or lower in {"none", "n/a"}):
         return ["No", "None", "Not applicable", "N/A", "I do not", "I have never"]
+    if key in {"government_employee", "dod_official", "foreign_official"} and no:
+        return ["No", "I have never", "I am not", "Never", "None", "Not applicable", "N/A"]
+    if key == "clearance_eligible" and yes:
+        return ["Yes", "I am eligible", "Eligible"]
+    if key == "us_citizen" and yes:
+        return ["Yes", "U.S. Citizen", "US Citizen", "Citizen"]
+    if key == "heard_about":
+        return [answer] + [option for option in HEARD_ABOUT if option.lower() != lower]
     if key == "authorized_us" and yes:
         return ["Yes", "I am authorized", "Authorized"]
     if key == "needs_sponsorship" and no:
@@ -83,8 +114,9 @@ def standard_answers(profile: dict) -> list[dict]:
         answer = (profile.get(question["key"]) or question["default"]).strip()
         if question["key"] == "enrollment_status" and not answer and re.search(r"\bb\.?s\.?\b|bachelor", profile.get("degree", ""), re.I):
             answer = "Bachelor's"
-        if answer:
-            out.append({"key": question["key"], "pattern": question["pattern"], "answer": answer, "options": option_variants(question["key"], answer)})
+        # Unanswered questions stay in the list so a later, looser pattern
+        # can't claim them; the filler leaves them for the user.
+        out.append({"key": question["key"], "pattern": question["pattern"], "answer": answer, "options": option_variants(question["key"], answer)})
     return out
 
 
@@ -295,10 +327,53 @@ def education_entries(sections, profile: dict) -> list[dict]:
         else:
             out.append({"school": profile.get("school", ""), "location": "", "degree": profile.get("degree", ""), "start": {}, "end": graduation})
     for item in out:
+        item["school_options"] = school_options(item["school"])
         item["degree_options"] = degree_options(item["degree"])
         item["field"] = field_of_study(item["degree"])
+        item["field_options"] = field_options(item["field"])
         item["gpa"] = (profile.get("gpa") or "").strip()
     return out[:3]
+
+
+# Forms list schools by official name; resumes use the everyday one.
+SCHOOL_NAMES = {
+    "virginia tech": "Virginia Polytechnic Institute and State University", "vt": "Virginia Polytechnic Institute and State University",
+    "georgia tech": "Georgia Institute of Technology", "mit": "Massachusetts Institute of Technology",
+    "caltech": "California Institute of Technology", "cmu": "Carnegie Mellon University",
+    "uva": "University of Virginia", "gmu": "George Mason University", "jmu": "James Madison University",
+    "vcu": "Virginia Commonwealth University", "odu": "Old Dominion University", "william & mary": "College of William and Mary",
+    "william and mary": "College of William and Mary", "umd": "University of Maryland, College Park",
+    "uiuc": "University of Illinois Urbana-Champaign", "ut austin": "The University of Texas at Austin",
+    "uc berkeley": "University of California, Berkeley", "berkeley": "University of California, Berkeley",
+    "ucla": "University of California, Los Angeles", "ucsd": "University of California, San Diego",
+    "usc": "University of Southern California", "nc state": "North Carolina State University",
+    "penn state": "The Pennsylvania State University", "unc": "University of North Carolina at Chapel Hill",
+    "upenn": "University of Pennsylvania", "penn": "University of Pennsylvania", "umich": "University of Michigan",
+    "nyu": "New York University", "rpi": "Rensselaer Polytechnic Institute", "wpi": "Worcester Polytechnic Institute",
+    "rit": "Rochester Institute of Technology", "texas a&m": "Texas A&M University", "purdue": "Purdue University",
+}
+
+
+def school_options(school: str) -> list[str]:
+    """The school's official name first, then the name as the user wrote it,
+    each also spelled with "&" or "and"."""
+    school = (school or "").strip()
+    names = [SCHOOL_NAMES.get(school.lower(), ""), school]
+    out = []
+    for name in filter(None, names):
+        for spelling in (name, name.replace(" and ", " & "), name.replace(" & ", " and ")):
+            if spelling not in out:
+                out.append(spelling)
+    return out
+
+
+def field_options(field: str) -> list[str]:
+    """Names forms use for the user's field of study; close names only, never
+    a longer different program ("Computer Science and Engineering Technology")."""
+    field = (field or "").strip()
+    if re.fullmatch(r"computer sciences?", field, re.I):
+        return ["Computer Science", "Computer Sciences", "Computer and Information Science", "Computer and Information Sciences"]
+    return [field] if field else []
 
 
 def degree_options(degree: str) -> list[str]:

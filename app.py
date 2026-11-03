@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 import unicodedata
@@ -129,11 +130,14 @@ def init_db():
 
 
 def refresh_pdf_resume():
-    """Re-read the current resume from its saved PDF when it was imported
-    before layout-mode reading, which kept columns apart and words whole."""
+    """Re-read the current resume from its saved PDF when an older reader
+    imported it: before layout mode (columns run together) or before PDFKit
+    repaired word spacing ("anunintended")."""
     resume = resume_row()
     path = INSTANCE / "resume_upload.pdf"
-    if not resume or not resume["filename"].lower().endswith(".pdf") or not path.is_file() or "    " in resume["text"]:
+    if not resume or not resume["filename"].lower().endswith(".pdf") or not path.is_file():
+        return
+    if "    " in resume["text"] and not os.environ.get("APPLY_DESK_PDFTEXT"):
         return
     # Only when the saved file is this exact upload (same minute).
     if datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="minutes") != resume["uploaded"][:16]:
@@ -142,7 +146,7 @@ def refresh_pdf_resume():
         text = extract_text(path, "pdf").strip()
     except Exception:
         return
-    if text and 0.7 < len(text) / max(1, len(resume["text"])) < 1.5:
+    if text and text != resume["text"] and 0.7 < len(text) / max(1, len(resume["text"])) < 1.5:
         with db() as conn:
             conn.execute("UPDATE resume SET text=? WHERE id=?", (text, resume["id"]))
 
@@ -198,6 +202,49 @@ def watch_resume_loop():
         time.sleep(4)
 
 
+def pdfkit_words(path: Path) -> set[str]:
+    """Words as macOS PDFKit reads them, via the helper bundled with the Mac
+    app (APPLY_DESK_PDFTEXT). Empty when running outside the app."""
+    helper = os.environ.get("APPLY_DESK_PDFTEXT", "")
+    if not helper or not os.access(helper, os.X_OK):
+        return set()
+    try:
+        output = subprocess.run([helper, str(path)], capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return set()
+    return set(unicodedata.normalize("NFKC", output).split())
+
+
+def respace(text: str, words: set[str]) -> str:
+    """Repair word spacing in layout-mode text using PDFKit's words: split
+    glued words ("anunintended" → "an unintended") and join split ones
+    ("V A" → "VA"). Lines, columns, and every other character stay as they are."""
+    def split(token: str) -> str:
+        if token in words or len(token) > 80:
+            return token
+        best = [None] * (len(token) + 1)
+        best[0] = []
+        for end in range(1, len(token) + 1):
+            for start in range(max(0, end - 40), end):
+                if best[start] is not None and token[start:end] in words and (best[end] is None or len(best[start]) + 1 < len(best[end])):
+                    best[end] = best[start] + [token[start:end]]
+        return " ".join(best[-1]) if best[-1] and len(best[-1]) > 1 else token
+
+    lines = []
+    for line in text.splitlines():
+        parts = re.split(r"( +)", line)
+        # Join a single-space split when only the joined form is a real word.
+        i = 0
+        while i + 2 < len(parts):
+            left, gap, right = parts[i], parts[i + 1], parts[i + 2]
+            if gap == " " and left and right and left + right in words and (left not in words or right not in words):
+                parts[i:i + 3] = [left + right]
+            else:
+                i += 2
+        lines.append("".join(split(part) if part.strip() else part for part in parts))
+    return "\n".join(lines)
+
+
 def extract_text(path: Path, ext: str) -> str:
     if ext == "pdf":
         from pypdf import PdfReader
@@ -215,7 +262,9 @@ def extract_text(path: Path, ext: str) -> str:
         # Mark a wide gap between columns with four spaces (see header_columns)
         # and fold the double spaces layout mode leaves inside text.
         lines = (re.sub(r"(?<=\S) {3,}(?=\S)", "    ", line.strip()) for line in text.splitlines())
-        return "\n".join(re.sub(r"(?<=\S) {2}(?=\S)", " ", line) for line in lines)
+        text = "\n".join(re.sub(r"(?<=\S) {2}(?=\S)", " ", line) for line in lines)
+        words = pdfkit_words(path)
+        return respace(text, words) if words else text
     if ext == "docx":
         from docx import Document
         doc = Document(path)

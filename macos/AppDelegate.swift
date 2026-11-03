@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchedAtLogin = false
     private var showingHelp = false
     private var remindedAboutResume = false
+    private var fillStarted: Date?                     // a fill in progress; a second press waits for it
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let event = NSAppleEventManager.shared().currentAppleEvent
@@ -622,12 +623,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fixChromeAccess()
             return
         }
+        if let started = fillStarted, Date().timeIntervalSince(started) < 130 {
+            return toasts.show(Toast(title: "Still filling this application…", detail: "When it finishes, press ` again for anything left.", symbol: "hourglass"))
+        }
+        fillStarted = Date()
         roleForApplication(tab) { [weak self] role in
             guard let self = self else { return }
             self.backend.send("api/fill-plan?job_id=\(role ?? 0)") { [weak self] plan in
                 guard let self = self else { return }
                 guard let plan = plan, let profile = plan["profile"] as? [String: Any],
                       profile.values.contains(where: { ($0 as? String).map { !$0.isEmpty } ?? false }) else {
+                    self.fillStarted = nil
                     return self.toasts.show(Toast(title: "Add your details first", detail: "Apply Desk fills applications from your profile.",
                                                   symbol: "person.text.rectangle", actionTitle: "Open Profile", action: { [weak self] in self?.workspace.show(path: "profile") }))
                 }
@@ -654,13 +660,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func runFill(plan: [String: Any], tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?, name: String) {
         guard let planData = try? JSONSerialization.data(withJSONObject: plan),
-              let script = Autofill.script(plan: planData, resume: resume.map { (name, $0.pdf) }) else { return }
+              let script = Autofill.script(plan: planData, resume: resume.map { (name, $0.pdf) }) else { fillStarted = nil; return }
         guard Chrome.runJavaScript(script) != nil else {
+            fillStarted = nil
             if Chrome.lastFailure != nil { noteChromeFailure(); fixChromeAccess() }
             else { toasts.show(Toast(title: "Couldn't read this form", detail: "This page may block autofill. Enter the remaining details yourself.", symbol: "exclamationmark.triangle")) }
             return
         }
-        toasts.show(Toast(title: "Filling this application…", detail: "Dropdowns, experience, and skills take a few seconds. Keep this tab in front.", symbol: "wand.and.stars"), for: 30)
+        toasts.show(Toast(title: "Filling this application…", detail: "Dropdowns, experience, and skills take up to a minute. Keep this tab in front.", symbol: "wand.and.stars"), for: 45)
         waitForFill(attempt: 0) { [weak self] result in
             self?.finishFill(result, tab: tab, role: role, resume: resume)
         }
@@ -670,13 +677,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func waitForFill(attempt: Int, completion: @escaping (Autofill.Result?) -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             let result = Autofill.parse(Chrome.runJavaScript(Autofill.statusScript))
-            if let result = result, result.done || attempt >= 90 { return completion(result) }
-            if attempt >= 90 { return completion(nil) }
+            // Long Workday forms can take a minute; stop waiting after two.
+            if let result = result, result.done || attempt >= 200 { return completion(result) }
+            if attempt >= 200 { return completion(nil) }
             self?.waitForFill(attempt: attempt + 1, completion: completion)
         }
     }
 
     private func finishFill(_ result: Autofill.Result?, tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?) {
+        fillStarted = nil
         guard let result = result else {
             return toasts.show(Toast(title: "The form stopped responding", detail: "Some fields may be filled. Check the page and finish it yourself.", symbol: "exclamationmark.triangle"))
         }

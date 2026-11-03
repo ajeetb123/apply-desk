@@ -109,6 +109,10 @@ final class Backend {
         environment["APPLY_DESK_DATA"] = dataDirectory.path
         environment["APPLY_DESK_TOKEN"] = token
         environment["APPLY_DESK_PORT"] = String(Backend.port)
+        // PDFKit's word spacing, used to repair words pypdf glues together.
+        if let pdftext = Bundle.main.url(forAuxiliaryExecutable: "pdftext") {
+            environment["APPLY_DESK_PDFTEXT"] = pdftext.path
+        }
         process.environment = environment
         if let log = openLog() {
             process.standardOutput = log

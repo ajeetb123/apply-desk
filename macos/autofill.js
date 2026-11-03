@@ -7,10 +7,11 @@
 // results are in window.__applyDeskFill.
 function applyDeskFill(planB64, pdfB64, nameB64) {
   const decode = b64 => new TextDecoder().decode(Uint8Array.from(atob(b64 || ''), c => c.charCodeAt(0)));
+  if (window.__applyDeskBusy && window.__applyDeskFill && !window.__applyDeskFill.done) return JSON.stringify({ started: true, already: true });
   const plan = JSON.parse(decode(planB64) || '{}');
   const state = window.__applyDeskFill = { done: false, filled: [], attached: false, learn: [], skipped: [], blocks: 0 };
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-  const norm = s => (s || '').toLowerCase().replace(/[_*:?()\[\]]+/g, ' ').replace(/[-–]/g, ' ').replace(/\s+/g, ' ').trim();
+  const norm = s => (s || '').toLowerCase().replace(/&/g, ' and ').replace(/[_*:?()\[\]]+/g, ' ').replace(/[-–]/g, ' ').replace(/\s+/g, ' ').trim();
   const textOf = el => el ? (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim() : '';
   const visible = el => !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
   const never = new RegExp(plan.never || 'race|ethnic|gender|veteran|disab|password', 'i');
@@ -98,20 +99,87 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     el.click();
   }
 
-  const openOptions = () => [...document.querySelectorAll('[role="option"], [data-automation-id="promptOption"], [data-automation-id="menuItem"]')].filter(visible);
+  // ---------- Choosing from lists ----------
+  // Pop-up lists (Workday and others) are often still on the page after they
+  // close, or another list is open. Every pick closes stale lists first, reads
+  // only the options that appeared for this field once they stop changing,
+  // and checks the choice took before moving on.
+  const optionSelector = '[role="option"], [data-automation-id="promptOption"], [data-automation-id="menuItem"]';
+  const shown = el => visible(el) && !el.closest('[aria-hidden="true"]') && el.getBoundingClientRect().width > 0;
+  // The innermost element of each option, which is the one that takes clicks.
+  const openOptions = (root = document) => [...root.querySelectorAll(optionSelector)].filter(o => shown(o) && !o.querySelector(optionSelector));
+  const optionLabel = o => o.getAttribute('data-automation-label') || textOf(o);
+  const escape = el => el && el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+
+  async function closeLists(trigger) {
+    if (!openOptions().length) return;
+    escape(document.activeElement);
+    if (await waitFor(() => !openOptions().length, 500)) return;
+    if (trigger && trigger.getAttribute('aria-expanded') === 'true') press(trigger);
+    else press(document.body);
+    await waitFor(() => !openOptions().length, 600);
+  }
+
+  // Options shown for `trigger` that weren't on the page before it opened,
+  // once they've stayed the same for a moment (searches load in steps). When
+  // several lists are showing, the one nearest the field is its own. An empty
+  // result ("No Items.") in a new list comes back as no options right away.
+  const listSelector = '[role="listbox"], [data-automation-id="activeListContainer"], [role="menu"]';
+  const nearest = (trigger, options) => {
+    const groups = new Map();
+    for (const option of options) {
+      const list = option.closest(listSelector) || option.parentElement;
+      groups.set(list, [...(groups.get(list) || []), option]);
+    }
+    if (groups.size < 2) return options;
+    const at = trigger.getBoundingClientRect();
+    const distance = list => { const r = list.getBoundingClientRect(); return Math.min(Math.abs(r.top - at.bottom), Math.abs(r.bottom - at.top)); };
+    return [...groups.entries()].sort((a, b) => distance(a[0]) - distance(b[0]))[0][1];
+  };
+  async function freshOptions(trigger, before, changedFrom = null, ms = 3500) {
+    const started = Date.now();
+    const oldLists = new Set(document.querySelectorAll(listSelector));
+    const noResults = () => [...document.querySelectorAll(listSelector)]
+      .some(list => !oldLists.has(list) && shown(list) && !openOptions(list).length && /^no (items|results|matches)|^nothing found/i.test(textOf(list)));
+    let last = null, same = 0;
+    const found = await waitFor(() => {
+      const id = trigger.getAttribute('aria-controls') || trigger.getAttribute('aria-owns');
+      const own = id && document.getElementById(id);
+      const options = own && shown(own) && openOptions(own).length ? openOptions(own).filter(o => !before.has(o))
+        : nearest(trigger, openOptions().filter(o => !before.has(o)));
+      const key = options.length ? options.map(optionLabel).join('|') : (noResults() ? 'none' : '');
+      same = key && key === last ? same + 1 : 0;
+      last = key;
+      if (same < 1 || (changedFrom !== null && key === changedFrom && Date.now() - started < 1500)) return null;
+      return { options };
+    }, ms);
+    return found && found.options.length ? found.options : null;
+  }
 
   // Exact match first; short answers like "No" never match "North Carolina".
-  function best(candidates, variants, label = c => c.getAttribute('data-automation-label') || textOf(c)) {
+  // Strict matching (schools, majors, states) also refuses a longer, different
+  // name: "Computer Science" never picks "Computer Science and Engineering
+  // Technology", "Virginia" never picks "West Virginia".
+  function best(candidates, variants, label = optionLabel, strict = false) {
     const texts = candidates.map(c => [c, norm(label(c))]);
+    const shortest = hits => hits.sort((a, b) => a[1].length - b[1].length)[0];
     for (const variant of variants.map(norm).filter(Boolean)) {
       const short = variant.length <= 3;
-      const hit = texts.find(([, t]) => t === variant)
-        || texts.find(([, t]) => t.startsWith(variant + ' ') || t.startsWith(variant + ','))
-        || (!short && texts.find(([, t]) => t.startsWith(variant)))
+      const exact = texts.find(([, t]) => t === variant);
+      if (exact) return exact[0];
+      const led = texts.filter(([, t]) => t.startsWith(variant + ' ') || t.startsWith(variant + ','));
+      if (strict) {
+        const close = shortest(led.filter(([, t]) => t.length <= variant.length * 1.6));
+        if (close) return close[0];
+        continue;
+      }
+      const hit = shortest(led)
+        || (!short && shortest(texts.filter(([, t]) => t.startsWith(variant))))
         || (!short && texts.find(([, t]) => t.includes(variant)))
         || (!short && texts.find(([, t]) => t.length > 3 && variant.startsWith(t)));
       if (hit) return hit[0];
     }
+    if (strict) return null;
     // Last resort for longer answers: most shared words ("Career Center/Campus
     // Posting" → "University Career Center"), never for Yes/No.
     const words = t => new Set(t.split(/[^a-z0-9+#]+/).filter(w => w.length > 2));
@@ -134,20 +202,42 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     glow(el);
   }
 
-  async function pickListbox(button, variants, question) {
-    if (!placeholderText(textOf(button))) return false;
-    press(button);
-    const options = await waitFor(() => { const o = openOptions(); return o.length ? o : null; }, 2500);
-    const match = options && best(options, variants);
-    if (match) {
-      press(match);
-      await sleep(350);
-      note(button, question);
-      return true;
+  // Long lists may only draw the options near the top; scroll to find more.
+  async function scrollFor(options, variants, strict) {
+    let box = options[0] && options[0].parentElement;
+    while (box && box !== document.body && box.scrollHeight <= box.clientHeight + 4) box = box.parentElement;
+    if (!box || box === document.body) return null;
+    for (let y = box.clientHeight * 0.8; y < box.scrollHeight; y += box.clientHeight * 0.8) {
+      box.scrollTop = y;
+      await sleep(140);
+      const match = best(openOptions(), variants, optionLabel, strict);
+      if (match) return match;
     }
-    button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-    await sleep(200);
-    return false;
+    return null;
+  }
+
+  async function pickListbox(button, want, question) {
+    if (!placeholderText(textOf(button))) return false;
+    await closeLists();
+    const before = new Set(openOptions());
+    press(button);
+    const options = await freshOptions(button, before);
+    let match = options && (best(options, want.values, optionLabel, want.strict) || (options.length > 7 && await scrollFor(options, want.values, want.strict)));
+    if (match) {
+      // A click normally chooses; some lists only take Enter on the option.
+      for (const attempt of [() => press(match), () => press(match.querySelector('div, span') || match),
+                             () => { match.focus(); match.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })); }]) {
+        if (!match.isConnected) break;
+        attempt();
+        if (await waitFor(() => !placeholderText(textOf(button)), 1200)) {
+          await closeLists(button);
+          note(button, question);
+          return true;
+        }
+      }
+    }
+    await closeLists(button);
+    return !placeholderText(textOf(button));
   }
 
   const selectedPills = el => {
@@ -156,27 +246,58 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       .map(textOf).filter(Boolean);
   };
 
-  async function pickPrompt(input, variants, question) {
-    for (const variant of variants.slice(0, 3)) {
-      typeInto(input, variant);
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-      const options = await waitFor(() => { const o = openOptions(); return o.length ? o : null; }, 2500);
-      const match = options && best(options, [variant, ...variants]);
-      if (match) {
+  // Type-to-search boxes (Workday prompts, comboboxes). Lists can be nested:
+  // choosing a category ("University") shows its own options next.
+  async function pickPrompt(input, want, question) {
+    const field = input.closest('[data-automation-id^="formField"]') || input.parentElement;
+    const chosen = (count, label) => selectedPills(input).length > count || (!!label && norm(textOf(field)).includes(norm(label)));
+    await closeLists();
+    const before = new Set(openOptions());
+    const choose = async options => {
+      for (let depth = 0; options && depth < 3; depth += 1) {
+        let match = best(options, want.values, optionLabel, want.strict);
+        // Inside a category the user didn't name, any option there is relevant.
+        if (!match && want.browse && depth > 0) match = best(options, ['Other']) || options[0];
+        if (!match) return false;
+        const count = selectedPills(input).length, label = optionLabel(match), key = options.map(optionLabel).join('|');
         press(match);
-        await sleep(450);
+        if (await waitFor(() => chosen(count, label), 900)) return true;
+        options = await freshOptions(input, before, key, 1800);
+        if (!options || options.map(optionLabel).join('|') === key) return chosen(count, label);
+      }
+      return false;
+    };
+    const searches = (want.search || want.values).filter(Boolean).slice(0, 4);
+    let previous = null;
+    for (const term of searches) {
+      typeInto(input, term);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      const options = await freshOptions(input, before, previous, 2500);
+      previous = options ? options.map(optionLabel).join('|') : previous;
+      if (await choose(options)) {
+        await closeLists(input);
         note(input, question);
         return true;
       }
       typeInto(input, '');
     }
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+    if (want.browse) {
+      // No search hit: open the whole list and pick the most relevant entry.
+      press(input);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      if (await choose(await freshOptions(input, before, null, 2500))) {
+        await closeLists(input);
+        note(input, question);
+        return true;
+      }
+    }
+    await closeLists(input);
     return false;
   }
 
-  function pickSelect(select, variants, question) {
+  function pickSelect(select, variants, question, strict = false) {
     const options = [...select.options].filter(o => !placeholderText(o.textContent) && o.value !== '');
-    const match = best(options, variants, o => o.textContent);
+    const match = best(options, variants, o => o.textContent, strict);
     if (!match) return false;
     select.value = match.value;
     select.dispatchEvent(new Event('input', { bubbles: true }));
@@ -231,14 +352,20 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // ---------- What to put in a field ----------
   const p = plan.profile || {};
   const parts = (p.name || '').trim().split(/\s+/);
+  const school = (plan.education || [])[0] || {};
+  const schoolNames = school.school_options && school.school_options.length ? school.school_options : [p.school];
+  // Search by the official name, the user's own, then its first two words.
+  const schoolSearch = names => [names[0], names[names.length - 1], (names[0] || '').split(' ').slice(0, 2).join(' ')];
   const contact = [
     ['email', /e ?mail/, [p.email]], ['phone', /phone number|^phone$|mobile|cell(ular)? number|telephone/, [p.phone]],
     ['linkedin', /linkedin/, [p.linkedin]], ['github', /github/, [p.github]],
     ['website', /website|portfolio|personal (site|url|page)/, [p.website]], ['first', /first name|given name|preferred name|^first$/, [parts[0]]],
     ['last', /last name|family name|surname|^last$/, [parts.length > 1 ? parts.slice(1).join(' ') : '']],
     ['name', /full name|your name|legal name|^name$/, [p.name]], ['address', /address line 1|street address|address 1|^address$/, [p.address]],
-    ['city', /(^| )city( |$)|town/, [p.city]], ['state', /(^| )state( |$)|province|region/, p.state_options || [p.state]],
-    ['postal', /zip|postal code|postcode/, [p.postal_code]], ['school', /school|university|college|institution/, [p.school]],
+    ['city', /(^| )city( |$)|town/, [p.city]], ['state', /(^| )state( |$)|province|region/, p.state_options || [p.state], { strict: true }],
+    ['postal', /zip|postal code|postcode/, [p.postal_code]],
+    ['school', /school|university|college|institution/, schoolNames, { strict: true, search: schoolSearch(schoolNames) }],
+    ['field', /field of study|area of study|(^| )major( |$)|academic discipline/, school.field_options || [], { strict: true, search: [school.field] }],
     ['degree', /degree/, [p.degree, ...(((plan.education || [])[0] || {}).degree_options || [])]],
   ];
   const otherPeople = /reference|emergency|supervisor|manager|guardian|parent|spouse|high school|extension|referr(al|er|ed) (name|email|by)/;
@@ -264,17 +391,20 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       return el.tagName === 'SELECT' || isListbox(el) ? { values: [dated.year, p.graduation], source: 'date' } : { date: dated, source: 'date' };
     }
     for (const answer of plan.answers || []) {
-      if (new RegExp(answer.pattern, 'i').test(q)) return { values: answer.options.length ? answer.options : [answer.answer], source: 'answer' };
+      if (!new RegExp(answer.pattern, 'i').test(q)) continue;
+      // An unanswered standard question is the user's to answer.
+      if (!answer.answer) return null;
+      return { values: answer.options.length ? answer.options : [answer.answer], source: 'answer', browse: answer.key === 'heard_about' };
     }
     for (const learned of plan.learned || []) {
       if (norm(learned.question) === q || similar(learned.question, q) >= 0.8) return { values: learned.answer.split(/;\s*/), source: 'learned' };
     }
     if (otherPeople.test(q) || /\bwhy\b|describe|statement|cover letter|tell us|explain/.test(q)) return null;
     const hints = el.closest ? hintsOf(el) : q;
-    for (const [, pattern, values] of contact) {
+    for (const [, pattern, values, how] of contact) {
       if (pattern.test(q) || pattern.test(hints)) {
         const usable = values.filter(Boolean);
-        return usable.length ? { values: usable, source: 'profile' } : null;
+        return usable.length ? { ...how, values: usable, source: 'profile' } : null;
       }
     }
     return null;
@@ -285,9 +415,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (want.date) return fillDate(el, want.date, question);
     const values = want.values.filter(Boolean);
     if (!values.length) return false;
-    if (el.tagName === 'SELECT') return pickSelect(el, values, question);
-    if (isListbox(el)) return pickListbox(el, values, question);
-    if (isPrompt(el)) return selectedPills(el).length ? false : pickPrompt(el, values, question);
+    if (el.tagName === 'SELECT') return pickSelect(el, values, question, want.strict);
+    if (isListbox(el)) return pickListbox(el, { ...want, values }, question);
+    if (isPrompt(el)) return selectedPills(el).length ? false : pickPrompt(el, { ...want, values }, question);
     if (isText(el) && !el.value.trim()) {
       typeInto(el, values[0]);
       note(el, question);
@@ -359,9 +489,10 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
             : /^to\b|^to$|end/.test(q) ? (entry.current ? null : { date: entry.end })
             : el.tagName === 'TEXTAREA' || /description|responsibilit|summary|duties/.test(q) ? { values: [entry.description] } : null;
         } else {
-          want = /school|university|college|institution/.test(q) ? { values: [entry.school] }
+          const names = entry.school_options && entry.school_options.length ? entry.school_options : [entry.school];
+          want = /school|university|college|institution/.test(q) ? { values: names, strict: true, search: schoolSearch(names) }
             : /degree/.test(q) ? { values: entry.degree_options.length ? entry.degree_options : [entry.degree] }
-            : /field of study|major|discipline/.test(q) ? { values: [entry.field] }
+            : /field of study|major|discipline/.test(q) ? { values: entry.field_options && entry.field_options.length ? entry.field_options : [entry.field], strict: true, search: [entry.field] }
             : /gpa|grade|overall result/.test(q) ? { values: [entry.gpa] }
             : /^from|start/.test(q) ? { date: entry.start }
             : /^to\b|^to$|end|graduat|expected/.test(q) ? { date: entry.end } : null;
@@ -384,23 +515,24 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (!input || !(plan.skills || []).length) return;
     handled.add(input);
     const have = selectedPills(input).map(norm);
-    let added = 0;
+    await closeLists();
+    const before = new Set(openOptions());
+    let added = 0, previous = null;
     for (const skill of plan.skills) {
       if (have.includes(norm(skill)) || added >= 10) continue;
       typeInto(input, skill);
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-      const options = await waitFor(() => { const o = openOptions(); return o.length ? o : null; }, 2500);
+      const options = await freshOptions(input, before, previous, 2500);
+      previous = options ? options.map(optionLabel).join('|') : previous;
       const match = options && best(options, [skill]);
-      if (match && norm(textOf(match)).startsWith(norm(skill).slice(0, 3))) {
+      const count = selectedPills(input).length;
+      if (match && norm(optionLabel(match)).startsWith(norm(skill).slice(0, 3))) {
         press(match);
-        added += 1;
-        await sleep(450);
-      } else {
-        typeInto(input, '');
-        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-        await sleep(150);
+        if (await waitFor(() => selectedPills(input).length > count, 1200)) added += 1;
       }
+      typeInto(input, '');
     }
+    await closeLists(input);
     if (added) { state.filled.push(`skills (${added})`); glow(input); }
   }
 
@@ -408,11 +540,13 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Learns only answers Apply Desk couldn't give itself: not profile fields,
   // standard answers, dates (they change per role), or consent boxes.
   const pseudo = { tagName: 'INPUT' };  // a question without a field, for learning checks
+  // Fields of one job or school entry come from the resume, not from memory.
+  const entryField = /^(job title|position title|title|company|employer|organization|location|from|to|role description|description|school or university|school|university|degree|field of study|major|overall result gpa|gpa|skills?|type to add skills)$/;
   function remember(question, answer) {
     const q = (question || '').trim();
     const a = (answer || '').trim();
     const n = norm(q);
-    if (!q || !a || never.test(n) || consent.test(n) || startDate.test(n) || graduationDate.test(n) || a.length > 160 || placeholderText(a)) return;
+    if (!q || !a || never.test(n) || consent.test(n) || startDate.test(n) || graduationDate.test(n) || entryField.test(n) || a.length > 160 || placeholderText(a)) return;
     if (/^\d{1,2}\/\d{1,2}(\/\d{2,4})?$|^\d{4}(-\d{2}){0,2}$/.test(a)) return;
     const known = wanted(pseudo, q);
     if (known && known.source !== 'learned') return;
@@ -443,6 +577,24 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         if (value) seen[questionOf(el).slice(0, 300)] = value;
         sessionStorage.setItem('applyDeskSeen', JSON.stringify(seen));
       } catch (error) { /* storage can be blocked */ }
+    }, true);
+    // Pop-up lists and search boxes fire no change event: after the user
+    // clicks, note what each one now shows.
+    let pending = null;
+    document.addEventListener('click', event => {
+      if (window.__applyDeskBusy || !event.isTrusted) return;
+      clearTimeout(pending);
+      pending = setTimeout(() => {
+        if (window.__applyDeskBusy) return;
+        try {
+          const seen = JSON.parse(sessionStorage.getItem('applyDeskSeen') || '{}');
+          for (const el of document.querySelectorAll('button[aria-haspopup="listbox"], input[data-automation-id="searchBox"]')) {
+            const value = visible(el) ? answeredValue(el) : '';
+            if (value) seen[questionOf(el).slice(0, 300)] = value;
+          }
+          sessionStorage.setItem('applyDeskSeen', JSON.stringify(seen));
+        } catch (error) { /* storage can be blocked */ }
+      }, 600);
     }, true);
   }
 
@@ -517,6 +669,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         const frame = [...document.querySelectorAll('iframe')].find(f => /greenhouse|lever|ashby|workday|smartrecruiters|icims|jobvite/.test(f.src || ''));
         state.embedded = frame ? frame.src : '';
       }
+      await closeLists();
     } catch (error) {
       state.error = String(error && error.message || error);
     }
