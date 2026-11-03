@@ -3,6 +3,9 @@
 {% block body %}
 {% set placeholders = {'name': 'First and last name', 'email': 'you@school.edu', 'phone': '(555) 010-0100', 'address': 'Street and number', 'city': 'City', 'state': 'TX', 'postal_code': '78701', 'school': 'University name', 'degree': 'B.S. Computer Science', 'graduation': 'May 2028', 'work_authorization': 'U.S. citizen', 'linkedin': 'linkedin.com/in/you', 'github': 'github.com/you', 'website': 'you.dev'} %}
 {% set wide = ('name', 'email', 'address', 'school', 'degree', 'website') %}
+{% set placeholders = dict(placeholders, gpa='N/A, or 3.8') %}
+{% set hints = {'heard_about': 'Career Center/Campus Posting', 'phone_type': 'Mobile', 'country': 'United States of America', 'country_code': 'United States of America (+1)', 'enrollment_status': "Bachelor's", 'relatives': 'None'} %}
+{% set yesno = ('authorized_us', 'needs_sponsorship', 'has_clearance', 'previously_employed', 'over_18', 'relocate') %}
 <section class="page-head with-mark">
   <span class="vault" data-reveal aria-hidden="true">{{ ui.orb() }}<span class="vault-lock">{{ ui.icon('lock') }}</span></span>
   <div>
@@ -24,7 +27,19 @@
       </section>
       {% endfor %}
 
-      <section class="panel" data-reveal style="--i:6">
+      <section class="panel" id="answers" data-reveal style="--i:6">
+        <header class="panel-head"><div><h2>Application answers</h2><p class="sub">How Apply Desk answers the questions most forms ask, in text boxes, dropdowns, and Yes/No buttons. Leave one blank to answer it yourself. Race, gender, veteran, and disability questions are never answered for you.</p></div></header>
+        <div class="fields">
+          {% for q in standard if q.key != 'gpa' %}
+          <label class="{{ '' if q.key in yesno else 'wide' }}"><span>{{ q.label }}</span>
+            {% if q.key in yesno %}<select name="{{ q.key }}"><option value="">Ask me each time</option>{% for option in ('Yes', 'No') %}<option{{ ' selected' if profile.get(q.key) == option }}>{{ option }}</option>{% endfor %}</select>
+            {% else %}<input name="{{ q.key }}" value="{{ profile.get(q.key, '') }}" placeholder="{{ hints.get(q.key, '') }}" autocomplete="off">{% endif %}
+          </label>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel" data-reveal style="--i:7">
         <header class="panel-head"><div><h2>What you're looking for</h2><p class="sub">Shapes the fit score. Separate entries with commas.</p></div></header>
         <div class="fields">
           <label class="wide"><span>Target roles</span><input name="target_roles" value="{{ profile.get('target_roles', '') }}" placeholder="Software Engineering Intern, Backend Engineer Intern"></label>
@@ -50,4 +65,11 @@
   </div>
   <div class="savebar" data-savebar><span data-save-state>All changes saved</span><button class="button primary">{{ ui.icon('check') }}<span>Save details</span></button></div>
 </form>
+
+<section class="panel learned-panel" id="remembered" data-reveal style="--i:8">
+  <header class="panel-head"><div><h2>Remembered answers</h2><p class="sub">Answers you typed yourself on application forms. Each time you press <kbd class="key-wide">`</kbd>, Apply Desk learns new ones and reuses them when the same question comes up. Essays and sensitive questions are never saved.</p></div><span class="count">{{ learned|length }}</span></header>
+  {% if learned %}
+  <ul class="learned">{% for a in learned %}<li><div><b>{{ a.label }}</b><span>{{ a.answer }}</span></div><form action="/answers/{{ a.id }}/delete" method="post"><button class="link danger" aria-label="Forget this answer">{{ ui.icon('trash') }}</button></form></li>{% endfor %}</ul>
+  {% else %}<p class="fine">Nothing yet. Answer a question yourself on an application, then press <kbd class="key-wide">`</kbd>.</p>{% endif %}
+</section>
 {% endblock %}

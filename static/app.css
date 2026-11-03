@@ -626,3 +626,11 @@ html:not(.native) [data-native-only], html.native [data-web-only] { display: non
 .copy-actions { margin-left: auto; display: flex; gap: 6px; flex: none; }
 .copy-actions .button { height: 32px; padding: 0 12px; }
 .chip-sent { color: #fff; background: linear-gradient(135deg, var(--mint), var(--cyan)); }
+
+.learned-panel { margin-top: 16px; }
+.learned { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.learned li { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 12px; background: var(--panel-2); border: 1px solid var(--line); }
+.learned li > div { display: grid; min-width: 0; line-height: 1.35; }
+.learned b { font-size: 12.5px; font-weight: 550; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.learned span { font-size: 13.5px; font-weight: 600; }
+.learned form { margin-left: auto; }

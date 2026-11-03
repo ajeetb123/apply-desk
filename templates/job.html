@@ -112,8 +112,10 @@
   <section class="panel manage" data-reveal style="--i:8">
     <header class="panel-head"><div><p class="eyebrow">Organize</p><h2>Tags & notes</h2></div></header>
     <details class="more">
-      <summary>Edit this role's campaign tags</summary>
+      <summary>Edit this role's company, title, and campaign tags</summary>
       <form action="/job/{{ job.id }}/campaign" method="post" class="fields">
+        <label><span>Company</span><input name="company" value="{{ job.company }}" placeholder="Company name"></label>
+        <label><span>Role title</span><input name="title" value="{{ job.title }}" placeholder="Software Engineering Intern"></label>
         <label><span>Campaign</span><select name="wave"><option value="">Not specified</option>{% for option in campaign_options %}<option value="{{ option }}"{% if job.wave == option %} selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
         <label><span>Sector</span><input name="sector" value="{{ job.sector }}" placeholder="Cybersecurity"></label>
         <label class="wide"><span>Funding stage</span><input name="funding_stage" value="{{ job.funding_stage }}" placeholder="Seed, Series A"></label>
