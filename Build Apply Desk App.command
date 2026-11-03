@@ -60,7 +60,8 @@ done
 /usr/bin/iconutil -c icns "$ICONSET" -o "$RESOURCES/AppIcon.icns"
 
 echo "Bundling the local service…"
-cp "$ROOT/app.py" "$ROOT/tailoring.py" "$RESOURCES/backend/"
+cp "$ROOT/app.py" "$ROOT/tailoring.py" "$ROOT/applying.py" "$RESOURCES/backend/"
+cp "$ROOT/macos/autofill.js" "$RESOURCES/"
 /usr/bin/ditto "$ROOT/templates" "$RESOURCES/backend/templates"
 /usr/bin/ditto "$ROOT/static" "$RESOURCES/backend/static"
 /usr/bin/rsync -a --exclude '__pycache__' --exclude 'pip' --exclude 'pip-*' --exclude 'setuptools' --exclude 'setuptools-*' \

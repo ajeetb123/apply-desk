@@ -17,8 +17,8 @@ enum Chrome {
     struct Page {
         let url: String
         let ready: Bool
-        let roleTitle: String
-        let company: String
+        /// Title and company hints for /api/evaluate (see applying.identify_role).
+        let signals: [String: String]
         let description: String
     }
 
@@ -89,13 +89,39 @@ enum Chrome {
         return Tab(id: parts[0], url: parts[2], title: parts.dropFirst(3).joined(separator: "\n"), loading: parts[1] == "true")
     }
 
-    nonisolated static let readPageScript = "JSON.stringify({url:location.href,ready:document.readyState,roleTitle:(document.querySelector('h1')||{}).innerText||document.title,company:(document.querySelector(\"meta[property='og:site_name']\")||{}).content||'',description:document.body?document.body.innerText:''})"
+    /// Reads the posting plus every hint about its title and company: the
+    /// structured JobPosting data many sites embed, Workday's job header,
+    /// headings, and the page and Open Graph titles.
+    nonisolated static let readPageScript = """
+    (() => {
+      const q = s => document.querySelector(s);
+      const text = el => el ? (el.innerText || el.textContent || '').trim() : '';
+      const meta = s => (q(s) || {}).content || '';
+      let ld = {};
+      for (const tag of document.querySelectorAll('script[type="application/ld+json"]')) {
+        try {
+          const data = JSON.parse(tag.textContent);
+          for (const item of [].concat(data && data['@graph'] ? data['@graph'] : data)) {
+            if (item && /JobPosting/i.test([].concat(item['@type']).join(' '))) {
+              const org = item.hiringOrganization;
+              ld = {title: item.title || '', company: typeof org === 'string' ? org : (org && org.name) || ''};
+            }
+          }
+        } catch (error) {}
+      }
+      return JSON.stringify({url: location.href, ready: document.readyState, page_title: document.title,
+        og_title: meta('meta[property="og:title"]'), site_name: meta('meta[property="og:site_name"]'),
+        heading: text(q('[data-automation-id="jobPostingHeader"]')) || text(q('.posting-headline h2')) || text(q('h1')),
+        ld_title: ld.title || '', ld_company: ld.company || '', description: document.body ? document.body.innerText : ''});
+    })()
+    """
 
     static func readPage() -> Page? {
         guard let value = runJavaScript(readPageScript), let data = value.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return Page(url: object["url"] as? String ?? "", ready: object["ready"] as? String == "complete", roleTitle: object["roleTitle"] as? String ?? "",
-                    company: object["company"] as? String ?? "", description: object["description"] as? String ?? "")
+        return Page(url: object["url"] as? String ?? "", ready: object["ready"] as? String == "complete",
+                    signals: object.compactMapValues { $0 as? String }.filter { $0.key != "description" && $0.key != "ready" },
+                    description: object["description"] as? String ?? "")
     }
 
     /// Runs JavaScript in the front tab and returns its string result.

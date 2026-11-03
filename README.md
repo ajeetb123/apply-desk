@@ -11,7 +11,16 @@ Apply Desk opens at login by default and lives in the menu bar. Closing the wind
 ## What it does
 
 - **Watches the tab you're on.** With many tabs and windows open, Apply Desk only reads the active tab of Chrome's front window, and only while Chrome is in front. It waits until the tab has finished loading, stayed in front for a moment, and its text has stopped changing, so it reads the whole posting once. Each tab remembers its role, and the sidebar shows the one you're viewing. A strong match (60+) slides in as a notification. Pause watching from the menu bar icon or the switch in the sidebar.
-- **Fills applications with one key: `** (top left, under Esc). On an employer application in Chrome, press it. Apply Desk types your saved contact, education, and link details into empty, clearly labeled fields and highlights them in green, and attaches your resume tuned for that role, as a PDF, to the resume upload field (never to cover letter, transcript, or portfolio uploads). It skips sponsorship, work-authorization, demographic, referral, and screening questions, and it never submits. The key only does this while a job board, careers site, or application page is in front in Chrome; everywhere else it types a backtick as usual. Apply Desk knows the role from the tab you scanned the listing in, the application's URL, or the role you viewed last. Forms embedded in another site (for example a Greenhouse iframe) need to be opened on their own page first.
+- **Fills applications with one key: `** (top left, under Esc). On an employer application in Chrome, press it and Apply Desk fills every empty field it can answer truthfully, then leaves the rest to you:
+  - contact details, links, school, degree, GPA, and graduation date, in text boxes, dropdowns, Workday-style pop-up lists, type-to-search pickers, Yes/No buttons, and date boxes;
+  - your **application answers** from Profile (work authorization, sponsorship, clearance, how you heard, whether you worked there before, phone type, country, enrollment status, relatives employed);
+  - **work experience and education** blocks, adding as many as your resume has, with each role description taken from your resume tuned for this job;
+  - **skills**, picked from your resume and Profile with the ones the posting asks for first;
+  - a **start date** from the posting's program dates ("May 24th, 2027 – July 30th, 2027" → 05/24/2027), or today if it gives none;
+  - your **resume tuned for that role**, as a PDF, in the resume upload (never cover letter, transcript, or portfolio uploads).
+
+  It never answers race, gender, veteran, disability, or salary questions, never checks consent boxes, never writes essays, and never submits. Answers you type yourself are remembered the next time you press ` (see **Remembered answers** in Profile, where you can forget any of them). The key only fills while a job board, careers site, or application page is in front in Chrome; everywhere else it types a backtick as usual. Apply Desk knows the role from the tab you scanned the listing in, the application's URL, or the role you viewed last. Forms embedded in another site (for example a Greenhouse iframe) need to be opened on their own page first.
+- **Knows who's hiring.** Each listing's title and company come from the whole page: the job data sites embed for search engines, Workday's job header, headings, the page title, and the posting text. Fix either one under **Edit this role's company, title, and campaign tags** on the role page.
 - **Tunes your resume per role, without touching the template.** The layout, sections, and facts stay the same. Tuning:
   - puts the bullets most relevant to the posting first within each entry;
   - spells technologies the way the posting does ("Postgres" or "PostgreSQL") and fixes their capitals ("Github" → "GitHub");
@@ -40,8 +49,8 @@ Watching stays on while either is missing; the sidebar and menu bar say what's l
 
 ## How it's built
 
-- `macos/` — the Swift app: `AppDelegate.swift` (menus, menu bar, Chrome watching, autofill), `Backend.swift` (starts and supervises the bundled local service), `WorkspaceWindow.swift` (the window, over native vibrancy), `ResumePDF.swift` (renders the PDF offscreen), `Chrome.swift`, `Autofill.swift`, `Toast.swift`, `HotKey.swift`, and `tools/make_icon.swift` (draws the app icon at build time).
-- `app.py`, `tailoring.py`, `templates/`, `static/` — the local Flask service, the resume tuning rules, and the workspace UI (`templates/resume_print.html` is the Jake's-layout PDF page), bundled inside the app with its Python packages. It listens on `127.0.0.1:8787` only and requires a private per-install token, so other software and web pages can't read your profile through the port.
+- `macos/` — the Swift app: `AppDelegate.swift` (menus, menu bar, Chrome watching, autofill), `Backend.swift` (starts and supervises the bundled local service), `WorkspaceWindow.swift` (the window, over native vibrancy), `ResumePDF.swift` (renders the PDF offscreen), `Chrome.swift`, `Autofill.swift` with `autofill.js` (the form filler injected into Chrome), `Toast.swift`, `HotKey.swift`, and `tools/make_icon.swift` (draws the app icon at build time).
+- `app.py`, `tailoring.py`, `applying.py`, `templates/`, `static/` — the local Flask service, the resume tuning rules, application answers and form data, and the workspace UI (`templates/resume_print.html` is the Jake's-layout PDF page), bundled inside the app with its Python packages. It listens on `127.0.0.1:8787` only and requires a private per-install token, so other software and web pages can't read your profile through the port.
 
 ## Local data and privacy
 

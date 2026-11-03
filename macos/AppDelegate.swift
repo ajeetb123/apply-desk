@@ -571,8 +571,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func evaluate(_ page: Chrome.Page, url: String, tabID: String, key: String) {
-        let payload: [String: Any] = ["url": url, "title": String(page.roleTitle.prefix(200)),
-                                      "company": String(page.company.prefix(200)), "description": String(page.description.prefix(50_000))]
+        var payload: [String: Any] = page.signals.mapValues { String($0.prefix(300)) }
+        payload["url"] = url
+        payload["description"] = String(page.description.prefix(50_000))
         backend.send("api/evaluate", json: payload) { [weak self] result in
             guard let self = self else { return }
             guard let result = result, let jobID = result["saved_job_id"] as? Int else {
@@ -621,18 +622,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fixChromeAccess()
             return
         }
-        backend.send("api/profile") { [weak self] profile in
+        roleForApplication(tab) { [weak self] role in
             guard let self = self else { return }
-            let values = (profile ?? [:]).compactMapValues { $0 as? String }
-            guard values.values.contains(where: { !$0.isEmpty }) else {
-                self.toasts.show(Toast(title: "Add your details first", detail: "Apply Desk fills applications from your profile.",
-                                       symbol: "person.text.rectangle", actionTitle: "Open Profile", action: { [weak self] in self?.workspace.show(path: "profile") }))
-                return
-            }
-            self.roleForApplication(tab) { role in
-                guard let role = role else { return self.runFill(values, tab: tab, role: nil, resume: nil) }
+            self.backend.send("api/fill-plan?job_id=\(role ?? 0)") { [weak self] plan in
+                guard let self = self else { return }
+                guard let plan = plan, let profile = plan["profile"] as? [String: Any],
+                      profile.values.contains(where: { ($0 as? String).map { !$0.isEmpty } ?? false }) else {
+                    return self.toasts.show(Toast(title: "Add your details first", detail: "Apply Desk fills applications from your profile.",
+                                                  symbol: "person.text.rectangle", actionTitle: "Open Profile", action: { [weak self] in self?.workspace.show(path: "profile") }))
+                }
+                let name = (profile["name"] as? String).flatMap { $0.isEmpty ? nil : "\($0) Resume.pdf" } ?? "Resume.pdf"
+                guard let role = role else { return self.runFill(plan: plan, tab: tab, role: nil, resume: nil, name: name) }
                 self.resumePDF.make(jobID: role) { output in
-                    self.runFill(values, tab: tab, role: role, resume: output)
+                    self.runFill(plan: plan, tab: tab, role: role, resume: output, name: name)
                 }
             }
         }
@@ -650,15 +652,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func runFill(_ values: [String: String], tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?) {
-        let name = values["name"].map { "\($0) Resume.pdf" } ?? "Resume.pdf"
-        let script = Autofill.script(profile: values, resume: resume.map { (name, $0.pdf) })
-        guard let result = Autofill.parse(Chrome.runJavaScript(script)) else {
+    private func runFill(plan: [String: Any], tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?, name: String) {
+        guard let planData = try? JSONSerialization.data(withJSONObject: plan),
+              let script = Autofill.script(plan: planData, resume: resume.map { (name, $0.pdf) }) else { return }
+        guard Chrome.runJavaScript(script) != nil else {
             if Chrome.lastFailure != nil { noteChromeFailure(); fixChromeAccess() }
             else { toasts.show(Toast(title: "Couldn't read this form", detail: "This page may block autofill. Enter the remaining details yourself.", symbol: "exclamationmark.triangle")) }
             return
         }
-        if let role = role, let resume = resume, result.count > 0 || result.attached {
+        toasts.show(Toast(title: "Filling this application…", detail: "Dropdowns, experience, and skills take a few seconds. Keep this tab in front.", symbol: "wand.and.stars"), for: 30)
+        waitForFill(attempt: 0) { [weak self] result in
+            self?.finishFill(result, tab: tab, role: role, resume: resume)
+        }
+    }
+
+    /// The filler keeps working after it starts; check on it until it's done.
+    private func waitForFill(attempt: Int, completion: @escaping (Autofill.Result?) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            let result = Autofill.parse(Chrome.runJavaScript(Autofill.statusScript))
+            if let result = result, result.done || attempt >= 90 { return completion(result) }
+            if attempt >= 90 { return completion(nil) }
+            self?.waitForFill(attempt: attempt + 1, completion: completion)
+        }
+    }
+
+    private func finishFill(_ result: Autofill.Result?, tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?) {
+        guard let result = result else {
+            return toasts.show(Toast(title: "The form stopped responding", detail: "Some fields may be filled. Check the page and finish it yourself.", symbol: "exclamationmark.triangle"))
+        }
+        if !result.learned.isEmpty {
+            backend.send("api/answers", json: ["answers": result.learned]) { _ in }
+        }
+        let filled = result.fields.count
+        if let role = role, let resume = resume, filled > 0 || result.attached {
             // Keep the exact resume that went with this application.
             backend.send("api/applications", json: ["job_id": role, "url": tab.url, "attached": result.attached, "fields": result.fields,
                                                     "pages": resume.pages, "pdf": resume.pdf.base64EncodedString()]) { [weak self] _ in
@@ -666,19 +692,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         let open: () -> Void = { [weak self] in if let role = role { self?.workspace.show(path: "job/\(role)") } }
-        if result.count > 0 || result.attached {
-            let parts = [result.count > 0 ? "filled \(result.count) field\(result.count == 1 ? "" : "s")" : nil,
-                         result.attached ? "attached your resume tuned for this role" : nil].compactMap { $0 }
+        if filled > 0 || result.attached {
+            let parts = [filled > 0 ? "filled \(filled) field\(filled == 1 ? "" : "s")" : nil,
+                         result.blocks > 0 ? "\(result.blocks) experience and education entr\(result.blocks == 1 ? "y" : "ies")" : nil,
+                         result.attached ? "attached your tuned resume" : nil].compactMap { $0 }
+            let sentence = parts.joined(separator: ", ")
             let detail = result.attached || role == nil ? "Review every value, answer the rest, and submit it yourself."
                 : resume == nil ? "Couldn't prepare your tuned resume. Save it from the role page and upload it yourself."
-                : "No resume upload was found here. If the form asks for one later, save your tuned PDF from the role page."
-            toasts.show(Toast(title: parts.joined(separator: " and ").prefix(1).uppercased() + parts.joined(separator: " and ").dropFirst(),
-                              detail: detail, symbol: "checkmark", actionTitle: role == nil ? nil : "See What Was Sent", action: open), for: 10)
+                : "No resume upload on this page. If a later step asks for one, press ` there."
+            toasts.show(Toast(title: sentence.prefix(1).uppercased() + sentence.dropFirst(), detail: detail, symbol: "checkmark",
+                              actionTitle: role == nil ? nil : "See What Was Sent", action: open), for: 10)
         } else if let form = result.embeddedForm {
             toasts.show(Toast(title: "This form is embedded", detail: "Open it on its own page, then press ` again.", symbol: "rectangle.on.rectangle",
                               actionTitle: "Open Form", action: { Chrome.open(form) }), for: 12)
+        } else if !result.learned.isEmpty {
+            toasts.show(Toast(title: "Remembered your answers", detail: "Apply Desk saved \(result.learned.count) answer\(result.learned.count == 1 ? "" : "s") from this page to reuse next time.", symbol: "brain"))
         } else {
-            toasts.show(Toast(title: "No empty fields to fill", detail: "Apply Desk skips filled fields and questions that need your judgment.", symbol: "checkmark.circle"))
+            toasts.show(Toast(title: "Nothing left to fill here", detail: "Apply Desk skips filled fields and questions only you should answer.", symbol: "checkmark.circle"))
         }
     }
 

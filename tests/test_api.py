@@ -434,6 +434,81 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertIsNone(lookup("https://elsewhere.example.com/acme/jobs/4012345"))
         self.assertIsNone(lookup("javascript:alert(1)"))
 
+    def test_role_and_company_are_read_from_the_whole_page(self):
+        identify = application.applying.identify_role
+        workday = "Careers at JM Family\nSign In\nSoftware Engineer Intern page is loaded\nSoftware Engineer Intern\nApply\n"
+        self.assertEqual(identify({"url": "https://jmfamily.wd1.myworkdayjobs.com/x/job/y", "heading": "Careers at JM Family"}, workday),
+                         ("Software Engineer Intern", "JM Family"))
+        self.assertEqual(identify({"url": "https://jobs.lever.co/shieldai/1", "title": "Shield AI - Summer 2027 Intern - Embedded Firmware"},
+                                  "Shield AI is a venture-backed defense company."), ("Summer 2027 Intern - Embedded Firmware", "Shield AI"))
+        self.assertEqual(identify({"url": "https://jobs.ashbyhq.com/astro-mechanica/1", "title": "Software Engineering Intern"},
+                                  "ABOUT US: Astro Mechanica is an aerospace company."), ("Software Engineering Intern", "Astro Mechanica"))
+        self.assertEqual(identify({"url": "https://boards.greenhouse.io/acme/jobs/1", "page_title": "Job Application for Backend Intern at Acme Robotics"}, ""),
+                         ("Backend Intern", "Acme Robotics"))
+        self.assertEqual(identify({"url": "https://x.example.com/job", "ld_title": "Data Intern", "ld_company": "Example Corp"}, ""), ("Data Intern", "Example Corp"))
+
+    def test_roles_saved_without_a_company_are_repaired(self):
+        import sqlite3
+        with sqlite3.connect(application.DB) as conn:
+            conn.execute("INSERT INTO jobs(company,title,url,description,saved) VALUES('', 'Careers at JM Family', 'https://jmfamily.wd1.myworkdayjobs.com/a/job/b', ?, '2026-11-03')",
+                         ("Careers at JM Family\nSoftware Engineer Intern page is loaded\nResponsibilities: build things.",))
+        application.init_db()
+        with sqlite3.connect(application.DB) as conn:
+            self.assertEqual(conn.execute("SELECT title, company FROM jobs").fetchone(), ("Software Engineer Intern", "JM Family"))
+        job_id = 1
+        self.client.post(f"/job/{job_id}/campaign", data={"company": "JM Family Enterprises", "title": "Software Engineer Intern"})
+        self.assertIn(b"JM Family Enterprises", self.client.get(f"/job/{job_id}").data)
+
+    def test_start_date_comes_from_the_posting_or_today(self):
+        start = application.applying.program_start
+        self.assertEqual(start("Summer Internship Program (May 24th, 2027 - July 30th, 2027).")[0]["mm_dd_yyyy"], "05/24/2027")
+        self.assertEqual(start("The program begins on June 7, 2027 for semester schools.")[0]["mm_dd_yyyy"], "06/07/2027")
+        from datetime import date
+        self.assertEqual(start("No dates here.")[0]["iso"], date.today().isoformat())
+
+    def test_fill_plan_has_tailored_experience_skills_and_answers(self):
+        self.add_resume(self.JAKE)
+        self.client.post("/profile", data={"name": "Riley Chen", "state": "VA", "gpa": "N/A", "degree": "B.S. Computer Science",
+                                           "authorized_us": "Yes", "needs_sponsorship": "No", "has_clearance": "No", "skills": "Kubernetes, Rust"})
+        job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "description": self.POSTING}).json["saved_job_id"]
+        plan = self.client.get(f"/api/fill-plan?job_id={job_id}").json
+        self.assertEqual(plan["profile"]["state_options"], ["Virginia", "VA"])
+        experience = plan["experience"][0]
+        self.assertEqual((experience["title"], experience["company"]), ("Software Engineering Intern", "Acme"))
+        self.assertIn("Built a PostgreSQL API", experience["description"])
+        self.assertEqual(plan["skills"][:2], ["Python", "Kubernetes"])
+        self.assertNotIn("Rust", plan["skills"][:2])
+        answers = {a["key"]: a["options"] for a in plan["answers"]}
+        self.assertEqual(answers["needs_sponsorship"][0], "No")
+        self.assertIn("None", answers["has_clearance"])
+        self.assertEqual(answers["enrollment_status"][0], "Bachelor's")
+        self.assertEqual(plan["education"][0]["field"], "Computer Science")
+        self.assertIn("gender", plan["never"])
+
+    def test_learned_answers_are_reused_but_never_sensitive_or_essays(self):
+        answers = [{"question": "Have you previously worked for this organization?", "answer": "No"},
+                   {"question": "We have offices nationwide. Please indicate your location preference.", "answer": "Texas; Utah"},
+                   {"question": "Gender", "answer": "Male"}, {"question": "Salary expectations", "answer": "$40/hour"},
+                   {"question": "Why do you want to work here?", "answer": "Because"}, {"question": "Email", "answer": ""}]
+        self.assertEqual(self.client.post("/api/answers", json={"answers": answers}).json["saved"], 2)
+        self.assertEqual(application.profile()["previously_employed"], "No")
+        plan = self.client.get("/api/fill-plan").json
+        self.assertEqual([a["answer"] for a in plan["learned"]], ["Texas; Utah"])
+        page = self.client.get("/profile").data
+        self.assertIn(b"Remembered answers", page)
+        self.assertIn(b"Texas; Utah", page)
+        self.client.post("/answers/1/delete")
+        self.assertEqual(self.client.get("/api/fill-plan").json["learned"], [])
+
+    def test_skills_follow_named_tools_then_posting_themes(self):
+        skills = ["TypeScript", "JavaScript", "Java", "SQL", "React", "Vite", "deck.gl", "Mapbox", "pandas", "Python"]
+        data_ai = "Develop Power BI reports, contribute to AI agents, support automation, and work with data for reporting."
+        ranked = sorted(skills, key=lambda s: application.tailoring.skill_relevance(s, data_ai))
+        self.assertEqual(ranked[:3], ["Python", "pandas", "SQL"])  # Python fits three themes
+        self.assertEqual(set(ranked[-3:]), {"Vite", "deck.gl", "Mapbox"})
+        web = "Build web app features in React with TypeScript."
+        self.assertEqual(sorted(skills, key=lambda s: application.tailoring.skill_relevance(s, web))[:2], ["TypeScript", "React"])
+
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})
         self.assertEqual(response.status_code, 421)

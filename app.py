@@ -20,6 +20,7 @@ from flask import Flask, Response, flash, redirect, render_template, request, se
 from markupsafe import Markup, escape
 from werkzeug.utils import secure_filename
 
+import applying
 import tailoring
 
 ROOT = Path(__file__).resolve().parent
@@ -38,12 +39,13 @@ app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 
 CONTACT_FIELDS = [("name", "Full name"), ("email", "Email"), ("phone", "Mobile phone"), ("address", "Street address"),
                   ("city", "City"), ("state", "State"), ("postal_code", "ZIP code")]
-EDUCATION_FIELDS = [("school", "School"), ("degree", "Degree"), ("graduation", "Expected graduation"),
+EDUCATION_FIELDS = [("school", "School"), ("degree", "Degree"), ("graduation", "Expected graduation"), ("gpa", "GPA"),
                     ("work_authorization", "Work authorization")]
 LINK_FIELDS = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("website", "Portfolio or website")]
 # Values the Mac app may type into clearly labeled, empty application fields.
 AUTOFILL_FIELDS = [key for key, _ in CONTACT_FIELDS + EDUCATION_FIELDS + LINK_FIELDS]
-PROFILE_FIELDS = AUTOFILL_FIELDS + ["target_roles", "skills", "career_goals", "role_campaigns", "larp"]
+PROFILE_FIELDS = AUTOFILL_FIELDS + ["target_roles", "skills", "career_goals", "role_campaigns", "larp"] + [
+    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS]
 
 
 @app.before_request
@@ -77,6 +79,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, summary TEXT NOT NULL, created TEXT NOT NULL);
         -- The exact resume Apply Desk attached or saved for a role, kept even if
         -- the resume changes later.
+        -- Short answers the user typed on application forms, reused when the
+        -- same question comes up again.
+        CREATE TABLE IF NOT EXISTS answers (id INTEGER PRIMARY KEY, question TEXT NOT NULL UNIQUE, label TEXT NOT NULL, answer TEXT NOT NULL, updated TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL, created TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', attached INTEGER NOT NULL DEFAULT 0, filled TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, extension TEXT NOT NULL, pdf BLOB, pages INTEGER NOT NULL DEFAULT 1, changes TEXT NOT NULL DEFAULT '[]');
         """)
         # Personal contact details live only in the ignored local database. Do
@@ -91,8 +96,9 @@ def init_db():
             "skills": "",
             "career_goals": "",
             "role_campaigns": "Wave 1, Wave 2, Defense, Seed-stage startups",
-            "larp": "2",
+            "larp": "2", "gpa": "",
         }
+        defaults.update({spec["key"]: spec["default"] for spec in applying.STANDARD_QUESTIONS if spec["key"] not in defaults})
         for key, value in defaults.items():
             conn.execute("INSERT OR IGNORE INTO profile(key,value) VALUES(?,?)", (key, value))
         # Additive migration for databases created by earlier Apply Desk versions.
@@ -100,6 +106,12 @@ def init_db():
         for column in ("wave", "sector", "funding_stage"):
             if column not in columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        # Earlier versions read only a page's first heading, so some roles have
+        # no company or a site banner ("Careers at ...") as their title.
+        for row in conn.execute("SELECT id, title, company, url, description FROM jobs WHERE company='' OR title LIKE 'Careers%'").fetchall():
+            title, company = applying.identify_role({"url": row[3], "title": row[1], "company": row[2]}, row[4] or "")
+            if (title, company) != (row[1], row[2]):
+                conn.execute("UPDATE jobs SET title=?, company=? WHERE id=?", (title or row[1], company or row[2], row[0]))
         # Split legacy "City, ST" profile entries so a browser form helper
         # won't put the whole string in a city-only field.
         values = {row["key"]: row["value"] for row in conn.execute("SELECT * FROM profile")}
@@ -114,6 +126,25 @@ def init_db():
         suffix = f", {city}, {state}" if city and state else ""
         if suffix and address.lower().endswith(suffix.lower()):
             conn.execute("UPDATE profile SET value=? WHERE key='address'", (address[:-len(suffix)].strip(),))
+
+
+def refresh_pdf_resume():
+    """Re-read the current resume from its saved PDF when it was imported
+    before layout-mode reading, which kept columns apart and words whole."""
+    resume = resume_row()
+    path = INSTANCE / "resume_upload.pdf"
+    if not resume or not resume["filename"].lower().endswith(".pdf") or not path.is_file() or "    " in resume["text"]:
+        return
+    # Only when the saved file is this exact upload (same minute).
+    if datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="minutes") != resume["uploaded"][:16]:
+        return
+    try:
+        text = extract_text(path, "pdf").strip()
+    except Exception:
+        return
+    if text and 0.7 < len(text) / max(1, len(resume["text"])) < 1.5:
+        with db() as conn:
+            conn.execute("UPDATE resume SET text=? WHERE id=?", (text, resume["id"]))
 
 
 def profile():
@@ -181,8 +212,10 @@ def extract_text(path: Path, ext: str) -> str:
         # PDFs often store "fi"/"fl" as single ligature characters, which would
         # hide words like "configuration" or "workflow" from matching.
         text = unicodedata.normalize("NFKC", "\n".join(pages))
-        # Mark a wide gap between columns with four spaces (see header_columns).
-        return "\n".join(re.sub(r"(?<=\S) {3,}(?=\S)", "    ", line.strip()) for line in text.splitlines())
+        # Mark a wide gap between columns with four spaces (see header_columns)
+        # and fold the double spaces layout mode leaves inside text.
+        lines = (re.sub(r"(?<=\S) {3,}(?=\S)", "    ", line.strip()) for line in text.splitlines())
+        return "\n".join(re.sub(r"(?<=\S) {2}(?=\S)", " ", line) for line in lines)
     if ext == "docx":
         from docx import Document
         doc = Document(path)
@@ -223,6 +256,7 @@ KNOWN_HEADINGS = {
     "campus involvement", "awards", "honors", "honors and awards", "awards and honors", "certifications",
     "publications", "research", "research experience", "relevant coursework", "coursework", "summary",
     "objective", "volunteer", "volunteering", "volunteer experience", "extracurriculars", "extracurricular activities",
+    "honors and competitions", "competitions", "achievements", "awards and achievements", "hackathons", "honors and activities",
 }
 LATEX_COMMANDS = re.compile(r"\\(section|resumeSubheading|resumeSubSubheading|resumeProjectHeading|resumeSubItem|resumeItem|textbf)\b")
 LATEX_ARGS = {"section": 1, "resumeSubheading": 4, "resumeSubSubheading": 2, "resumeProjectHeading": 2, "resumeItem": 1, "resumeSubItem": 1}
@@ -890,7 +924,10 @@ def resume_page():
 @app.route("/profile", methods=["GET", "POST"])
 def profile_page():
     if request.method == "GET":
-        return render_template("profile.html", page="profile", title="Profile", profile=profile(),
+        with db() as conn:
+            learned = [dict(r) for r in conn.execute("SELECT id, label, answer, updated FROM answers ORDER BY updated DESC")]
+        return render_template("profile.html", page="profile", title="Profile", profile=profile(), learned=learned,
+                               standard=applying.STANDARD_QUESTIONS,
                                groups=[("Contact", "Used to fill application forms.", CONTACT_FIELDS),
                                        ("Education", "Checked against graduation windows.", EDUCATION_FIELDS),
                                        ("Links", "Filled into LinkedIn, GitHub, and portfolio fields.", LINK_FIELDS)],
@@ -961,6 +998,9 @@ def update_job_campaign(job_id):
     funding_stage = request.form.get("funding_stage", "").strip()[:80]
     with db() as conn:
         updated = conn.execute("UPDATE jobs SET wave=?,sector=?,funding_stage=? WHERE id=?", (wave, sector, funding_stage, job_id)).rowcount
+        for field in ("company", "title"):
+            if request.form.get(field, "").strip():
+                conn.execute(f"UPDATE jobs SET {field}=? WHERE id=?", (request.form[field].strip()[:200], job_id))
     if not updated:
         return "Job not found", 404
     log_activity("Role campaign updated", "Updated a role's campaign, sector, or funding notes")
@@ -997,9 +1037,9 @@ def api_evaluate():
             if clean and any(term in clean.lower() for term in report["matched"]):
                 relevant.append(clean)
     voice = "Direct" if report["score"] < 35 else "Confident" if report["score"] < 70 else "Assertive"
-    title = str(data.get("title", ""))[:200]
-    company = str(data.get("company", ""))[:200]
     url = safe_http_url(data.get("url", ""))
+    # The page's title, company, and structured job data, read together.
+    title, company = applying.identify_role({**data, "url": url}, description)
     wave = str(data.get("wave", ""))[:80].strip()
     sector = str(data.get("sector", ""))[:80].strip()
     funding_stage = str(data.get("funding_stage", ""))[:80].strip()
@@ -1163,6 +1203,98 @@ def api_role_for_url():
     return {"job_id": row["id"], "title": row["title"]} if row else {"job_id": None}
 
 
+def tailored_skills(sections, posting: str, declared: list[str], limit: int = 10) -> list[str]:
+    """Skills for an application's skills field: the resume's and profile's,
+    the ones the posting asks for first."""
+    names = []
+    for section in sections:
+        if section["kind"] != "skills":
+            continue
+        for entry in section["entries"]:
+            for line in entry["header"] + [b["text"] if isinstance(b, dict) else b for b in entry["bullets"]]:
+                items = line.partition(":")[2] if ":" in line else line
+                names += [re.sub(r"\s*\(.*?\)", "", item).strip() for item in items.split(",")]
+    seen, unique = set(), []
+    for name in names + declared:
+        if name and len(name) <= 40 and name.lower() not in seen:
+            seen.add(name.lower())
+            unique.append(name)
+    if posting:
+        unique.sort(key=lambda name: tailoring.skill_relevance(name, posting))
+    return unique[:limit]
+
+
+@app.get("/api/fill-plan")
+def api_fill_plan():
+    """Everything the Mac app's form filler needs for one application."""
+    p = profile()
+    resume = resume_row()
+    row = None
+    try:
+        job_id = int(request.args.get("job_id") or 0)
+    except ValueError:
+        job_id = 0
+    if job_id:
+        with db() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    posting = f"{row['title']}\n{row['description']}" if row else ""
+    sections = []
+    if resume:
+        text = tune_resume(resume["text"], row["description"], row["title"] or "")["text"] if row else resume["text"]
+        sections = resume_outline(text)[1]
+    declared = [x.strip() for x in re.split(r"[,;\n]", p.get("skills", "")) if x.strip()]
+    start, start_source = applying.program_start(row["description"] if row else "")
+    with db() as conn:
+        learned = [{"question": r["question"], "answer": r["answer"]} for r in conn.execute("SELECT question, answer FROM answers")]
+    contact = {key: p.get(key, "") for key in AUTOFILL_FIELDS}
+    contact["state_options"] = applying.state_options(p.get("state", ""))
+    contact["graduation_dates"] = applying.date_formats(applying.parse_month_year(p.get("graduation", "")))
+    education = applying.education_entries(sections, p)
+    # Enrollment status ("Bachelor's") can come from the resume's degree too.
+    hints = {**p, "degree": education[0]["degree"]} if education and not p.get("enrollment_status") else p
+    return {"profile": contact, "answers": applying.standard_answers(hints), "learned": learned,
+            "experience": applying.experience_entries(sections), "education": education,
+            "skills": tailored_skills(sections, posting, declared), "start": {**start, "source": start_source},
+            "never": applying.NEVER, "role": {"id": row["id"], "title": row["title"], "company": row["company"]} if row else None}
+
+
+@app.post("/api/answers")
+def api_learn_answers():
+    """Remember short answers the user typed on an application form."""
+    items = (request.get_json(silent=True) or {}).get("answers") or []
+    p = profile()
+    saved = 0
+    with db() as conn:
+        for item in items[:60]:
+            question, answer = str(item.get("question", ""))[:300], str(item.get("answer", "")).strip()[:160]
+            if not applying.learnable(question, answer):
+                continue
+            key = applying.standard_key(question)
+            if key:
+                # A standard question fills in its Profile answer once, if blank.
+                if not p.get(key):
+                    conn.execute("UPDATE profile SET value=? WHERE key=?", (answer, key))
+                    p[key] = answer
+                    saved += 1
+                continue
+            if any(answer.strip().lower() == str(v).strip().lower() for v in p.values() if v):
+                continue  # already known from the profile
+            conn.execute("INSERT INTO answers(question,label,answer,updated) VALUES(?,?,?,?) ON CONFLICT(question) DO UPDATE SET answer=excluded.answer, label=excluded.label, updated=excluded.updated",
+                         (applying.normalize_question(question), question.strip()[:300], answer, datetime.now().isoformat(timespec="minutes")))
+            saved += 1
+    if saved:
+        log_activity("Answers learned", f"Remembered {saved} answer{'s' if saved != 1 else ''} from an application form")
+    return {"saved": saved}
+
+
+@app.route("/answers/<int:answer_id>/delete", methods=["POST"])
+def delete_answer(answer_id):
+    with db() as conn:
+        conn.execute("DELETE FROM answers WHERE id=?", (answer_id,))
+    flash("Answer forgotten.", "success")
+    return redirect(url_for("profile_page") + "#answers")
+
+
 @app.route("/job/<int:job_id>/tuned")
 def download_tuned_resume(job_id):
     with db() as conn:
@@ -1194,6 +1326,7 @@ def download_resume(job_id):
 
 
 init_db()
+refresh_pdf_resume()
 
 if __name__ == "__main__":
     pid_file = INSTANCE / "app.pid"

@@ -83,6 +83,40 @@ FRAMEWORKS = {"react", "angular", "vue.js", "next.js", "node.js", "express.js", 
 LIBRARIES = {"pandas", "numpy", "matplotlib", "scikit-learn", "opencv", "langchain", "hugging face", "transformers", "seaborn",
              "scipy", "pydantic", "sqlalchemy"}
 
+# When a posting names no tools, its themes still say which skills matter.
+THEMES = [
+    (r"\bdata\b|analytics|reporting|dashboard|power bi|tableau|\bbi\b|insight|statistic",
+     {"python", "sql", "pandas", "numpy", "statsmodels", "r", "excel", "power bi", "tableau", "postgresql", "mysql", "matplotlib", "scipy", "spark"}),
+    (r"\bai\b|artificial intelligence|machine learning|\bml\b|\bllm|agent|model|neural|deep learning",
+     {"python", "pytorch", "tensorflow", "scikit-learn", "pandas", "numpy", "langchain", "hugging face", "transformers", "statsmodels", "jax"}),
+    (r"automat|scripting|workflow|tooling|internal tools",
+     {"python", "bash", "shell", "github actions", "pytest", "docker", "jenkins"}),
+    (r"front ?end|web app|user interface|\bui\b|full ?stack|browser",
+     {"javascript", "typescript", "react", "node.js", "html/css", "html", "css", "next.js", "vue.js", "vite", "tailwind css"}),
+    (r"back ?end|\bapis?\b|microservices|web services|server[- ]side|databases?\b|distributed systems",
+     {"java", "go", "python", "node.js", "express", "sql", "postgresql", "redis", "docker", "spring boot", "flask", "fastapi", "supabase"}),
+    (r"cloud|devops|infrastructure|deploy|kubernetes|aws|azure|gcp",
+     {"docker", "kubernetes", "terraform", "amazon web services", "aws", "google cloud platform", "microsoft azure", "linux", "github actions"}),
+    (r"embedded|firmware|hardware|real-time|rtos|microcontroller",
+     {"c", "c++", "rust", "assembly", "python", "linux", "verilog"}),
+    (r"mobile|ios|android", {"swift", "swiftui", "kotlin", "java", "react native", "flutter"}),
+]
+
+
+def skill_relevance(skill: str, posting: str) -> float:
+    """Lower is more relevant: 0 named in the posting, about 1 fits its themes
+    (the more themes, the lower), 2 a language, 3 anything else."""
+    rules = Rules(posting, [])
+    if rules.mentions(posting, skill):
+        return 0
+    name = skill.lower()
+    lower = posting.lower()
+    themes = sum(1 for pattern, skills in THEMES if name in skills and re.search(pattern, lower))
+    if themes:
+        return 1 - themes / 10
+    return 2 if name in LANGUAGES else 3
+
+
 # Gerunds that follow "Responsible for" and their past-tense verbs.
 PAST = {"building": "Built", "developing": "Developed", "designing": "Designed", "creating": "Created", "implementing": "Implemented",
         "maintaining": "Maintained", "managing": "Managed", "leading": "Led", "writing": "Wrote", "testing": "Tested",
