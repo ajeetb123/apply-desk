@@ -430,6 +430,38 @@ class ApplyDeskApiTests(unittest.TestCase):
         # Self-identification answers are never learned from forms.
         self.assertEqual(self.client.post("/api/answers", json={"answers": [{"question": "Are you Hispanic or Latino?", "answer": "No"}]}).json["saved"], 0)
 
+    def test_drafts_and_year_in_school(self):
+        self.add_resume(self.JAKE)
+        self.client.post("/profile", data={"school": "Virginia Tech", "graduation": "December 2028", "class_year": "Freshman"})
+        job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "description": self.POSTING}).json["saved_job_id"]
+        plan = self.client.get(f"/api/fill-plan?job_id={job_id}").json
+        drafts = {d["key"]: d["text"] for d in plan["drafts"]}
+        self.assertIn("Virginia Tech in December 2028", drafts["plans"])
+        self.assertIn("Backend Intern role at Acme", drafts["why"])
+        self.assertTrue(re.search(plan["drafts"][0]["pattern"], "what are your plans after graduation"))
+        self.assertEqual(application.applying.standard_key("What is your current year in school?"), "class_year")
+        self.assertIn("First Year", {a["key"]: a for a in plan["answers"]}["class_year"]["options"])
+
+    def test_odds_are_blunt_and_capped(self):
+        self.add_resume(self.JAKE)
+        self.client.post("/profile", data={"class_year": "Freshman", "us_citizen": "Yes", "state": "VA", "gpa": "N/A"})
+        p = application.profile()
+        match = {"eligibility": "unknown", "breakdown": {"skills": 70}}
+        resume = "Software Engineering Intern"
+        big = application.role_odds({"title": "SWE Intern", "company": "Google", "description": "Build services on AWS."}, match, p, resume)
+        self.assertEqual(big["label"], "Unlikely")  # capped for a freshman, whatever else fits
+        aws = application.role_odds({"title": "SWE Intern", "company": "Acme Logistics", "description": "We deploy to AWS and Microsoft Azure."}, match, p, resume)
+        self.assertNotIn("Big tech", " ".join(r["text"] for r in aws["reasons"]))
+        upper = application.role_odds({"title": "SWE Intern", "company": "Acme", "description": "Open to rising juniors and seniors only."}, match, p, resume)
+        self.assertIn("screened out", " ".join(r["text"] for r in upper["reasons"]))
+        cleared = application.role_odds({"title": "SWE Intern", "company": "Acme", "description": "Must have an active Secret clearance."}, match, p, resume)
+        self.assertEqual((cleared["label"], cleared["odds"]), ("Very unlikely", "under 1%"))
+        local = application.role_odds({"title": "Software Engineering Intern", "company": "Leidos",
+                                       "description": "Reston, VA. U.S. citizenship is required."}, match, p, resume)
+        self.assertEqual(local["label"], "Decent shot")
+        job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "description": self.POSTING}).json["saved_job_id"]
+        self.assertIn(b"Honest odds as a freshman", self.client.get(f"/job/{job_id}").data)
+
     def test_application_copy_is_saved_downloaded_and_removed_with_role(self):
         self.add_resume(self.JAKE)
         job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "url": "https://boards.example.com/acme/jobs/4012345",

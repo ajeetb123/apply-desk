@@ -93,6 +93,29 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     setTimeout(() => { target.style.boxShadow = before; }, 2600);
   }
 
+  // A search box: type the query and press Enter, the way a person searches
+  // (Workday searches on Enter). No blur, which would clear the query first.
+  function search(el, value) {
+    el.focus({ preventScroll: true });
+    try { el.select(); } catch (error) { /* some inputs can't select */ }
+    let typed = false;
+    try { typed = document.execCommand('insertText', false, value); } catch (error) { typed = false; }
+    if (!typed || el.value !== value) {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    if (value) pressEnter(el);
+  }
+
+  function pressEnter(el) {
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      const event = new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, charCode: type === 'keypress' ? 13 : 0, bubbles: true, cancelable: true });
+      // Older handlers read keyCode/which, which some browsers don't take from the options.
+      for (const name of ['keyCode', 'which']) if (event[name] !== 13) Object.defineProperty(event, name, { get: () => 13 });
+      el.dispatchEvent(event);
+    }
+  }
+
   // Typed with insertText so React, Workday, and other frameworks see real input.
   function typeInto(el, value) {
     el.focus({ preventScroll: true });
@@ -254,7 +277,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (match) {
       // A click normally chooses; some lists only take Enter on the option.
       for (const attempt of [() => press(match), () => press(match.querySelector('div, span') || match),
-                             () => { match.focus(); match.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })); }]) {
+                             () => { match.focus(); pressEnter(match); }]) {
         if (!match.isConnected) break;
         attempt();
         if (await waitFor(() => !placeholderText(textOf(button)), 1200)) {
@@ -298,8 +321,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const searches = (want.search || want.values).filter(Boolean).slice(0, 4);
     let previous = null;
     for (const term of searches) {
-      typeInto(input, term);
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      search(input, term);
       const options = await freshOptions(input, before, previous, 2500);
       previous = options ? options.map(optionLabel).join('|') : previous;
       const picked = await choose(options);
@@ -308,12 +330,12 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         note(input, question, picked);
         return true;
       }
-      typeInto(input, '');
+      search(input, '');
     }
     if (want.browse) {
       // No search hit: open the whole list and pick the most relevant entry.
       press(input);
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      pressEnter(input);
       const picked = await choose(await freshOptions(input, before, null, 2500));
       if (picked) {
         await closeLists(input);
@@ -385,8 +407,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const parts = (p.name || '').trim().split(/\s+/);
   const school = (plan.education || [])[0] || {};
   const schoolNames = school.school_options && school.school_options.length ? school.school_options : [p.school];
-  // Search by the official name, the user's own, then its first two words.
-  const schoolSearch = names => [names[0], names[names.length - 1], (names[0] || '').split(' ').slice(0, 2).join(' ')];
+  // Search the way a person would: the everyday name, the start of the
+  // official name, then the whole official name.
+  const schoolSearch = names => [...new Set([names[names.length - 1], (names[0] || '').split(' ').slice(0, 3).join(' '), names[0]])].filter(Boolean);
   const contact = [
     ['email', /e ?mail/, [p.email]], ['phone', /phone number|^phone$|mobile|cell(ular)? number|telephone/, [p.phone]],
     ['linkedin', /linkedin/, [p.linkedin]], ['github', /github/, [p.github]],
@@ -415,6 +438,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (!want) return '';
     if (want.source === 'disclosure') return want.declined ? 'Chose the decline option for you' : 'Your self-identification answer from Profile';
     if (want.source === 'learned') return 'From an answer you gave on an earlier application';
+    if (want.source === 'draft') return 'Draft by Apply Desk. Edit it in your own words';
+    if (want.source === 'neutral') return `No saved answer, so Apply Desk picked "${value}". Check it`;
     if (want.browse && value && norm(value) !== norm(want.values[0])) return `Closest option to your answer: ${want.values[0]}`;
     if (want.date && want.date === plan.start && /today/i.test(plan.start.source || '')) return "Today's date: the posting gives no start date";
     return '';
@@ -450,6 +475,11 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     for (const learned of plan.learned || []) {
       if (norm(learned.question) === q || similar(learned.question, q) >= 0.8) return { values: learned.answer.split(/;\s*/), source: 'learned' };
     }
+    // Common short-answer questions get a plain draft from the user's own details.
+    if (el.tagName === 'TEXTAREA' || isText(el)) {
+      const draft = (plan.drafts || []).find(d => new RegExp(d.pattern, 'i').test(q));
+      if (draft) return { values: [draft.text], source: 'draft' };
+    }
     if (otherPeople.test(q) || /\bwhy\b|describe|statement|cover letter|tell us|explain/.test(q)) return null;
     const hints = el.closest ? hintsOf(el) : q;
     for (const [, pattern, values, how] of contact) {
@@ -472,7 +502,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (isListbox(el)) return await pickListbox(el, { ...want, values }, question);
       if (isPrompt(el)) return selectedPills(el).length ? false : await pickPrompt(el, { ...want, values }, question);
       // Self-identification answers are picked from the form's options, never typed.
-      if (isText(el) && !el.value.trim() && want.source !== 'disclosure') {
+      if ((isText(el) || (el.tagName === 'TEXTAREA' && want.source === 'draft')) && !el.value.trim() && want.source !== 'disclosure') {
         typeInto(el, values[0]);
         note(el, question, values[0]);
         return true;
@@ -579,8 +609,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const names = [];
     for (const skill of plan.skills) {
       if (have.includes(norm(skill)) || added >= 10) continue;
-      typeInto(input, skill);
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      search(input, skill);
       const options = await freshOptions(input, before, previous, 2500);
       previous = options ? options.map(optionLabel).join('|') : previous;
       const match = options && best(options, [skill]);
@@ -589,7 +618,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         press(match);
         if (await waitFor(() => selectedPills(input).length > count, 1200)) { added += 1; names.push(optionLabel(match)); }
       }
-      typeInto(input, '');
+      search(input, '');
     }
     await closeLists(input);
     if (added) {
@@ -855,7 +884,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     glow(target);
   }
 
-  function showPanel(title, subtitle, groups, footer) {
+  function showPanel(title, subtitle, groups, footer, action = null, onClose = null) {
     document.querySelectorAll('#apply-desk-panel').forEach(node => node.remove());
     const host = make('div');
     host.id = 'apply-desk-panel';
@@ -882,7 +911,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       li button:hover, li button:focus-visible { background: rgba(127,127,127,.12); }
       .q { font-weight: 500; } .v { overflow-wrap: anywhere; } .why { color: var(--tone); font-size: 12px; }
       .page { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 8px 8px 2px; }
-      .foot { font-size: 12px; margin: 8px 0 2px; }`));
+      .foot { font-size: 12px; margin: 8px 0 2px; }
+      .act { all: unset; cursor: pointer; font-weight: 600; font-size: 12px; padding: 5px 10px; border-radius: 8px; background: rgba(127,127,127,.14); }`));
     const card = make('section', 'card');
     card.setAttribute('role', 'dialog');
     card.setAttribute('aria-label', title);
@@ -891,7 +921,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     heading.append(make('h2', '', title), make('p', 'sub', subtitle));
     const close = make('button', 'close', '×');
     close.setAttribute('aria-label', 'Close');
-    close.addEventListener('click', () => host.remove());
+    close.addEventListener('click', () => { host.remove(); if (onClose) onClose(); });
     top.append(make('span', 'mark'), heading, close);
     card.appendChild(top);
     for (const group of groups) {
@@ -921,17 +951,71 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       card.appendChild(details);
     }
     card.appendChild(make('p', 'foot', footer));
+    if (action) {
+      const button = make('button', 'act', action.label);
+      button.addEventListener('click', action.onClick);
+      card.appendChild(button);
+    }
     root.appendChild(card);
     document.documentElement.appendChild(host);
   }
 
   const roleName = plan.role ? [plan.role.title, plan.role.company].filter(Boolean).join(' · ') : '';
 
-  function showNeeds(needs, errors) {
+  function showNeeds(needs, errors, waiting = false) {
     const items = needs.map(need => ({ question: need.question, el: need.el }))
       .concat(errors.filter(text => !needs.some(need => text.includes(need.question))).map(text => ({ question: text })));
-    showPanel(`${pageNow || 'This page'} needs you`, `Apply Desk filled what it could here${roleName ? ` for ${roleName}` : ''}.`,
-              [{ title: 'Answer these', tone: '#e5484d', items }], 'Then press ` to keep going. Apply Desk picks up from this page.');
+    if (!waiting) {
+      showPanel(`${pageNow || 'This page'} needs you`, `Apply Desk filled what it could here${roleName ? ` for ${roleName}` : ''}.`,
+                [{ title: 'Answer these', tone: '#e5484d', items }], 'Then press ` to keep going. Apply Desk picks up from this page.');
+      return;
+    }
+    const stop = () => { window.__applyDeskStop = true; };
+    showPanel(items.length ? `Waiting for you on ${pageNow || 'this page'}` : 'All answered', items.length
+                ? 'Apply Desk filled everything else it could. Answer these and it keeps going by itself.' : 'Continuing when you stop typing…',
+              [{ title: 'Answer these', tone: '#e5484d', items }], 'Press ` or close this to stop here.', { label: 'Stop here', onClick: stop }, stop);
+  }
+
+  // Required choices with no saved answer: a neutral option when the form has one.
+  const NEUTRAL = ['N/A', 'NA', 'Not applicable', 'None', 'Prefer not to say', 'Prefer not to answer', 'I prefer not to answer',
+                   'I do not wish to answer', "I don't wish to answer"];
+  async function fillNeutral(needs) {
+    for (const need of needs) {
+      const el = need.el;
+      current = { source: 'neutral' };
+      if (el.tagName === 'SELECT') pickSelect(el, NEUTRAL, need.question, 'prefix');
+      else if (isListbox(el)) await pickListbox(el, { values: NEUTRAL, strict: 'prefix' }, need.question);
+      else if (el.type === 'radio') pickRadio(controlsIn(document).filter(r => r.type === 'radio' && r.name === el.name), NEUTRAL, need.question, 'prefix');
+      current = null;
+    }
+  }
+
+  // Waits on the page while the user answers what's left, then carries on by
+  // itself once nothing required is blank and they've stopped typing.
+  async function waitForUser() {
+    let lastActivity = Date.now(), shown = null;
+    const touch = () => { lastActivity = Date.now(); };
+    const events = ['input', 'change', 'keydown', 'pointerdown'];
+    events.forEach(type => document.addEventListener(type, touch, true));
+    window.__applyDeskBusy = false;     // the user's own answers can be learned
+    state.waiting = true;
+    try {
+      for (const end = Date.now() + 20 * 60e3; Date.now() < end;) {
+        await sleep(800);
+        state.beat += 1;
+        if (window.__applyDeskStop) return false;
+        const left = needsOnPage();
+        const key = left.map(need => need.question).join('|');
+        if (key !== shown) { shown = key; showNeeds(left, errorsShown().filter(() => left.length), true); }
+        state.needs = left.map(need => need.question);
+        if (!left.length && Date.now() - lastActivity > 4000) return true;
+      }
+      return false;
+    } finally {
+      events.forEach(type => document.removeEventListener(type, touch, true));
+      state.waiting = false;
+      window.__applyDeskBusy = true;
+    }
   }
 
   // Everything filled across the run, checked against what the review page shows.
@@ -966,6 +1050,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     state.checks = check.length;
   }
 
+  const removePanel = () => document.querySelectorAll('#apply-desk-panel').forEach(node => node.remove());
+
   // ---------- Run: fill, continue, repeat ----------
   (async () => {
     window.__applyDeskBusy = true;
@@ -977,7 +1063,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         state.beat += 1;
         if (signInPage()) { state.stop = 'signin'; break; }
         if (onReview()) { showReview(); state.stop = 'review'; break; }
-        if (step >= 12) { state.stop = 'limit'; break; }
+        if (step >= 20) { state.stop = 'limit'; break; }
         // Workday's start page: choose to fill it in here rather than upload-and-parse.
         const manual = controlsIn(document).length < 2 && !continueButton() && applyManuallyButton();
         if (manual) {
@@ -988,12 +1074,18 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         }
         await fillPage();
         saveRun();
-        const needs = needsOnPage();
+        let needs = needsOnPage();
         if (needs.length) {
-          showNeeds(needs, []);
+          await fillNeutral(needs);
+          saveRun();
+          needs = needsOnPage();
+        }
+        if (needs.length) {
           state.needs = needs.map(need => need.question);
-          state.stop = 'needs';
-          break;
+          // A single-page form ends here; on a step, wait and then keep going.
+          if (!continueButton()) { showNeeds(needs, []); state.stop = 'needs'; break; }
+          if (!(await waitForUser())) { state.stop = window.__applyDeskStop ? 'stopped' : 'needs'; break; }
+          removePanel();
         }
         const next = continueButton();
         if (!next) { state.stop = 'end'; break; }
@@ -1010,14 +1102,12 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         state.advancing = false;
         if (!moved) {
           const blank = needsOnPage(), errors = errorsShown();
-          if (blank.length || errors.length) {
-            showNeeds(blank, errors);
-            state.needs = [...blank.map(need => need.question), ...errors].slice(0, 12);
-            state.stop = 'errors';
-          } else {
-            state.stop = 'stuck';
-          }
-          break;
+          if (!blank.length && !errors.length) { state.stop = 'stuck'; break; }
+          // The site found something missing: wait for the user, then try again.
+          state.needs = [...blank.map(need => need.question), ...errors].slice(0, 12);
+          showNeeds(blank, errors, true);
+          if (!(await waitForUser())) { state.stop = window.__applyDeskStop ? 'stopped' : 'errors'; break; }
+          removePanel();
         }
       }
       if (!state.items.length && !state.attached) {
