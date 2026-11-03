@@ -484,6 +484,26 @@ class ApplyDeskApiTests(unittest.TestCase):
         answers = {a["key"]: a for a in self.client.get(f"/api/fill-plan?job_id={same}").json["answers"]}
         self.assertEqual(answers["previously_employed"]["answer"], "Yes")
 
+    def test_listing_answers_and_open_locations(self):
+        facts = application.applying.listing_facts("Software Engineer Intern, Summer 2027", "Locations: Reston, VA; Huntsville, AL. Hybrid.",
+                                                   "https://acme.wd5.myworkdayjobs.com/External/job/Reston-VA/Software-Engineer-Intern_R-00157321")
+        self.assertEqual((facts["term"], facts["job_id"], facts["locations"]), ("Summer 2027", "R-00157321", ["Reston, VA", "Huntsville, AL"]))
+        ask = application.applying.standard_key
+        self.assertEqual(ask("Please indicate your location preference."), "location_preference")
+        self.assertEqual(ask("Are you able to work on-site in Reston, VA?"), "work_onsite")
+        self.assertEqual(ask("Are you willing to relocate?"), "relocate")
+        self.add_resume(self.JAKE)
+        self.client.post("/profile", data={"location_preference": "Open to all", "state": "VA"})
+        job_id = self.client.post("/api/evaluate", json={"title": "Software Engineer Intern, Summer 2027", "company": "Acme",
+                                                         "url": "https://acme.wd5.myworkdayjobs.com/External/job/Reston-VA/Intern_R-00157321",
+                                                         "description": self.POSTING + " Location: Reston, VA."}).json["saved_job_id"]
+        answers = {a["key"]: a for a in self.client.get(f"/api/fill-plan?job_id={job_id}").json["answers"]}
+        self.assertTrue(answers["location_preference"]["open"])
+        self.assertEqual(answers["location_preference"]["options"][0], "No preference")
+        self.assertIn("Reston, VA", answers["location_preference"]["options"])
+        self.assertEqual(answers["listing_term"]["answer"], "Summer 2027")
+        self.assertEqual(answers["listing_job_id"]["answer"], "R-00157321")
+
     def test_application_copy_is_saved_downloaded_and_removed_with_role(self):
         self.add_resume(self.JAKE)
         job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "url": "https://boards.example.com/acme/jobs/4012345",
@@ -572,11 +592,15 @@ class ApplyDeskApiTests(unittest.TestCase):
 
     def test_learned_answers_are_reused_but_never_sensitive_or_essays(self):
         answers = [{"question": "Have you previously worked for this organization?", "answer": "No"},
-                   {"question": "We have offices nationwide. Please indicate your location preference.", "answer": "Texas; Utah"},
+                   {"question": "Which of our teams interests you most?", "answer": "Texas; Utah"},
                    {"question": "Gender", "answer": "Male"}, {"question": "Salary expectations", "answer": "$40/hour"},
                    {"question": "Why do you want to work here?", "answer": "Because"}, {"question": "Email", "answer": ""}]
         self.assertEqual(self.client.post("/api/answers", json={"answers": answers}).json["saved"], 2)
         self.assertEqual(application.profile()["previously_employed"], "No")
+        # A location preference typed on a form becomes the Profile answer, one place at a time.
+        self.client.post("/api/answers", json={"answers": [{"question": "Please indicate your location preference.", "answer": "Texas; Utah"}]})
+        prefs = next(a for a in self.client.get("/api/fill-plan").json["answers"] if a["key"] == "location_preference")
+        self.assertEqual((prefs["options"], prefs.get("open")), (["Texas", "Utah"], False))
         plan = self.client.get("/api/fill-plan").json
         self.assertEqual([a["answer"] for a in plan["learned"]], ["Texas; Utah"])
         page = self.client.get("/profile").data

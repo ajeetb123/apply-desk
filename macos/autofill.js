@@ -292,7 +292,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   }
 
   const selectedPills = el => {
-    const field = el.closest('[data-automation-id^="formField"], [data-automation-id="multiselectInputContainer"]') || el.parentElement;
+    const field = el.closest('[data-automation-id^="formField"], [data-automation-id="multiselectInputContainer"]') || el.parentElement || document.createElement('div');
     return [...field.querySelectorAll('[data-automation-id="selectedItem"], [data-automation-id="selectedItemList"] [role="option"], .selected-pill')]
       .map(textOf).filter(Boolean);
   };
@@ -466,15 +466,19 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const dated = p.graduation_dates || {};
       return el.tagName === 'SELECT' || isListbox(el) ? { values: [dated.year, p.graduation], source: 'date' } : { date: dated, source: 'date' };
     }
+    // A standard question owns its question; when its answer is blank, only
+    // something the user answered on an earlier form can fill it.
+    let claimed = false;
     for (const answer of plan.answers || []) {
       if (!new RegExp(answer.pattern, 'i').test(q)) continue;
-      // An unanswered standard question is the user's to answer.
-      if (!answer.answer) return null;
-      return { values: answer.options.length ? answer.options : [answer.answer], source: 'answer', browse: answer.key === 'heard_about' };
+      if (!answer.answer) { claimed = true; break; }
+      return { values: answer.options.length ? answer.options : [answer.answer], source: 'answer', key: answer.key, open: !!answer.open,
+               browse: answer.key === 'heard_about' || !!answer.open };
     }
     for (const learned of plan.learned || []) {
       if (norm(learned.question) === q || similar(learned.question, q) >= 0.8) return { values: learned.answer.split(/;\s*/), source: 'learned' };
     }
+    if (claimed) return null;
     // Common short-answer questions get a plain draft from the user's own details.
     if (el.tagName === 'TEXTAREA' || isText(el)) {
       const draft = (plan.drafts || []).find(d => new RegExp(d.pattern, 'i').test(q));
@@ -598,31 +602,48 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   }
 
   // ---------- Skills ----------
+  // Adds the posting's most relevant skills (the plan lists them best first),
+  // up to any limit the form states. Workday redraws the box after each pick,
+  // so it's found again every time, and skills already added are skipped
+  // (picking one again would remove it).
   async function fillSkills() {
-    const input = controlsIn(document).find(el => isPrompt(el) && /skill/.test(norm(questionOf(el))));
+    const findInput = () => controlsIn(document).find(el => isPrompt(el) && /skill/.test(norm(questionOf(el))));
+    let input = findInput();
     if (!input || !(plan.skills || []).length) return;
-    handled.add(input);
-    const have = selectedPills(input).map(norm);
+    const fieldOf = el => (el && (el.closest('[data-automation-id^="formField"]') || (el.closest('[data-automation-id="multiselectInputContainer"]') || el).parentElement)) || document.body;
+    const pills = () => {
+      const field = fieldOf(findInput() || input);
+      return [...field.querySelectorAll('[data-automation-id="selectedItem"], [data-automation-id="selectedItemList"] [role="option"], .selected-pill')].map(textOf).filter(Boolean);
+    };
+    const stated = textOf(fieldOf(input)).match(/(?:up to|max(?:imum)?(?: of)?|no more than|at most|limit of)\s*(\d{1,2})/i);
+    const limit = Math.min(10, stated ? Number(stated[1]) : 10);
+    const has = name => pills().some(pill => norm(pill) === norm(name) || norm(pill).startsWith(norm(name) + ' '));
     await closeLists();
     const before = new Set(openOptions());
-    let added = 0, previous = null;
+    let previous = null;
     const names = [];
     for (const skill of plan.skills) {
-      if (have.includes(norm(skill)) || added >= 10) continue;
+      if (pills().length >= limit) break;
+      if (has(skill)) continue;
+      input = findInput() || input;
+      if (!input.isConnected) break;
+      handled.add(input);
       search(input, skill);
       const options = await freshOptions(input, before, previous, 2500);
       previous = options ? options.map(optionLabel).join('|') : previous;
       const match = options && best(options, [skill]);
-      const count = selectedPills(input).length;
-      if (match && norm(optionLabel(match)).startsWith(norm(skill).slice(0, 3))) {
+      if (match && norm(optionLabel(match)).startsWith(norm(skill).slice(0, 3)) && !has(optionLabel(match))) {
+        const count = pills().length;
         press(match);
-        if (await waitFor(() => selectedPills(input).length > count, 1200)) { added += 1; names.push(optionLabel(match)); }
+        if (await waitFor(() => pills().length > count, 2000)) names.push(optionLabel(match));
       }
-      search(input, '');
+      input = findInput() || input;
+      if (input.isConnected && input.value) search(input, '');
     }
+    input = findInput() || input;
     await closeLists(input);
-    if (added) {
-      state.filled.push(`skills (${added})`);
+    if (names.length) {
+      state.filled.push(`skills (${names.length})`);
       state.items.push({ page: pageNow, question: 'Skills', value: names.join(', '), flag: '' });
       glow(input);
     }
@@ -747,11 +768,17 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (checked.length) { remember(question, checked.map(choiceLabel).join('; ')); continue; }
       // Self-identification boxes (disability forms) are often known only by their options.
       const want = wanted(group[0], question) || disclosureFor(group.map(choiceLabel).join(' '));
-      if (!want || !['learned', 'disclosure'].includes(want.source)) continue;
+      if (!want || !(['learned', 'disclosure'].includes(want.source) || want.key === 'location_preference')) continue;
       current = want;
       if (want.source === 'disclosure') {
         const match = best(group, want.values, choiceLabel, 'prefix');
         if (match && !match.checked) { press(match); note(match, question, choiceLabel(match)); }
+      } else if (want.open) {
+        // Open to every location: the "no preference" box when there is one, otherwise all of them.
+        const any = group.find(box => /no preference|^any\b|^all\b|open to (all|any)|anywhere|flexible/i.test(choiceLabel(box)));
+        const targets = any ? [any] : group;
+        targets.filter(box => !box.checked).forEach(press);
+        note(group[0], question, targets.map(choiceLabel).join('; '));
       } else {
         const picked = [];
         for (const value of want.values) {
