@@ -399,6 +399,37 @@ class ApplyDeskApiTests(unittest.TestCase):
             self.assertIn(b'<span class="right">Austin, TX</span>', page.data)
             self.assertNotIn(b"\\resumeItem", page.data)
 
+    def test_one_fill_run_is_one_record_with_its_review(self):
+        self.add_resume(self.JAKE)
+        job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "description": self.POSTING}).json["saved_job_id"]
+        pdf = base64.b64encode(b"%PDF-1.4 test resume").decode()
+        first = [{"page": "My Information", "question": "State", "value": "Virginia", "flag": ""}]
+        later = first + [{"page": "Voluntary Disclosures", "question": "Gender", "value": "I do not wish to answer", "flag": "Chose the decline option for you"}]
+        one = self.client.post("/api/applications", json={"job_id": job_id, "run": "r1", "review": first, "attached": False, "pdf": pdf}).json["id"]
+        two = self.client.post("/api/applications", json={"job_id": job_id, "run": "r1", "review": later, "attached": True, "pdf": pdf}).json["id"]
+        self.assertEqual(one, two)  # later pages update the same record
+        page = self.client.get(f"/job/{job_id}").data.decode()
+        self.assertEqual(page.count("Attached to your application"), 1)
+        self.assertIn("filled 2 fields", page)
+        self.assertIn("Review · 1 to check", page)
+        self.assertIn("Chose the decline option for you", page)
+
+    def test_self_identification_defaults_to_declining(self):
+        plan = self.client.get("/api/fill-plan").json
+        disclosures = {d["key"]: d for d in plan["disclosures"]}
+        self.assertTrue(disclosures["eeo_gender"]["declined"])
+        self.assertIn("I do not wish to answer", disclosures["eeo_gender"]["options"])
+        self.assertEqual(len(plan["today"]["year"]), 4)
+        self.client.post("/profile", data={"eeo_gender": "Male", "eeo_race": "Asian", "eeo_veteran": "I am not a protected veteran"})
+        disclosures = {d["key"]: d for d in self.client.get("/api/fill-plan").json["disclosures"]}
+        self.assertEqual(disclosures["eeo_gender"]["options"][:2], ["Male", "Man"])
+        self.assertFalse(disclosures["eeo_gender"]["declined"])
+        self.assertIn("Asian (Not Hispanic or Latino)", disclosures["eeo_race"]["options"])
+        self.assertTrue(disclosures["eeo_disability"]["declined"])
+        self.assertIn(b"Voluntary self-identification", self.client.get("/profile").data)
+        # Self-identification answers are never learned from forms.
+        self.assertEqual(self.client.post("/api/answers", json={"answers": [{"question": "Are you Hispanic or Latino?", "answer": "No"}]}).json["saved"], 0)
+
     def test_application_copy_is_saved_downloaded_and_removed_with_role(self):
         self.add_resume(self.JAKE)
         job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "url": "https://boards.example.com/acme/jobs/4012345",

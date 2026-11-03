@@ -13,7 +13,7 @@ import subprocess
 import threading
 import time
 import unicodedata
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -46,7 +46,7 @@ LINK_FIELDS = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("website", "Port
 # Values the Mac app may type into clearly labeled, empty application fields.
 AUTOFILL_FIELDS = [key for key, _ in CONTACT_FIELDS + EDUCATION_FIELDS + LINK_FIELDS]
 PROFILE_FIELDS = AUTOFILL_FIELDS + ["target_roles", "skills", "career_goals", "role_campaigns", "larp"] + [
-    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS]
+    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS] + applying.DISCLOSURE_KEYS
 
 
 @app.before_request
@@ -107,6 +107,11 @@ def init_db():
         for column in ("wave", "sector", "funding_stage"):
             if column not in columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        # One fill run (every page of an application) is one record, with its review.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(applications)")}
+        for column, default in (("run", "''"), ("review", "'[]'")):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE applications ADD COLUMN {column} TEXT NOT NULL DEFAULT {default}")
         # Earlier versions read only a page's first heading, so some roles have
         # no company or a site banner ("Careers at ...") as their title.
         for row in conn.execute("SELECT id, title, company, url, description FROM jobs WHERE company='' OR title LIKE 'Careers%'").fetchall():
@@ -976,7 +981,7 @@ def profile_page():
         with db() as conn:
             learned = [dict(r) for r in conn.execute("SELECT id, label, answer, updated FROM answers ORDER BY updated DESC")]
         return render_template("profile.html", page="profile", title="Profile", profile=profile(), learned=learned,
-                               standard=applying.STANDARD_QUESTIONS,
+                               standard=applying.STANDARD_QUESTIONS, disclosures=applying.DISCLOSURE_QUESTIONS,
                                groups=[("Contact", "Used to fill application forms.", CONTACT_FIELDS),
                                        ("Education", "Checked against graduation windows.", EDUCATION_FIELDS),
                                        ("Links", "Filled into LinkedIn, GitHub, and portfolio fields.", LINK_FIELDS)],
@@ -1023,9 +1028,11 @@ def job(job_id):
                   "Assertive": "Several posting terms already appear in the resume. Put those proven skills and outcomes first, without inflating scope or metrics."}[voice]
     p = profile()
     with db() as conn:
-        sent = [dict(r) for r in conn.execute("SELECT id, created, url, attached, filled, extension, pages, pdf IS NOT NULL AS has_pdf FROM applications WHERE job_id=? ORDER BY id DESC", (job_id,))]
+        sent = [dict(r) for r in conn.execute("SELECT id, created, url, attached, filled, extension, pages, review, pdf IS NOT NULL AS has_pdf FROM applications WHERE job_id=? ORDER BY id DESC", (job_id,))]
     for application in sent:
         application["host"] = urlparse(application["url"]).netloc
+        application["review"] = json.loads(application["review"] or "[]")
+        application["checks"] = sum(1 for item in application["review"] if item.get("flag"))
     return render_template("job.html", page="job", title=item["title"] or "Role", job=item, report=report, match=match, resume=resume,
                            tuned=tuned, profile=p, voice=voice, voice_note=voice_note, campaign_options=campaign_options(p),
                            applications=sent, pdf_name=resume_pdf_name())
@@ -1195,15 +1202,24 @@ def api_save_application():
         return {"error": "Job or resume not found."}, 404
     tuned = tune_resume(resume["text"], row["description"], row["title"] or "")
     attached = bool(data.get("attached"))
-    filled = ", ".join(str(field) for field in (data.get("fields") or [])[:30])
+    run = str(data.get("run") or "")[:40]
+    review = [{key: str(item.get(key) or "")[:300] for key in ("page", "question", "value", "flag")}
+              for item in (data.get("review") if isinstance(data.get("review"), list) else [])[:200] if isinstance(item, dict)]
+    filled = f"{len(review)} field{'s' if len(review) != 1 else ''}" if review else ", ".join(str(field) for field in (data.get("fields") or [])[:30])
     try:
         pages = max(1, min(int(data.get("pages") or 1), 9))
     except (TypeError, ValueError):
         pages = 1
     with db() as conn:
-        cursor = conn.execute("INSERT INTO applications(job_id,created,url,attached,filled,source,extension,pdf,pages,changes) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        # Later pages of the same application update its record.
+        existing = conn.execute("SELECT id, attached FROM applications WHERE job_id=? AND run=?", (job_id, run)).fetchone() if run else None
+        if existing:
+            conn.execute("UPDATE applications SET attached=?, filled=?, review=?, url=? WHERE id=?",
+                         (int(attached or existing["attached"]), filled, json.dumps(review), safe_http_url(data.get("url", "")), existing["id"]))
+            return {"id": existing["id"], "filename": resume_pdf_name(), "company": row["company"] or "", "title": row["title"] or ""}
+        cursor = conn.execute("INSERT INTO applications(job_id,created,url,attached,filled,source,extension,pdf,pages,changes,run,review) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                               (job_id, datetime.now().isoformat(timespec="minutes"), safe_http_url(data.get("url", "")), int(attached), filled,
-                               tuned["text"], tuned["extension"], pdf, pages, json.dumps(tuned["changes"])))
+                               tuned["text"], tuned["extension"], pdf, pages, json.dumps(tuned["changes"]), run, json.dumps(review)))
         application_id = cursor.lastrowid
     log_activity("Resume attached" if attached else "Resume saved",
                  f"{'Attached' if attached else 'Saved'} a resume tuned for {row['title'] or 'a role'} at {row['company'] or 'company not set'}")
@@ -1301,7 +1317,9 @@ def api_fill_plan():
     education = applying.education_entries(sections, p)
     # Enrollment status ("Bachelor's") can come from the resume's degree too.
     hints = {**p, "degree": education[0]["degree"]} if education and not p.get("enrollment_status") else p
+    today = date.today()
     return {"profile": contact, "answers": applying.standard_answers(hints), "learned": learned,
+            "disclosures": applying.disclosure_answers(p), "today": applying.date_formats((today.year, today.month, today.day)),
             "experience": applying.experience_entries(sections), "education": education,
             "skills": tailored_skills(sections, posting, declared), "start": {**start, "source": start_source},
             "never": applying.NEVER, "role": {"id": row["id"], "title": row["title"], "company": row["company"]} if row else None}

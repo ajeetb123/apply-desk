@@ -2,14 +2,31 @@
 //   applyDeskFill(planBase64, resumePdfBase64, resumeNameBase64)
 // The plan (GET /api/fill-plan) holds only the user's own profile, saved
 // answers, resume entries, and tailored skills. The filler types only into
-// empty fields, never answers demographic questions, never checks consent
-// boxes, and never submits. Work continues after it returns; progress and
-// results are in window.__applyDeskFill.
+// empty fields, answers self-identification questions only as the user chose
+// in Profile (or with the form's decline option), never checks consent boxes,
+// and never submits. On multi-step applications (Workday) it fills a page,
+// clicks Save and Continue, and repeats until a page needs the user or the
+// Review step, where it shows a review panel. Work continues after it
+// returns; progress and results are in window.__applyDeskFill.
 function applyDeskFill(planB64, pdfB64, nameB64) {
   const decode = b64 => new TextDecoder().decode(Uint8Array.from(atob(b64 || ''), c => c.charCodeAt(0)));
   if (window.__applyDeskBusy && window.__applyDeskFill && !window.__applyDeskFill.done) return JSON.stringify({ started: true, already: true });
   const plan = JSON.parse(decode(planB64) || '{}');
-  const state = window.__applyDeskFill = { done: false, filled: [], attached: false, learn: [], skipped: [], blocks: 0 };
+  const state = window.__applyDeskFill = { done: false, filled: [], attached: false, learn: [], skipped: [], blocks: 0, beat: 0, stop: '', page: '', needs: [] };
+  // One application can span many pages and reloads; its progress is kept in
+  // this tab so the review covers every page, even after a stop.
+  let run = null;
+  try { run = JSON.parse(sessionStorage.getItem('applyDeskRun') || 'null'); } catch (error) { run = null; }
+  const roleId = plan.role ? plan.role.id : null;
+  if (!run || run.role !== roleId || Date.now() - (run.updated || 0) > 3 * 3600e3) {
+    run = { id: String(Date.now()), role: roleId, items: [], pages: [], learn: [], attached: false };
+  }
+  Object.assign(state, { run: run.id, items: run.items, pages: run.pages, learn: run.learn, attached: run.attached });
+  const saveRun = () => {
+    run.attached = state.attached;
+    run.updated = Date.now();
+    try { sessionStorage.setItem('applyDeskRun', JSON.stringify(run)); } catch (error) { /* storage can be blocked */ }
+  };
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const norm = s => (s || '').toLowerCase().replace(/&/g, ' and ').replace(/[_*:?()\[\]]+/g, ' ').replace(/[-–]/g, ' ').replace(/\s+/g, ' ').trim();
   const textOf = el => el ? (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim() : '';
@@ -168,6 +185,13 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const exact = texts.find(([, t]) => t === variant);
       if (exact) return exact[0];
       const led = texts.filter(([, t]) => t.startsWith(variant + ' ') || t.startsWith(variant + ','));
+      // Prefix mode: options that begin with the answer ("Asian (Not Hispanic
+      // or Latino)"), never ones that merely contain it ("Female" for "Male").
+      if (strict === 'prefix') {
+        const hit = shortest(led) || (!short && shortest(texts.filter(([, t]) => t.startsWith(variant))));
+        if (hit) return hit[0];
+        continue;
+      }
       if (strict) {
         const close = shortest(led.filter(([, t]) => t.length <= variant.length * 1.6));
         if (close) return close[0];
@@ -196,9 +220,13 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return top;
   }
 
-  function note(el, question) {
+  let current = null;     // the answer being filled, so the review can say where it came from
+  let pageNow = '';
+  function note(el, question, value = '') {
     handled.add(el);
     state.filled.push(norm(question).slice(0, 60));
+    const shown = String(value || '').replace(/\s+/g, ' ').trim();
+    state.items.push({ page: pageNow, question: String(question).replace(/\*\s*$/, '').trim().slice(0, 160), value: shown.slice(0, 300), flag: flagFor(current, shown) });
     glow(el);
   }
 
@@ -231,7 +259,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         attempt();
         if (await waitFor(() => !placeholderText(textOf(button)), 1200)) {
           await closeLists(button);
-          note(button, question);
+          note(button, question, textOf(button));
           return true;
         }
       }
@@ -261,9 +289,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         if (!match) return false;
         const count = selectedPills(input).length, label = optionLabel(match), key = options.map(optionLabel).join('|');
         press(match);
-        if (await waitFor(() => chosen(count, label), 900)) return true;
+        if (await waitFor(() => chosen(count, label), 900)) return label;
         options = await freshOptions(input, before, key, 1800);
-        if (!options || options.map(optionLabel).join('|') === key) return chosen(count, label);
+        if (!options || options.map(optionLabel).join('|') === key) return chosen(count, label) ? label : false;
       }
       return false;
     };
@@ -274,9 +302,10 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
       const options = await freshOptions(input, before, previous, 2500);
       previous = options ? options.map(optionLabel).join('|') : previous;
-      if (await choose(options)) {
+      const picked = await choose(options);
+      if (picked) {
         await closeLists(input);
-        note(input, question);
+        note(input, question, picked);
         return true;
       }
       typeInto(input, '');
@@ -285,9 +314,10 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       // No search hit: open the whole list and pick the most relevant entry.
       press(input);
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-      if (await choose(await freshOptions(input, before, null, 2500))) {
+      const picked = await choose(await freshOptions(input, before, null, 2500));
+      if (picked) {
         await closeLists(input);
-        note(input, question);
+        note(input, question, picked);
         return true;
       }
     }
@@ -302,15 +332,16 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     select.value = match.value;
     select.dispatchEvent(new Event('input', { bubbles: true }));
     select.dispatchEvent(new Event('change', { bubbles: true }));
-    note(select, question);
+    note(select, question, match.textContent.trim());
     return true;
   }
 
-  function pickRadio(radios, variants, question) {
-    const match = best(radios, variants, r => textOf(r.labels && r.labels[0]) || r.getAttribute('aria-label') || r.value);
+  const choiceLabel = r => textOf(r.labels && r.labels[0]) || r.getAttribute('aria-label') || r.value || '';
+  function pickRadio(radios, variants, question, strict = false) {
+    const match = best(radios, variants, choiceLabel, strict);
     if (!match) return false;
     press(match);
-    note(match, question);
+    note(match, question, choiceLabel(match));
     return true;
   }
 
@@ -329,7 +360,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       for (const [name, value] of [['month', formats.month], ['day', formats.day], ['year', formats.year]]) {
         if (parts[name] && !parts[name].value && value) { typeInto(parts[name], value); handled.add(parts[name]); any = true; }
       }
-      if (any) note(el, question);
+      if (any) note(el, question, ['month', 'day', 'year'].filter(name => parts[name]).map(name => formats[name]).join('/'));
       return any;
     }
     const type = (el.type || '').toLowerCase();
@@ -345,7 +376,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     } else {
       typeInto(el, value);
     }
-    note(el, question);
+    note(el, question, value);
     return true;
   }
 
@@ -372,6 +403,22 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const startDate = /(start|availability|available) date|when can you (start|begin)|earliest (start|date)|proposed start|date (you are )?available/;
   const graduationDate = /when (will|do) you (expect to )?graduate|graduation date|(expected|anticipated|projected) graduation|graduation (month|year|term)|date of graduation|completion date/;
   const consent = /agree|certif|acknowledg|consent|terms|attest|privacy|i understand|authori[sz]e (us|the company|.* to contact)/;
+  const todayDate = /^(today'?s )?date$|^date signed$|^signature date$/;
+  // Self-identification: the user's Profile answer, or the form's decline option.
+  function disclosureFor(text) {
+    const q = norm(text);
+    const found = (plan.disclosures || []).find(d => new RegExp(d.pattern, 'i').test(q));
+    return found ? { values: found.options, source: 'disclosure', strict: 'prefix', declined: !!found.declined } : null;
+  }
+  // Why a value deserves a second look in the review, if it does.
+  function flagFor(want, value) {
+    if (!want) return '';
+    if (want.source === 'disclosure') return want.declined ? 'Chose the decline option for you' : 'Your self-identification answer from Profile';
+    if (want.source === 'learned') return 'From an answer you gave on an earlier application';
+    if (want.browse && value && norm(value) !== norm(want.values[0])) return `Closest option to your answer: ${want.values[0]}`;
+    if (want.date && want.date === plan.start && /today/i.test(plan.start.source || '')) return "Today's date: the posting gives no start date";
+    return '';
+  }
   const tokens = s => new Set(norm(s).split(' ').filter(w => w.length > 2));
   const similar = (a, b) => {
     const x = tokens(a), y = tokens(b);
@@ -384,8 +431,12 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Returns {values, date} for a field, or null to leave it alone.
   function wanted(el, question) {
     const q = norm(question);
-    if (!q || never.test(q)) return null;
+    if (!q) return null;
+    const disclosure = disclosureFor(q);
+    if (disclosure) return disclosure;
+    if (never.test(q)) return null;
     if (el.tagName !== 'TEXTAREA' && startDate.test(q)) return { date: plan.start, source: 'date' };
+    if (el.tagName !== 'TEXTAREA' && todayDate.test(q) && plan.today) return { date: plan.today, source: 'date' };
     if (el.tagName !== 'TEXTAREA' && graduationDate.test(q)) {
       const dated = p.graduation_dates || {};
       return el.tagName === 'SELECT' || isListbox(el) ? { values: [dated.year, p.graduation], source: 'date' } : { date: dated, source: 'date' };
@@ -412,18 +463,24 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
 
   async function fillControl(el, question, want) {
     if (!want) return false;
-    if (want.date) return fillDate(el, want.date, question);
-    const values = want.values.filter(Boolean);
-    if (!values.length) return false;
-    if (el.tagName === 'SELECT') return pickSelect(el, values, question, want.strict);
-    if (isListbox(el)) return pickListbox(el, { ...want, values }, question);
-    if (isPrompt(el)) return selectedPills(el).length ? false : pickPrompt(el, { ...want, values }, question);
-    if (isText(el) && !el.value.trim()) {
-      typeInto(el, values[0]);
-      note(el, question);
-      return true;
+    current = want;
+    try {
+      if (want.date) return fillDate(el, want.date, question);
+      const values = want.values.filter(Boolean);
+      if (!values.length) return false;
+      if (el.tagName === 'SELECT') return pickSelect(el, values, question, want.strict);
+      if (isListbox(el)) return await pickListbox(el, { ...want, values }, question);
+      if (isPrompt(el)) return selectedPills(el).length ? false : await pickPrompt(el, { ...want, values }, question);
+      // Self-identification answers are picked from the form's options, never typed.
+      if (isText(el) && !el.value.trim() && want.source !== 'disclosure') {
+        typeInto(el, values[0]);
+        note(el, question, values[0]);
+        return true;
+      }
+      return false;
+    } finally {
+      current = null;
     }
-    return false;
   }
 
   // ---------- Work experience and education blocks ----------
@@ -475,10 +532,11 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       for (const el of controlsIn(blocks[i])) {
         if (handled.has(el)) continue;
         const q = norm(questionOf(el));
+        const label = `${kind === 'experience' ? 'Work experience' : 'Education'} ${i + 1}: ${questionOf(el).replace(/\*\s*$/, '')}`;
         let want = null;
         if (kind === 'experience') {
           if (el.type === 'checkbox') {
-            if (/current/.test(q) && entry.current && !el.checked) { press(el); note(el, q); }
+            if (/current/.test(q) && entry.current && !el.checked) { press(el); note(el, label, 'Yes'); }
             handled.add(el);
             continue;
           }
@@ -500,7 +558,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         handled.add(el);
         if (want && (want.date ? want.date && want.date.year : want.values.some(Boolean))) {
           const isEmpty = el.tagName === 'SELECT' ? el.selectedIndex <= 0 : isListbox(el) ? placeholderText(textOf(el)) : !el.value;
-          if (isEmpty || isDatePart(el)) await fillControl(el, q, want);
+          if (isEmpty || isDatePart(el)) await fillControl(el, label, want);
         }
       }
       for (const el of controlsIn(blocks[i])) handled.add(el);
@@ -518,6 +576,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     await closeLists();
     const before = new Set(openOptions());
     let added = 0, previous = null;
+    const names = [];
     for (const skill of plan.skills) {
       if (have.includes(norm(skill)) || added >= 10) continue;
       typeInto(input, skill);
@@ -528,12 +587,16 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const count = selectedPills(input).length;
       if (match && norm(optionLabel(match)).startsWith(norm(skill).slice(0, 3))) {
         press(match);
-        if (await waitFor(() => selectedPills(input).length > count, 1200)) added += 1;
+        if (await waitFor(() => selectedPills(input).length > count, 1200)) { added += 1; names.push(optionLabel(match)); }
       }
       typeInto(input, '');
     }
     await closeLists(input);
-    if (added) { state.filled.push(`skills (${added})`); glow(input); }
+    if (added) {
+      state.filled.push(`skills (${added})`);
+      state.items.push({ page: pageNow, question: 'Skills', value: names.join(', '), flag: '' });
+      glow(input);
+    }
   }
 
   // ---------- Remembering what the user typed ----------
@@ -614,67 +677,359 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     state.attached = true;
   }
 
-  // ---------- Run ----------
+  // ---------- One page ----------
+  async function fillPage() {
+    handled.clear();
+    attachResume();
+    await fillBlocks('experience', plan.experience);
+    await fillBlocks('education', plan.education);
+    await fillSkills();
+    const all = controlsIn(document);
+    const radios = {};
+    const boxes = {};
+    for (const el of all) {
+      if (handled.has(el)) continue;
+      const question = questionOf(el);
+      if (el.type === 'radio') {
+        (radios[el.name || question] = radios[el.name || question] || []).push(el);
+        continue;
+      }
+      if (el.type === 'checkbox') {
+        (boxes[question] = boxes[question] || []).push(el);
+        continue;
+      }
+      const value = answeredValue(el);
+      if (value) { remember(question, value); continue; }
+      await fillControl(el, question, wanted(el, question));
+    }
+    for (const group of Object.values(radios)) {
+      const question = questionOf(group[0]);
+      const checked = group.find(r => r.checked);
+      if (checked) { remember(question, choiceLabel(checked)); continue; }
+      const want = wanted(group[0], question) || disclosureFor(group.map(choiceLabel).join(' '));
+      current = want;
+      if (want && want.values) pickRadio(group, want.values, question, want.strict);
+      current = null;
+    }
+    for (const [question, group] of Object.entries(boxes)) {
+      // A lone box is usually consent ("I agree…"); only groups are preferences.
+      if (group.length < 2 || consent.test(norm(question)) || group.some(box => consent.test(norm(choiceLabel(box))))) continue;
+      const checked = group.filter(box => box.checked);
+      if (checked.length) { remember(question, checked.map(choiceLabel).join('; ')); continue; }
+      // Self-identification boxes (disability forms) are often known only by their options.
+      const want = wanted(group[0], question) || disclosureFor(group.map(choiceLabel).join(' '));
+      if (!want || !['learned', 'disclosure'].includes(want.source)) continue;
+      current = want;
+      if (want.source === 'disclosure') {
+        const match = best(group, want.values, choiceLabel, 'prefix');
+        if (match && !match.checked) { press(match); note(match, question, choiceLabel(match)); }
+      } else {
+        const picked = [];
+        for (const value of want.values) {
+          const match = best(group, [value], choiceLabel);
+          if (match && !match.checked) { press(match); picked.push(choiceLabel(match)); }
+        }
+        if (picked.length) note(group[0], question, picked.join('; '));
+      }
+      current = null;
+    }
+    try {
+      for (const [question, answer] of Object.entries(JSON.parse(sessionStorage.getItem('applyDeskSeen') || '{}'))) remember(question, answer);
+    } catch (error) { /* storage can be blocked */ }
+    await closeLists();
+  }
+
+  // ---------- Steps ----------
+  const pageTitle = () => {
+    const step = document.querySelector('[data-automation-id="progressBarActiveStep"]');
+    const stepText = step && textOf(step).replace(/(current )?step \d+ of \d+/ig, '').trim();
+    if (stepText) return stepText.slice(0, 80);
+    const head = [...document.querySelectorAll('main h1, main h2, h1, h2, [data-automation-id*="pageHeader"]')].find(h => visible(h) && textOf(h));
+    return (head ? textOf(head) : document.title).slice(0, 80);
+  };
+  const pageKey = () => [pageTitle(), location.pathname, ...controlsIn(document).slice(0, 6).map(questionOf)].join('|');
+  const buttonText = b => (textOf(b) || b.value || b.getAttribute('aria-label') || '').trim();
+  const clickable = () => [...document.querySelectorAll('button, input[type=submit], input[type=button], a[role=button], [role=button]')]
+    .filter(b => visible(b) && !b.disabled && b.getAttribute('aria-disabled') !== 'true');
+  // Buttons that move to the next step; anything that submits is never pressed.
+  const stepButton = /^(save (and|&) continue|continue|next|next step|proceed|save and next)$/i;
+  const finalButton = /submit|apply|send|finish|complete|sign|create account|log ?in/i;
+  function continueButton() {
+    const known = [...document.querySelectorAll('[data-automation-id="bottom-navigation-next-button"], [data-automation-id="pageFooterNextButton"]')];
+    return [...known, ...clickable()].find(b => visible(b) && !b.disabled && stepButton.test(buttonText(b)) && !finalButton.test(buttonText(b))) || null;
+  }
+  const applyManuallyButton = () => clickable().find(b => b.getAttribute('data-automation-id') === 'applyManually' || /^apply manually$/i.test(buttonText(b))) || null;
+  const signInPage = () => [...document.querySelectorAll('input[type=password]')].some(visible);
+  const onReview = () => /^review\b/i.test(pageTitle());
+  const loading = () => [...document.querySelectorAll('[data-automation-id="loadingSpinner"], [aria-busy="true"], [role="progressbar"]')].some(visible);
+  const isRequired = (el, question) => el.required || el.getAttribute('aria-required') === 'true' || /\*\s*$/.test(question || '');
+
+  // An end date in a job marked "I currently work here" isn't needed.
+  function currentJob(el) {
+    for (let node = el.parentElement, depth = 0; node && depth < 6; node = node.parentElement, depth += 1) {
+      const box = [...node.querySelectorAll('input[type=checkbox]')].find(b => /current|work here/i.test(choiceLabel(b) + ' ' + questionOf(b)));
+      if (box) return box.checked;
+    }
+    return false;
+  }
+
+  // Required questions on this page that are still blank after filling.
+  function needsOnPage() {
+    const needs = [], seen = new Set(), controls = controlsIn(document);
+    for (const el of controls) {
+      const question = questionOf(el);
+      if (!question || seen.has(question) || !isRequired(el, question)) continue;
+      if (/^to\b/.test(norm(question)) && currentJob(el)) continue;
+      let empty;
+      if (el.type === 'radio' || el.type === 'checkbox') {
+        const group = controls.filter(o => o.type === el.type && (el.type === 'radio' && el.name ? o.name === el.name : questionOf(o) === question));
+        empty = !group.some(o => o.checked);
+      } else if (el.tagName === 'TEXTAREA' || isDatePart(el)) {
+        empty = !el.value.trim();
+      } else {
+        empty = !answeredValue(el);
+      }
+      if (empty) {
+        seen.add(question);
+        needs.push({ question: question.replace(/\*\s*$/, '').trim().slice(0, 160), el });
+      }
+    }
+    return needs;
+  }
+
+  function errorsShown() {
+    const texts = [];
+    for (const el of document.querySelectorAll('[data-automation-id="errorMessage"], [data-automation-id="errorBanner"] li, [data-automation-id="inputAlert"], [role="alert"]')) {
+      const text = textOf(el);
+      if (visible(el) && text && text.length < 300 && !texts.includes(text)) texts.push(text);
+    }
+    return texts.slice(0, 10);
+  }
+
+  // After Continue: true once a new page has loaded and stopped changing;
+  // false if the page stayed (errors) or nothing happened.
+  async function nextPage(before) {
+    const started = Date.now();
+    while (Date.now() - started < 30000 && pageKey() === before) {
+      await sleep(300);
+      state.beat += 1;
+      if (Date.now() - started > 1500 && pageKey() === before && errorsShown().length) return false;
+    }
+    if (pageKey() === before) return false;
+    let last = '', same = 0;
+    for (const end = Date.now() + 12000; Date.now() < end && same < 3;) {
+      await sleep(300);
+      state.beat += 1;
+      const now = `${pageKey()}#${controlsIn(document).length}${loading() ? '…' : ''}`;
+      same = now === last ? same + 1 : 0;
+      last = now;
+    }
+    return true;
+  }
+
+  // ---------- The review panel ----------
+  // Drawn in its own shadow root so the site's styles can't touch it, and
+  // its contents never count as form fields.
+  function make(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function findOnPage(text) {
+    const wantText = norm(text).slice(0, 40);
+    if (!wantText) return null;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const parent = node.parentElement;
+      if (parent && visible(parent) && !parent.closest('#apply-desk-panel') && norm(parent.textContent).includes(wantText)) return parent;
+    }
+    return null;
+  }
+
+  function reveal(target) {
+    if (!target) return;
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (target.focus && /INPUT|SELECT|TEXTAREA|BUTTON/.test(target.tagName)) target.focus({ preventScroll: true });
+    glow(target);
+  }
+
+  function showPanel(title, subtitle, groups, footer) {
+    document.querySelectorAll('#apply-desk-panel').forEach(node => node.remove());
+    const host = make('div');
+    host.id = 'apply-desk-panel';
+    const root = host.attachShadow({ mode: 'open' });
+    root.appendChild(make('style', '', `
+      :host { all: initial; }
+      .card { position: fixed; top: 16px; right: 16px; z-index: 2147483647; width: 344px; max-height: calc(100vh - 32px); overflow: auto; box-sizing: border-box;
+        padding: 14px 14px 10px; border-radius: 14px; border: 1px solid rgba(0,0,0,.08); background: rgba(255,255,255,.97); color: #1d1d1f;
+        box-shadow: 0 18px 50px rgba(0,0,0,.18); font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; }
+      @media (prefers-color-scheme: dark) { .card { background: rgba(32,32,34,.97); color: #f5f5f7; border-color: rgba(255,255,255,.1); } }
+      .top { display: flex; gap: 10px; align-items: flex-start; }
+      .mark { width: 22px; height: 22px; border-radius: 7px; flex: none; background: linear-gradient(135deg, #10b77f, #2f80ed); }
+      h2 { font-size: 15px; margin: 0; font-weight: 650; }
+      .sub, .foot, .count, .v, .page { color: #6e6e73; }
+      .sub { margin: 2px 0 10px; }
+      .close { all: unset; margin-left: auto; cursor: pointer; padding: 0 4px; font-size: 18px; line-height: 1; color: #8e8e93; }
+      details { border-top: 1px solid rgba(127,127,127,.2); padding: 8px 0; }
+      summary { display: flex; gap: 8px; align-items: center; font-weight: 600; cursor: pointer; list-style: none; }
+      summary::-webkit-details-marker { display: none; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--tone); }
+      .count { margin-left: auto; font-weight: 500; }
+      ul { list-style: none; margin: 6px 0 0; padding: 0; }
+      li button { all: unset; display: block; box-sizing: border-box; width: 100%; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+      li button:hover, li button:focus-visible { background: rgba(127,127,127,.12); }
+      .q { font-weight: 500; } .v { overflow-wrap: anywhere; } .why { color: var(--tone); font-size: 12px; }
+      .page { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 8px 8px 2px; }
+      .foot { font-size: 12px; margin: 8px 0 2px; }`));
+    const card = make('section', 'card');
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-label', title);
+    const top = make('div', 'top');
+    const heading = make('div');
+    heading.append(make('h2', '', title), make('p', 'sub', subtitle));
+    const close = make('button', 'close', '×');
+    close.setAttribute('aria-label', 'Close');
+    close.addEventListener('click', () => host.remove());
+    top.append(make('span', 'mark'), heading, close);
+    card.appendChild(top);
+    for (const group of groups) {
+      if (!group.items.length) continue;
+      const details = make('details');
+      details.open = !group.collapsed;
+      details.style.setProperty('--tone', group.tone);
+      const summary = make('summary');
+      summary.append(make('span', 'dot'), make('span', '', group.title), make('span', 'count', String(group.items.length)));
+      const list = make('ul');
+      let page = null;
+      for (const item of group.items) {
+        if (group.byPage && item.page !== page) {
+          page = item.page;
+          list.appendChild(make('li', 'page', page || 'This page'));
+        }
+        const row = make('li');
+        const button = make('button');
+        button.append(make('div', 'q', item.question));
+        if (item.value) button.appendChild(make('div', 'v', item.value.length > 140 ? item.value.slice(0, 140) + '…' : item.value));
+        if (item.why) button.appendChild(make('div', 'why', item.why));
+        button.addEventListener('click', () => reveal(item.el && item.el.isConnected ? item.el : findOnPage(item.value || item.question)));
+        row.appendChild(button);
+        list.appendChild(row);
+      }
+      details.append(summary, list);
+      card.appendChild(details);
+    }
+    card.appendChild(make('p', 'foot', footer));
+    root.appendChild(card);
+    document.documentElement.appendChild(host);
+  }
+
+  const roleName = plan.role ? [plan.role.title, plan.role.company].filter(Boolean).join(' · ') : '';
+
+  function showNeeds(needs, errors) {
+    const items = needs.map(need => ({ question: need.question, el: need.el }))
+      .concat(errors.filter(text => !needs.some(need => text.includes(need.question))).map(text => ({ question: text })));
+    showPanel(`${pageNow || 'This page'} needs you`, `Apply Desk filled what it could here${roleName ? ` for ${roleName}` : ''}.`,
+              [{ title: 'Answer these', tone: '#e5484d', items }], 'Then press ` to keep going. Apply Desk picks up from this page.');
+  }
+
+  // Everything filled across the run, checked against what the review page shows.
+  function showReview() {
+    // A value counts as shown when it sits next to its own label ("State:
+    // Virginia"), not just anywhere ("Virginia" inside the school's name).
+    const labels = [...document.body.querySelectorAll('*')].filter(e => e.children.length <= 2 && !e.closest('#apply-desk-panel') && visible(e));
+    const shows = item => {
+      const value = item.value || '';
+      if (!value || value.length <= 3 || /^\d{1,2}\/(\d{1,2}\/)?\d{4}$/.test(value)) return true;
+      const digits = value.replace(/\D/g, '');
+      const phone = digits.length >= 7 && digits.length >= value.replace(/\s/g, '').length * 0.6;
+      const has = text => phone ? text.replace(/\D/g, '').includes(digits) : value.split(/,\s*/).every(part => norm(text).includes(norm(part).slice(0, 40)));
+      const label = norm(item.question.replace(/^(work experience|education) \d+: /i, ''));
+      const own = labels.filter(e => norm(e.textContent) === label);
+      if (!own.length) return has(document.body.innerText);
+      return own.some(e => [e.nextElementSibling, e.parentElement, e.parentElement && e.parentElement.parentElement]
+        .some(near => near && near.textContent.length < label.length + value.length + 200 && has(near.textContent)));
+    };
+    const check = [];
+    for (const item of state.items) {
+      if (item.flag) check.push({ ...item, why: item.flag });
+      else if (!shows(item)) check.push({ ...item, why: "Not on the review page. Check it took." });
+    }
+    const errors = errorsShown().map(text => ({ question: text }));
+    const attached = state.attached ? [{ question: 'Resume', value: decode(nameB64) || 'Resume.pdf', why: '' }] : [];
+    showPanel('Ready for your review', roleName || 'Everything Apply Desk filled, page by page.', [
+      { title: 'Needs you', tone: '#e5484d', items: errors },
+      { title: 'Check these', tone: '#d9822b', items: check, byPage: true },
+      { title: 'Filled by Apply Desk', tone: '#10b77f', items: [...attached, ...state.items], byPage: true, collapsed: true },
+    ], 'Look it over, then click Submit yourself. Apply Desk never submits.');
+    state.checks = check.length;
+  }
+
+  // ---------- Run: fill, continue, repeat ----------
   (async () => {
     window.__applyDeskBusy = true;
+    window.__applyDeskStop = false;
+    document.querySelectorAll('#apply-desk-panel').forEach(node => node.remove());
     try {
-      attachResume();
-      await fillBlocks('experience', plan.experience);
-      await fillBlocks('education', plan.education);
-      await fillSkills();
-      const all = controlsIn(document);
-      const radios = {};
-      const boxes = {};
-      for (const el of all) {
-        if (handled.has(el)) continue;
-        const question = questionOf(el);
-        if (el.type === 'radio') {
-          (radios[el.name || question] = radios[el.name || question] || []).push(el);
+      for (let step = 0; ; step += 1) {
+        pageNow = state.page = pageTitle();
+        state.beat += 1;
+        if (signInPage()) { state.stop = 'signin'; break; }
+        if (onReview()) { showReview(); state.stop = 'review'; break; }
+        if (step >= 12) { state.stop = 'limit'; break; }
+        // Workday's start page: choose to fill it in here rather than upload-and-parse.
+        const manual = controlsIn(document).length < 2 && !continueButton() && applyManuallyButton();
+        if (manual) {
+          const key = pageKey();
+          press(manual);
+          if (!(await nextPage(key))) { state.stop = 'stuck'; break; }
           continue;
         }
-        if (el.type === 'checkbox') {
-          (boxes[question] = boxes[question] || []).push(el);
-          continue;
+        await fillPage();
+        saveRun();
+        const needs = needsOnPage();
+        if (needs.length) {
+          showNeeds(needs, []);
+          state.needs = needs.map(need => need.question);
+          state.stop = 'needs';
+          break;
         }
-        const value = answeredValue(el);
-        if (value) { remember(question, value); continue; }
-        await fillControl(el, question, wanted(el, question));
-      }
-      for (const group of Object.values(radios)) {
-        const question = questionOf(group[0]);
-        const checked = group.find(r => r.checked);
-        if (checked) { remember(question, textOf(checked.labels && checked.labels[0]) || checked.value); continue; }
-        const want = wanted(group[0], question);
-        if (want && want.values) pickRadio(group, want.values, question);
-      }
-      for (const [question, group] of Object.entries(boxes)) {
-        // A lone box is usually consent ("I agree…"); only groups are preferences.
-        const label = box => textOf(box.labels && box.labels[0]) || box.getAttribute('aria-label') || '';
-        if (group.length < 2 || consent.test(norm(question)) || group.some(box => consent.test(norm(label(box))))) continue;
-        const checked = group.filter(box => box.checked);
-        if (checked.length) { remember(question, checked.map(label).join('; ')); continue; }
-        const want = wanted(group[0], question);
-        if (!want || want.source !== 'learned') continue;
-        let any = false;
-        for (const value of want.values) {
-          const match = best(group, [value], label);
-          if (match && !match.checked) { press(match); any = true; }
+        const next = continueButton();
+        if (!next) { state.stop = 'end'; break; }
+        if (window.__applyDeskStop) { state.stop = 'stopped'; break; }
+        if (!run.pages.includes(pageNow)) run.pages.push(pageNow);
+        // Commit the last typed field before leaving the page.
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        await sleep(300);
+        const key = pageKey();
+        state.advancing = true;
+        saveRun();
+        press(next);
+        const moved = await nextPage(key);
+        state.advancing = false;
+        if (!moved) {
+          const blank = needsOnPage(), errors = errorsShown();
+          if (blank.length || errors.length) {
+            showNeeds(blank, errors);
+            state.needs = [...blank.map(need => need.question), ...errors].slice(0, 12);
+            state.stop = 'errors';
+          } else {
+            state.stop = 'stuck';
+          }
+          break;
         }
-        if (any) note(group[0], question);
       }
-      try {
-        for (const [question, answer] of Object.entries(JSON.parse(sessionStorage.getItem('applyDeskSeen') || '{}'))) remember(question, answer);
-      } catch (error) { /* storage can be blocked */ }
-      if (!state.filled.length && !state.attached) {
+      if (!state.items.length && !state.attached) {
         const frame = [...document.querySelectorAll('iframe')].find(f => /greenhouse|lever|ashby|workday|smartrecruiters|icims|jobvite/.test(f.src || ''));
         state.embedded = frame ? frame.src : '';
       }
-      await closeLists();
     } catch (error) {
       state.error = String(error && error.message || error);
     }
     // Commit the last typed field while still busy, so its change isn't learned.
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    saveRun();
     await sleep(50);
     window.__applyDeskBusy = false;
     state.done = true;

@@ -28,7 +28,7 @@
       {% endfor %}
 
       <section class="panel" id="answers" data-reveal style="--i:6">
-        <header class="panel-head"><div><h2>Application answers</h2><p class="sub">How Apply Desk answers the questions most forms ask, in text boxes, dropdowns, and Yes/No buttons. Leave one blank to answer it yourself. Race, gender, veteran, and disability questions are never answered for you.</p></div></header>
+        <header class="panel-head"><div><h2>Application answers</h2><p class="sub">How Apply Desk answers the questions most forms ask, in text boxes, dropdowns, and Yes/No buttons. Leave one blank to answer it yourself.</p></div></header>
         <div class="fields">
           {% for q in standard if q.key != 'gpa' %}
           <label class="{{ '' if q.key in yesno else 'wide' }}"><span>{{ q.label }}</span>
@@ -39,7 +39,16 @@
         </div>
       </section>
 
-      <section class="panel" data-reveal style="--i:7">
+      <section class="panel" id="self-id" data-reveal style="--i:7">
+        <header class="panel-head"><div><h2>Voluntary self-identification</h2><p class="sub">Race, gender, veteran, and disability questions. Apply Desk picks the form's "I don't wish to answer" option unless you choose an answer here. On disability forms it also fills your name and today's date.</p></div></header>
+        <div class="fields">
+          {% for q in disclosures %}
+          <label><span>{{ q.label }}</span><select name="{{ q.key }}"><option value="">I don't wish to answer</option>{% for option in q.choices %}<option{{ ' selected' if profile.get(q.key) == option }}>{{ option }}</option>{% endfor %}</select></label>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel" data-reveal style="--i:8">
         <header class="panel-head"><div><h2>What you're looking for</h2><p class="sub">Shapes the fit score. Separate entries with commas.</p></div></header>
         <div class="fields">
           <label class="wide"><span>Target roles</span><input name="target_roles" value="{{ profile.get('target_roles', '') }}" placeholder="Software Engineering Intern, Backend Engineer Intern"></label>

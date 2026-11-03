@@ -55,8 +55,52 @@ STANDARD_QUESTIONS = [
 ]
 STANDARD_KEYS = [q["key"] for q in STANDARD_QUESTIONS]
 
+# Voluntary self-identification (EEO pages). Answered only from what the user
+# picks in Profile; when they pick nothing, the form's own "I don't wish to
+# answer" option is chosen. These answers are never learned from forms.
+DECLINE = ["I do not wish to answer", "I don't wish to answer", "I do not want to answer", "I don't want to answer",
+           "I do not wish to self-identify", "I don't wish to self-identify", "Decline to self-identify", "Decline to self identify",
+           "Decline to answer", "Decline to state", "I choose not to self-identify", "I choose not to disclose", "Prefer not to say",
+           "Prefer not to answer", "Prefer not to disclose", "Not declared", "Not specified", "Decline"]
+DISCLOSURE_QUESTIONS = [
+    {"key": "eeo_hispanic", "label": "Hispanic or Latino", "choices": ["Yes", "No"], "pattern": r"hispanic|latin[oax]"},
+    {"key": "eeo_race", "label": "Race or ethnicity",
+     "choices": ["American Indian or Alaska Native", "Asian", "Black or African American", "Native Hawaiian or Other Pacific Islander", "White", "Two or More Races"],
+     "pattern": r"\brace\b|ethnic"},
+    {"key": "eeo_gender", "label": "Gender", "choices": ["Male", "Female", "Non-binary"], "pattern": r"\bgender\b|^sex$|what is your sex"},
+    {"key": "eeo_veteran", "label": "Veteran status", "choices": ["I am not a protected veteran", "I identify as a protected veteran"],
+     "pattern": r"veteran|military status"},
+    {"key": "eeo_disability", "label": "Disability", "choices": ["No, I do not have a disability", "Yes, I have a disability"], "pattern": r"disab"},
+]
+DISCLOSURE_KEYS = [q["key"] for q in DISCLOSURE_QUESTIONS]
+DISCLOSURE_VARIANTS = {
+    "Male": ["Male", "Man"], "Female": ["Female", "Woman"], "Non-binary": ["Non-binary", "Nonbinary", "Non binary", "Genderqueer"],
+    "I am not a protected veteran": ["I am not a protected veteran", "I am not a veteran", "Not a protected veteran", "Not a veteran", "No"],
+    "I identify as a protected veteran": ["I identify as one or more of the classifications of protected veteran", "I identify as a protected veteran",
+                                          "Protected veteran", "Yes"],
+    "No, I do not have a disability": ["No, I do not have a disability", "No, I don't have a disability", "No"],
+    "Yes, I have a disability": ["Yes, I have a disability", "Yes"],
+}
+
+
+def disclosure_answers(profile: dict) -> list[dict]:
+    """Options to pick for each self-identification question: the user's own
+    answer, or the form's decline option when they left it blank."""
+    out = []
+    for question in DISCLOSURE_QUESTIONS:
+        answer = (profile.get(question["key"]) or "").strip()
+        options = DISCLOSURE_VARIANTS.get(answer, [answer]) if answer else DECLINE
+        if question["key"] == "eeo_race" and answer:
+            options = options + [f"{answer} (Not Hispanic or Latino)"]
+        if question["key"] == "eeo_race" and (profile.get("eeo_hispanic") or "").lower() == "yes":
+            options = ["Hispanic or Latino"] + (options if answer else [])
+        out.append({"key": question["key"], "label": question["label"], "pattern": question["pattern"],
+                    "answer": answer or "I don't wish to answer", "options": options, "declined": not answer})
+    return out
+
+
 # Labels that never get a saved answer and are never learned.
-NEVER = r"race|ethnic|gender|sex\b|pronoun|disab|veteran|military status|social security|\bssn\b|date of birth|birth ?date|password|salary|compensation|pay expectation|signature|captcha"
+NEVER = r"race|ethnic|hispanic|latin[oax]|gender|sex\b|pronoun|disab|veteran|military status|social security|\bssn\b|date of birth|birth ?date|password|salary|compensation|pay expectation|signature|captcha"
 
 ORG_WORDS = r"\b(university|college|institute|school|inc|llc|ltd|corp|corporation|company|co\.|labs?|laboratory|technologies|systems|group|foundation|department|library|center|centre|agency|bank|hospital)\b"
 TITLE_WORDS = r"\b(intern|engineer|developer|assistant|analyst|researcher|technician|lead|manager|associate|fellow|consultant|scientist|designer|tutor|instructor|specialist|coordinator|officer|president|founder|volunteer|representative|cashier|counselor)\b"

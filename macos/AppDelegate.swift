@@ -38,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchedAtLogin = false
     private var showingHelp = false
     private var remindedAboutResume = false
-    private var fillStarted: Date?                     // a fill in progress; a second press waits for it
+    private var fillStarted: Date?                     // a fill run in progress; pressing ` again stops it after the page
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let event = NSAppleEventManager.shared().currentAppleEvent
@@ -623,8 +623,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fixChromeAccess()
             return
         }
-        if let started = fillStarted, Date().timeIntervalSince(started) < 130 {
-            return toasts.show(Toast(title: "Still filling this application…", detail: "When it finishes, press ` again for anything left.", symbol: "hourglass"))
+        if let started = fillStarted, Date().timeIntervalSince(started) < 600 {
+            _ = Chrome.runJavaScript(Autofill.stopScript)
+            return toasts.show(Toast(title: "Stopping after this page…", detail: "Press ` again later to pick up where it stopped.", symbol: "pause.circle"))
         }
         fillStarted = Date()
         roleForApplication(tab) { [weak self] role in
@@ -667,40 +668,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             else { toasts.show(Toast(title: "Couldn't read this form", detail: "This page may block autofill. Enter the remaining details yourself.", symbol: "exclamationmark.triangle")) }
             return
         }
-        toasts.show(Toast(title: "Filling this application…", detail: "Dropdowns, experience, and skills take up to a minute. Keep this tab in front.", symbol: "wand.and.stars"), for: 45)
-        waitForFill(attempt: 0) { [weak self] result in
+        toasts.show(Toast(title: "Filling this application…", detail: "Apply Desk goes page by page and stops at Review. Keep this tab in front; press ` to stop.", symbol: "wand.and.stars"), for: 60)
+        waitForFill(FillWatch(script: script)) { [weak self] result in
             self?.finishFill(result, tab: tab, role: role, resume: resume)
         }
     }
 
+    /// A fill run in progress, which can span several pages.
+    private struct FillWatch {
+        let script: String
+        var progress = ""
+        var lastChange = Date()
+        var missingSince: Date?
+        var reloads = 0
+        var page = ""
+        var last: Autofill.Result?
+    }
+
     /// The filler keeps working after it starts; check on it until it's done.
-    private func waitForFill(attempt: Int, completion: @escaping (Autofill.Result?) -> Void) {
+    /// When a step loads as a whole new page, start the filler again there;
+    /// it picks up the same run from the tab's session storage.
+    private func waitForFill(_ watch: FillWatch, completion: @escaping (Autofill.Result?) -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            let result = Autofill.parse(Chrome.runJavaScript(Autofill.statusScript))
-            // Long Workday forms can take a minute; stop waiting after two.
-            if let result = result, result.done || attempt >= 200 { return completion(result) }
-            if attempt >= 200 { return completion(nil) }
-            self?.waitForFill(attempt: attempt + 1, completion: completion)
+            guard let self = self else { return }
+            var watch = watch
+            if let result = Autofill.parse(Chrome.runJavaScript(Autofill.statusScript)) {
+                if result.done { return completion(result) }
+                watch.missingSince = nil
+                let progress = "\(result.beat)|\(result.items.count)|\(result.fields.count)"
+                if progress != watch.progress { watch.progress = progress; watch.lastChange = Date() }
+                if !result.page.isEmpty, result.page != watch.page {
+                    watch.page = result.page
+                    self.toasts.show(Toast(title: "Filling \(result.page)…", detail: "Apply Desk goes page by page and stops at Review. Press ` to stop.", symbol: "wand.and.stars"), for: 60)
+                }
+                watch.last = result
+            } else if watch.last?.advancing == true, watch.reloads < 12 {
+                if Chrome.activeTab()?.loading == false, Chrome.runJavaScript(watch.script) != nil {
+                    watch.reloads += 1
+                    watch.last = nil
+                    watch.lastChange = Date()
+                }
+            } else {
+                watch.missingSince = watch.missingSince ?? Date()
+                if Date().timeIntervalSince(watch.missingSince!) > 10 { return completion(watch.last) }
+            }
+            // Give up only when nothing has moved for a while.
+            if Date().timeIntervalSince(watch.lastChange) > 90 { return completion(watch.last) }
+            self.waitForFill(watch, completion: completion)
         }
     }
 
     private func finishFill(_ result: Autofill.Result?, tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?) {
         fillStarted = nil
-        guard let result = result else {
+        guard let result = result, result.done else {
             return toasts.show(Toast(title: "The form stopped responding", detail: "Some fields may be filled. Check the page and finish it yourself.", symbol: "exclamationmark.triangle"))
         }
         if !result.learned.isEmpty {
             backend.send("api/answers", json: ["answers": result.learned]) { _ in }
         }
         let filled = result.fields.count
-        if let role = role, let resume = resume, filled > 0 || result.attached {
-            // Keep the exact resume that went with this application.
+        if let role = role, let resume = resume, !result.items.isEmpty || result.attached {
+            // Keep the exact resume that went with this application, and the
+            // review of every page; later pages of the same run update it.
             backend.send("api/applications", json: ["job_id": role, "url": tab.url, "attached": result.attached, "fields": result.fields,
+                                                    "run": result.run, "review": result.items,
                                                     "pages": resume.pages, "pdf": resume.pdf.base64EncodedString()]) { [weak self] _ in
                 if self?.workspace.isVisible == true { self?.workspace.reload() }
             }
         }
         let open: () -> Void = { [weak self] in if let role = role { self?.workspace.show(path: "job/\(role)") } }
+        let pageName = result.page.isEmpty ? "This page" : result.page
+        switch result.stop {
+        case "review":
+            let total = result.items.count, pages = result.pages.count
+            let detail = "Filled \(total) field\(total == 1 ? "" : "s")\(pages > 1 ? " across \(pages) pages" : ""). "
+                + (result.checks > 0 ? "\(result.checks) to check in the panel. " : "") + "Submit is yours."
+            return toasts.show(Toast(title: "Ready for your review", detail: detail, symbol: "checkmark.seal",
+                                     actionTitle: role == nil ? nil : "See What Was Sent", action: open), for: 14)
+        case "needs", "errors":
+            let shown = result.needs.prefix(3).joined(separator: "; ") + (result.needs.count > 3 ? "…" : "")
+            return toasts.show(Toast(title: "\(pageName) needs you", detail: "\(shown). Answer \(result.needs.count == 1 ? "it" : "them"), then press ` to keep going.",
+                                     symbol: "hand.raised"), for: 14)
+        case "signin":
+            return toasts.show(Toast(title: "Sign in first", detail: "Apply Desk never types passwords. Sign in, then press ` on the application's first page.", symbol: "person.badge.key"))
+        case "stopped":
+            return toasts.show(Toast(title: "Stopped after \(pageName)", detail: "Press ` to pick up from the next page.", symbol: "pause.circle"))
+        case "stuck":
+            return toasts.show(Toast(title: "The next page didn't load", detail: "Click Continue yourself, then press ` on the new page.", symbol: "exclamationmark.triangle"))
+        default:
+            break
+        }
         if filled > 0 || result.attached {
             let parts = [filled > 0 ? "filled \(filled) field\(filled == 1 ? "" : "s")" : nil,
                          result.blocks > 0 ? "\(result.blocks) experience and education entr\(result.blocks == 1 ? "y" : "ies")" : nil,

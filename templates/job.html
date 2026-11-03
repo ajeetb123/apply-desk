@@ -31,7 +31,10 @@
     {% for a in applications %}
     <li><span class="copy-mark {{ 'is-sent' if a.attached }}">{{ ui.icon('resume') }}</span>
       <div class="copy-text"><b>{{ 'Attached to your application' if a.attached else 'Saved as PDF' }}{% if a.host %} · {{ a.host }}{% endif %}</b>
-        <small><time datetime="{{ a.created }}">{{ a.created.replace('T', ' ') }}</time>{% if a.filled %} · filled {{ a.filled }}{% endif %}{% if a.pages > 1 %} · {{ a.pages }} pages{% endif %}</small></div>
+        <small><time datetime="{{ a.created }}">{{ a.created.replace('T', ' ') }}</time>{% if a.filled %} · filled {{ a.filled }}{% endif %}{% if a.pages > 1 %} · {{ a.pages }} pages{% endif %}</small>
+        {% if a.review %}<details class="copy-review"><summary>Review{% if a.checks %} · {{ a.checks }} to check{% endif %}</summary>
+          <ul>{% for item in a.review %}<li{{ ' class=is-flag' if item.flag }}><span>{% if item.page %}{{ item.page }} · {% endif %}{{ item.question }}</span><b>{{ item.value }}</b>{% if item.flag %}<em>{{ item.flag }}</em>{% endif %}</li>{% endfor %}</ul>
+        </details>{% endif %}</div>
       <div class="copy-actions">
         {% if a.has_pdf %}<a class="button" href="/job/{{ job.id }}/applications/{{ a.id }}.pdf">{{ ui.icon('download') }}<span>PDF</span></a>{% endif %}
         {% if a.extension == 'tex' %}<a class="button ghost" href="/job/{{ job.id }}/applications/{{ a.id }}.tex">.tex</a>{% endif %}
