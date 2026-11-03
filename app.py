@@ -1398,12 +1398,19 @@ def api_fill_plan():
     contact["state_options"] = applying.state_options(p.get("state", ""))
     contact["graduation_dates"] = applying.date_formats(applying.parse_month_year(p.get("graduation", "")))
     education = applying.education_entries(sections, p)
-    # Enrollment status ("Bachelor's") can come from the resume's degree too.
-    hints = {**p, "degree": education[0]["degree"]} if education and not p.get("enrollment_status") else p
-    today = date.today()
     experience = applying.experience_entries(sections)
-    skills = tailored_skills(sections, posting, declared)
     role = {"id": row["id"], "title": row["title"], "company": row["company"]} if row else None
+    # Answers the resume already gives: enrollment status from the degree, and
+    # the current job ("Procedura", employed: Yes). Profile answers win.
+    derived = {"degree": education[0]["degree"]} if education and not p.get("enrollment_status") else {}
+    current = next((entry for entry in experience if entry.get("current")), None)
+    if current:
+        derived.update({"currently_employed": "Yes", "current_employer": current["company"], "current_title": current["title"]})
+        if role and role["company"] and re.sub(r"\W", "", current["company"].lower()) in re.sub(r"\W", "", role["company"].lower()):
+            derived["previously_employed"] = "Yes"  # applying where they already work
+    hints = {**p, **{key: value for key, value in derived.items() if not p.get(key) or key == "previously_employed" or key == "degree"}}
+    today = date.today()
+    skills = tailored_skills(sections, posting, declared)
     return {"profile": contact, "answers": applying.standard_answers(hints), "learned": learned,
             "disclosures": applying.disclosure_answers(p), "today": applying.date_formats((today.year, today.month, today.day)),
             "experience": experience, "education": education, "skills": skills, "start": {**start, "source": start_source},
