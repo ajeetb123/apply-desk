@@ -623,7 +623,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fixChromeAccess()
             return
         }
-        if let started = fillStarted, Date().timeIntervalSince(started) < 600 {
+        if let started = fillStarted, Date().timeIntervalSince(started) < 30 * 60 {
             _ = Chrome.runJavaScript(Autofill.stopScript)
             return toasts.show(Toast(title: "Stopping after this page…", detail: "Press ` again later to pick up where it stopped.", symbol: "pause.circle"))
         }
@@ -682,6 +682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var missingSince: Date?
         var reloads = 0
         var page = ""
+        var waiting = false
         var last: Autofill.Result?
     }
 
@@ -697,9 +698,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 watch.missingSince = nil
                 let progress = "\(result.beat)|\(result.items.count)|\(result.fields.count)"
                 if progress != watch.progress { watch.progress = progress; watch.lastChange = Date() }
-                if !result.page.isEmpty, result.page != watch.page {
+                if result.waiting != watch.waiting || (!result.page.isEmpty && result.page != watch.page) {
                     watch.page = result.page
-                    self.toasts.show(Toast(title: "Filling \(result.page)…", detail: "Apply Desk goes page by page and stops at Review. Press ` to stop.", symbol: "wand.and.stars"), for: 60)
+                    watch.waiting = result.waiting
+                    self.toasts.show(result.waiting
+                        ? Toast(title: "Waiting for you on \(result.page)", detail: "Answer what's listed on the page. Apply Desk keeps going by itself once you're done.", symbol: "hand.raised")
+                        : Toast(title: "Filling \(result.page)…", detail: "Apply Desk goes page by page and stops at Review. Press ` to stop.", symbol: "wand.and.stars"), for: 60)
                 }
                 watch.last = result
             } else if watch.last?.advancing == true, watch.reloads < 12 {

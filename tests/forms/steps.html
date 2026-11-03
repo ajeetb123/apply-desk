@@ -66,6 +66,7 @@
 <div data-automation-id="formField-q3"><label id="q3">Are you currently or have you ever been employed by the U.S. Government (including military)?*</label><button aria-haspopup="listbox" aria-labelledby="q3" data-options="Yes, I am currently employed by the U.S. Government|Yes, I was formerly employed by the U.S. Government|No, I have never been employed by the U.S. Government">Select One</button></div>
 <div data-automation-id="formField-q6"><label id="q6">Do you currently possess an active U.S. Government security clearance?*</label><button aria-haspopup="listbox" aria-labelledby="q6" data-options="Interim Secret|Secret|Top Secret|None">Select One</button></div>
 <div data-automation-id="formField-q8"><label id="q8">Are you a non-U.S. government official, or closely related to one?*</label><button aria-haspopup="listbox" aria-labelledby="q8" data-options="Yes|No">Select One</button></div>
+<div data-automation-id="formField-noncompete"><label id="q9">Are you bound by any agreement that would restrict your work here?*</label><button aria-haspopup="listbox" aria-labelledby="q9" data-options="Yes|No|N/A">Select One</button></div>
 <div data-automation-id="formField-start"><label for="start">Proposed start date*</label><input id="start" type="text" placeholder="MM/DD/YYYY"></div>
 </div>
 
@@ -219,8 +220,15 @@ function prompt(input, term) {
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { closeLists(); document.querySelectorAll('[aria-expanded=true]').forEach(b => b.setAttribute('aria-expanded', 'false')); }
+});
+// Like Workday: a search runs when Enter comes back up, and leaving the box clears what was typed.
+document.addEventListener('keyup', e => {
   const input = e.target.closest && e.target.closest('[data-automation-id="searchBox"]');
-  if (input && e.key === 'Enter') prompt(input, input.value.trim());
+  if (input && e.keyCode === 13) prompt(input, input.value.trim());
+});
+document.addEventListener('focusout', e => {
+  const input = e.target.closest && e.target.closest('[data-automation-id="searchBox"]');
+  if (input) input.value = '';
 });
 document.addEventListener('click', e => {
   const input = e.target.closest && e.target.closest('[data-automation-id="searchBox"]');

@@ -784,6 +784,88 @@ def analyze(description: str):
     return {"score": score, "matched": matched[:12], "missing": missing[:12], "terms": terms}
 
 
+# Rough, blunt odds of an offer for one application, from the posting's wording
+# and how internship hiring usually goes. Points move a role between tiers;
+# blockers end it. Kept separate from the fit score, which is not a probability.
+BIG_TECH = r"\b(google|alphabet|meta|facebook|apple|amazon|aws|microsoft|netflix|nvidia|openai|anthropic|stripe|airbnb|uber|lyft|linkedin|salesforce|adobe|databricks|snowflake|palantir|tesla|spacex|bloomberg|coinbase|robinhood|doordash|pinterest|snap|spotify|shopify|roblox|figma|ramp|scale ai|anduril)\b"
+QUANT = r"\b(jane street|citadel|two sigma|hudson river|jump trading|optiver|imc trading|d\.? ?e\.? shaw|five rings|akuna|susquehanna|drw|tower research|virtu|arrowstreet|aqr|bridgewater|renaissance|point72|millennium|balyasny|squarepoint|old mission|peak6|wolverine|flow traders|xtx|g-research|voleon)\b"
+DEFENSE = r"\b(leidos|booz allen|saic|northrop|lockheed|raytheon|rtx|general dynamics|gdit|bae systems|caci|mitre|peraton|l3harris|mantech|parsons|huntington ingalls|boeing|jhu ?apl|johns hopkins applied physics)\b"
+ODDS_TIERS = [(-99, "Long shot", "under 1%"), (-3, "Unlikely", "1–3%"), (-1, "Possible", "3–6%"), (1, "Decent shot", "6–12%"), (4, "Good shot", "12–20%")]
+
+
+def role_odds(job: dict, match: dict, p: dict, resume_text: str) -> dict:
+    text = f"{job.get('title', '')} {job.get('company', '')} {job.get('description', '')}".lower()
+    # Who's hiring comes from the company name, or the posting introducing
+    # itself ("At Leidos, …", "Northrop Grumman is …"); a mention like
+    # "deploys to AWS" isn't Amazon.
+    company = (job.get("company") or "").lower()
+    opening = (job.get("description") or "")[:300].lower()
+    def employer(kinds: str) -> bool:
+        return bool(re.search(kinds, company) or re.search(rf"(?:^|\bat |\babout ){kinds}|{kinds}(?: is| has|'s|,)", opening))
+    year = (p.get("class_year") or "").strip().lower()
+    early = year in {"freshman", "sophomore"}
+    points, reasons, blockers = 0, [], []
+
+    def note(delta, reason):
+        nonlocal points
+        points += delta
+        reasons.append({"delta": delta, "text": reason})
+
+    if re.search(r"(must|required to) (have|possess|hold) an? (active|current)[^.]{0,30}clearance|(active|current) (secret|top secret|ts(/sci)?|security) clearance (is )?(required|needed)", text):
+        blockers.append("It needs an active security clearance, which you don't have. Interns are rarely sponsored for one this fast.")
+    if re.search(r"(must be|currently) (enrolled in|pursuing) an? (master|ph\.?d|doctoral|graduate)|(ms|phd|graduate) students only", text):
+        blockers.append("It's for graduate students only.")
+    if match.get("eligibility") == "possible mismatch":
+        blockers.append("Your graduation date is outside the window they list.")
+    upper = re.search(r"rising (junior|senior)|(junior|senior) (standing|year|class)|juniors? (or|and|&) seniors?|third[- ]year|fourth[- ]year|final[- ]year|penultimate|(sophomore|junior) or (above|higher)|completed (at least )?(two|2|three|3) years", text)
+    under = re.search(r"freshm[ae]n|first[- ]year (student|undergrad)|sophomores?|second[- ]year (student|undergrad)|all (class )?years|any (class )?year|underclass|explore (program|intern)|step intern", text)
+
+    cap = len(ODDS_TIERS) - 1
+    if employer(QUANT):
+        note(-4, "Quant and trading firms take almost no freshmen; their intern classes are mostly juniors and seniors picked from a huge pool.")
+        cap = 1
+    elif employer(BIG_TECH):
+        note(-3, "Big tech SWE internships take a few percent of applicants, and most offers go to juniors and seniors.")
+        cap = 1 if not (early and under) else 2
+    elif employer(DEFENSE):
+        note(1, "Defense contractors hire students earlier than big tech and value U.S. citizens who can get a clearance.")
+    if early and under:
+        note(2, "They explicitly welcome first- or second-year students. That's the right door, but these spots are still competitive.")
+    elif early and upper:
+        note(-3, "They ask for juniors or seniors. As a freshman you'll likely be screened out before a person reads your resume.")
+    elif year == "freshman":
+        note(-2, "Most SWE internships quietly favor juniors and seniors, even when the posting doesn't say so. Freshman offers are rare.")
+    elif year == "sophomore":
+        note(-1, "Most SWE internships quietly favor juniors and seniors, even when the posting doesn't say so.")
+    if match.get("eligibility") == "likely eligible":
+        note(1, "Your graduation date fits the window they list.")
+    if re.search(r"u\.?s\.? citizen(ship)?[^.]{0,20}(required|only)|must be an? u\.?s\.? citizen|requires? u\.?s\.? citizenship|citizenship is required", text) and (p.get("us_citizen") or "").lower() == "yes":
+        note(1, "It requires U.S. citizenship, which shrinks the applicant pool, and you qualify.")
+    if re.search(r"\bintern(ship)?\b", resume_text or "", re.I):
+        note(1, "You already have a software internship on your resume, which most freshmen don't.")
+    if re.search(r"(minimum|min\.?)( cumulative)? gpa|gpa of (at least )?[23]\.\d|[23]\.\d\s*(/\s*4(\.0)?)?\s*(gpa )?(or (higher|above|better)|\+|minimum)", text) and (p.get("gpa") or "").strip().lower() in {"", "n/a", "na", "none"}:
+        note(-2, "They set a minimum GPA and you don't have one yet. Many screens drop applications without one automatically.")
+    skills = (match.get("breakdown") or {}).get("skills", 0)
+    if skills >= 60:
+        note(1, "Your resume covers most of the skills they list.")
+    elif skills <= 20:
+        note(-1, "Your resume covers few of the skills they list.")
+    state = (p.get("state") or "").strip()
+    state_name = applying.STATES.get(state.upper(), state)
+    if state and re.search(rf"\b{re.escape(state_name.lower())}\b|,\s*{re.escape(state.lower())}\b", text):
+        note(1, "It's in your state, and local candidates are easier to hire.")
+
+    if blockers:
+        label, odds = "Very unlikely", "under 1%"
+    else:
+        index = max(i for i, tier in enumerate(ODDS_TIERS) if points >= tier[0])
+        label, odds = ODDS_TIERS[min(index, cap)][1:]
+    helps = ("Find someone at the company for a referral; it beats any resume change."
+             if not blockers else "Spend this time on roles that fit your year instead.")
+    return {"label": label, "odds": odds, "blockers": blockers, "reasons": sorted(reasons, key=lambda r: r["delta"]), "helps": helps,
+            "year": p.get("class_year") or "", "points": points}
+
+
 def match_role(description: str, title: str = "", wave: str = "", sector: str = "", funding_stage: str = ""):
     """Explainable candidate-to-role triage; never a hiring probability."""
     p = profile()
@@ -1033,7 +1115,8 @@ def job(job_id):
         application["host"] = urlparse(application["url"]).netloc
         application["review"] = json.loads(application["review"] or "[]")
         application["checks"] = sum(1 for item in application["review"] if item.get("flag"))
-    return render_template("job.html", page="job", title=item["title"] or "Role", job=item, report=report, match=match, resume=resume,
+    odds = role_odds(item, match, p, resume_plain(resume["text"]) if resume else "")
+    return render_template("job.html", page="job", title=item["title"] or "Role", job=item, report=report, match=match, resume=resume, odds=odds,
                            tuned=tuned, profile=p, voice=voice, voice_note=voice_note, campaign_options=campaign_options(p),
                            applications=sent, pdf_name=resume_pdf_name())
 
@@ -1318,11 +1401,14 @@ def api_fill_plan():
     # Enrollment status ("Bachelor's") can come from the resume's degree too.
     hints = {**p, "degree": education[0]["degree"]} if education and not p.get("enrollment_status") else p
     today = date.today()
+    experience = applying.experience_entries(sections)
+    skills = tailored_skills(sections, posting, declared)
+    role = {"id": row["id"], "title": row["title"], "company": row["company"]} if row else None
     return {"profile": contact, "answers": applying.standard_answers(hints), "learned": learned,
             "disclosures": applying.disclosure_answers(p), "today": applying.date_formats((today.year, today.month, today.day)),
-            "experience": applying.experience_entries(sections), "education": education,
-            "skills": tailored_skills(sections, posting, declared), "start": {**start, "source": start_source},
-            "never": applying.NEVER, "role": {"id": row["id"], "title": row["title"], "company": row["company"]} if row else None}
+            "experience": experience, "education": education, "skills": skills, "start": {**start, "source": start_source},
+            "drafts": applying.drafts(p, education, experience, skills, role, posting),
+            "never": applying.NEVER, "role": role}
 
 
 @app.post("/api/answers")

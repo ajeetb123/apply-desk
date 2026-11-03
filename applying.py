@@ -9,6 +9,8 @@ import re
 from datetime import date
 from urllib.parse import urlparse
 
+import tailoring
+
 MONTHS = {name: i for i, names in enumerate([("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",),
                                               ("jun", "june"), ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"),
                                               ("oct", "october"), ("nov", "november"), ("dec", "december")], start=1) for name in names}
@@ -44,6 +46,8 @@ STANDARD_QUESTIONS = [
     {"key": "country", "label": "Country", "default": "United States of America", "pattern": r"^country( or region|/region)?$|country of residence"},
     {"key": "country_code", "label": "Country phone code", "default": "United States of America (+1)", "pattern": r"country (phone )?code|phone country"},
     {"key": "enrollment_status", "label": "Enrollment status", "default": "", "pattern": r"enrollment status|(degree|level) (are you )?(currently )?(pursuing|working towards?)|student status"},
+    {"key": "class_year", "label": "Year in school", "default": "",
+     "pattern": r"year in (school|college|university)|class (standing|year|level)|academic (year|standing|classification)|current year of (study|school)|what year are you|year of study|grade level"},
     {"key": "currently_student", "label": "Currently a student", "default": "",
      "pattern": r"currently (working towards?|pursuing|enrolled|attending|a student)|are you (a )?(current )?(college |university )?student"},
     {"key": "degree_recent", "label": "Earned a degree in the last 2 years", "default": "",
@@ -142,6 +146,10 @@ def option_variants(key: str, answer: str) -> list[str]:
         return [answer, "Bachelor", "Bachelor's", "Undergraduate"]
     if key == "phone_type" and lower in {"mobile", "cell"}:
         return ["Mobile", "Cell", "Cellular", "Personal Cell"]
+    if key == "class_year":
+        years = {"freshman": ["Freshman", "First Year", "First-year", "1st Year", "Year 1"], "sophomore": ["Sophomore", "Second Year", "Second-year", "2nd Year", "Year 2"],
+                 "junior": ["Junior", "Third Year", "Third-year", "3rd Year", "Year 3"], "senior": ["Senior", "Fourth Year", "Fourth-year", "4th Year", "Year 4"]}
+        return years.get(lower, [answer])
     if key == "gpa" and lower in {"n/a", "na", "none"}:
         return ["N/A", "Not applicable", "0"]
     if yes:
@@ -458,3 +466,44 @@ def state_options(state: str) -> list[str]:
         return [STATES[state.upper()], state.upper()]
     code = next((code for code, name in STATES.items() if name.lower() == state.lower()), "")
     return [state, code] if code else ([state] if state else [])
+
+
+# ---------------------------------------------------------------------------
+# Drafts for required short-answer questions
+
+# Readable names for tailoring.THEMES, in the same order.
+THEME_NAMES = ["data", "AI", "automation", "web interfaces", "backend systems", "cloud infrastructure", "embedded systems", "mobile apps"]
+DRAFT_QUESTIONS = [
+    ("plans", r"plans? (after|following|post) ?graduat|after (you )?graduat|career (goals|plans|aspirations)|where do you see yourself|long.term goals|what are your (career )?goals"),
+    ("why", r"\bwhy\b.{0,60}(interest|want|work|join|apply|choose|chose|role|position|internship|company)|what (interests|excites|draws) you|why are you interested"),
+]
+
+
+def _join(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def drafts(profile: dict, education: list[dict], experience: list[dict], skills: list[str], role: dict | None, posting: str) -> list[dict]:
+    """Short, plain answers to common required questions ("plans after
+    graduation", "why this role"), built only from the user's own profile,
+    resume, and the posting. The filler marks every draft for the user to edit."""
+    school = (profile.get("school") or (education[0]["school"] if education else "")).strip()
+    field = (education[0].get("field") if education else "") or "computer science"
+    graduation = (profile.get("graduation") or "").strip()
+    goals = [g.strip() for g in re.split(r"[,;\n]", profile.get("career_goals", "")) if g.strip()][:2]
+    themes = [name for (pattern, _), name in zip(tailoring.THEMES, THEME_NAMES) if re.search(pattern, posting or "", re.I)][:2]
+    focus = goals or themes
+    plans = (f"After I graduate{f' from {school}' if school else ''}{f' in {graduation}' if graduation else ''} with a degree in {field}, "
+             f"I plan to work full time as a software engineer{f', focusing on {_join(focus)}' if focus else ''}. "
+             "Until then, I want to keep building real software through internships like this one.")
+    out = [{"key": "plans", "pattern": DRAFT_QUESTIONS[0][1], "text": plans}]
+    if role and role.get("company"):
+        title, company = role.get("title") or "this", role["company"]
+        why = (f"I'm a {field} student{f' at {school}' if school else ''}, and the {title} role at {company} stands out to me"
+               f"{f' because of its focus on {_join(themes)}' if themes else ''}.")
+        job = experience[0] if experience else None
+        if job and job.get("title") and job.get("company"):
+            doing = f"I'm currently a {job['title']} at {job['company']}" if job.get("current") else f"I've worked as a {job['title']} at {job['company']}"
+            why += f" {doing}{f', working with {_join(skills[:3])}' if skills else ''}, and I'd like to bring that experience to {company}."
+        out.append({"key": "why", "pattern": DRAFT_QUESTIONS[1][1], "text": why})
+    return out

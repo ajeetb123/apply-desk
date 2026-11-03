@@ -26,6 +26,8 @@ enum Autofill {
         let checks: Int
         let run: String
         let advancing: Bool
+        /// Waiting on the page for the user to answer what Apply Desk couldn't.
+        let waiting: Bool
         let beat: Int
     }
 
@@ -56,6 +58,7 @@ enum Autofill {
                       learned: learned, embeddedForm: embedded, error: object["error"] as? String,
                       stop: object["stop"] as? String ?? "", page: object["page"] as? String ?? "", needs: object["needs"] as? [String] ?? [],
                       items: items, pages: object["pages"] as? [String] ?? [], checks: object["checks"] as? Int ?? 0,
-                      run: object["run"] as? String ?? "", advancing: object["advancing"] as? Bool ?? false, beat: object["beat"] as? Int ?? 0)
+                      run: object["run"] as? String ?? "", advancing: object["advancing"] as? Bool ?? false,
+                      waiting: object["waiting"] as? Bool ?? false, beat: object["beat"] as? Int ?? 0)
     }
 }

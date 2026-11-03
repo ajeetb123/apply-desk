@@ -31,8 +31,9 @@
         <header class="panel-head"><div><h2>Application answers</h2><p class="sub">How Apply Desk answers the questions most forms ask, in text boxes, dropdowns, and Yes/No buttons. Leave one blank to answer it yourself.</p></div></header>
         <div class="fields">
           {% for q in standard if q.key != 'gpa' %}
-          <label class="{{ '' if q.key in yesno else 'wide' }}"><span>{{ q.label }}</span>
+          <label class="{{ '' if q.key in yesno or q.key == 'class_year' else 'wide' }}"><span>{{ q.label }}</span>
             {% if q.key in yesno %}<select name="{{ q.key }}"><option value="">Ask me each time</option>{% for option in ('Yes', 'No') %}<option{{ ' selected' if profile.get(q.key) == option }}>{{ option }}</option>{% endfor %}</select>
+            {% elif q.key == 'class_year' %}<select name="{{ q.key }}"><option value="">Ask me each time</option>{% for option in ('Freshman', 'Sophomore', 'Junior', 'Senior', 'Graduate student') %}<option{{ ' selected' if profile.get(q.key) == option }}>{{ option }}</option>{% endfor %}</select>
             {% else %}<input name="{{ q.key }}" value="{{ profile.get(q.key, '') }}" placeholder="{{ hints.get(q.key, '') }}" autocomplete="off">{% endif %}
           </label>
           {% endfor %}
