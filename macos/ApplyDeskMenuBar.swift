@@ -1,11 +1,14 @@
 import AppKit
 import Foundation
+import WebKit
 
 @main
-final class ApplyDeskMenuBar: NSObject, NSApplicationDelegate {
+final class ApplyDeskMenuBar: NSObject, NSApplicationDelegate, WKUIDelegate, NSToolbarDelegate {
     private let dashboardURL = URL(string: "http://127.0.0.1:8787/")!
     private let apiURL = URL(string: "http://127.0.0.1:8787/api/evaluate")!
     private var statusItem: NSStatusItem!
+    private var appWindow: NSWindow?
+    private var workspaceView: WKWebView?
     private var watcherTimer: Timer?
     private var watcherEnabled = true
     private var lastTabKey = ""
@@ -16,29 +19,118 @@ final class ApplyDeskMenuBar: NSObject, NSApplicationDelegate {
     private var browserPermissionError = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.title = "Apply Desk"
             button.toolTip = "Apply Desk — background job matching"
         }
+        configureMainMenu()
         rebuildMenu()
+        openDashboard()
         startWatcher()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    @objc private func openDashboard() {
-        NSWorkspace.shared.open(dashboardURL)
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { openDashboard() }
+        return true
     }
+
+    @objc private func openDashboard() {
+        showPage(dashboardURL)
+    }
+
+    private func showPage(_ url: URL) {
+        if appWindow == nil {
+            let configuration = WKWebViewConfiguration()
+            let view = WKWebView(frame: .zero, configuration: configuration)
+            view.uiDelegate = self
+            view.autoresizingMask = [.width, .height]
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 820),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                                  backing: .buffered, defer: false)
+            window.title = "Apply Desk"
+            window.minSize = NSSize(width: 760, height: 600)
+            window.center()
+            let toolbar = NSToolbar(identifier: "ApplyDesk.Navigation")
+            toolbar.delegate = self
+            toolbar.displayMode = .iconOnly
+            window.toolbar = toolbar
+            window.contentView = view
+            appWindow = window
+            workspaceView = view
+        }
+        workspaceView?.load(URLRequest(url: url))
+        appWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        guard navigationAction.targetFrame == nil else { return nil }
+        webView.load(navigationAction.request)
+        return nil
+    }
+
+    private func configureMainMenu() {
+        let menuBar = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(title: "Apply Desk Workspace", action: #selector(openDashboard), keyEquivalent: "0"))
+        appMenu.addItem(NSMenuItem(title: "Scan Current Chrome Tab", action: #selector(scanNow), keyEquivalent: "s"))
+        appMenu.addItem(NSMenuItem(title: "Fill Empty Application Fields…", action: #selector(fillApplicationFields), keyEquivalent: "f"))
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(title: "Quit Apply Desk", action: #selector(quit), keyEquivalent: "q"))
+        for item in appMenu.items where item.action != nil { item.target = self }
+        appItem.title = "Apply Desk"
+        appItem.submenu = appMenu
+        menuBar.addItem(appItem)
+        NSApp.mainMenu = menuBar
+    }
+
+    private func makeToolbarItem(_ identifier: NSToolbarItem.Identifier, title: String, symbol: String, action: Selector) -> NSToolbarItem {
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        item.label = title
+        item.paletteLabel = title
+        item.toolTip = title
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        item.target = self
+        item.action = action
+        return item
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.back, .forward, .flexibleSpace, .workspace, .reload]
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.back, .forward, .flexibleSpace, .workspace, .flexibleSpace, .reload]
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        switch itemIdentifier {
+        case .back: return makeToolbarItem(.back, title: "Back", symbol: "chevron.left", action: #selector(goBack))
+        case .forward: return makeToolbarItem(.forward, title: "Forward", symbol: "chevron.right", action: #selector(goForward))
+        case .workspace: return makeToolbarItem(.workspace, title: "Workspace", symbol: "square.grid.2x2", action: #selector(openDashboard))
+        case .reload: return makeToolbarItem(.reload, title: "Reload", symbol: "arrow.clockwise", action: #selector(reloadPage))
+        default: return nil
+        }
+    }
+
+    @objc private func goBack() { if workspaceView?.canGoBack == true { workspaceView?.goBack() } }
+    @objc private func goForward() { if workspaceView?.canGoForward == true { workspaceView?.goForward() } }
+    @objc private func reloadPage() { workspaceView?.reload() }
 
     @objc private func scanNow() {
         scanActiveTab(manual: true)
     }
 
     @objc private func fillApplicationFields() {
-        guard let tab = readActiveTabIdentity() else {
-            showMessage("Open an application form", detail: "Apply Desk fills clearly labeled, empty fields in the active Chrome tab.")
+        guard let targetURL = workspaceView?.url, targetURL.host != "127.0.0.1" else {
+            showMessage("Open an employer application first", detail: "Use the Apply Desk review page to open the employer application inside this app, then choose Fill empty application fields.")
             return
         }
         let confirm = NSAlert()
@@ -53,9 +145,8 @@ final class ApplyDeskMenuBar: NSObject, NSApplicationDelegate {
         URLSession.shared.dataTask(with: profileURL) { [weak self] data, _, error in
             guard let self = self, error == nil, let data = data,
                   let profile = try? JSONSerialization.jsonObject(with: data) as? [String: String],
-                  let profileData = try? JSONSerialization.data(withJSONObject: profile),
-                  let currentTab = self.readActiveTabIdentity(), currentTab.url == tab.url else {
-                DispatchQueue.main.async { self?.showMessage("Couldn’t prepare this form", detail: "Check that the local Apply Desk service is running and that Chrome is still on the same tab.") }
+                  let profileData = try? JSONSerialization.data(withJSONObject: profile) else {
+                DispatchQueue.main.async { self?.showMessage("Couldn’t prepare this form", detail: "Check that the local Apply Desk service is running.") }
                 return
             }
             let encoded = profileData.base64EncodedString()
@@ -68,17 +159,23 @@ final class ApplyDeskMenuBar: NSObject, NSApplicationDelegate {
               const rules=[['email',/e ?mail/],['phone',/phone|mobile|cellular/],['first',/first name|given name|given-name/],['last',/last name|family name|family-name|surname/],['name',/full name|your name|^name$/],['address',/street address|address line 1|address-line1|^address$/],['city',/(^| )city( |$)|town/],['state',/(^| )state( |$)|province/],['postal',/zip|postal code|postal-code/],['school',/school|university|college/],['degree',/degree/],['graduation',/graduat|expected completion/]];
               const filled=[];
               for(const e of all){const t=(e.type||'text').toLowerCase(),l=label(e);if(!e.getClientRects().length||e.disabled||e.readOnly||(e.value||'').trim()||!['text','email','tel','url','number'].includes(t)||/sponsor|visa|will you|are you|race|ethnicity|gender|disability|veteran|work authorization|authorized to work/.test(l))continue;const match=rules.find(([k,r])=>values[k]&&r.test(l));if(!match)continue;const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(e,values[match[0]]);e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));filled.push(match[0])}
-              return JSON.stringify({count:filled.length,fields:filled});
+              return {count:filled.length,fields:filled};
             })()
             """
-            guard let raw = self.executePageJavaScript(javascript), let resultData = raw.data(using: .utf8),
-                  let result = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any],
-                  let count = result["count"] as? Int else {
-                DispatchQueue.main.async { self.showChromePermissionHelp() }
-                return
-            }
             DispatchQueue.main.async {
-                self.showMessage(count == 0 ? "No safe empty fields found" : "Review your application", detail: count == 0 ? "Sign in and open an editable application form. Apply Desk skips ambiguous fields and questions that need your judgment." : "Filled \(count) empty field\(count == 1 ? "" : "s"). Review every value on the employer page and submit it yourself.")
+                guard let view = self.workspaceView, view.url == targetURL else {
+                    self.showMessage("The application page changed", detail: "Return to the employer form in Apply Desk and try again.")
+                    return
+                }
+                view.evaluateJavaScript(javascript) { result, evaluationError in
+                    DispatchQueue.main.async {
+                        guard evaluationError == nil, let result = result as? [String: Any], let count = result["count"] as? Int else {
+                            self.showMessage("Couldn’t read this form", detail: "This page may block autofill. Check the page and enter any remaining details yourself.")
+                            return
+                        }
+                        self.showMessage(count == 0 ? "No safe empty fields found" : "Review your application", detail: count == 0 ? "Sign in and open an editable application form. Apply Desk skips ambiguous fields and questions that need your judgment." : "Filled \(count) empty field\(count == 1 ? "" : "s"). Review every value on the employer page and submit it yourself.")
+                    }
+                }
             }
         }.resume()
     }
@@ -267,7 +364,7 @@ final class ApplyDeskMenuBar: NSObject, NSApplicationDelegate {
                 self.rebuildMenu()
                 if !resumeLoaded || score >= 60 {
                     let reviewURL = URL(string: "http://127.0.0.1:8787/job/\(jobID)")!
-                    NSWorkspace.shared.open(reviewURL)
+                    self.showPage(reviewURL)
                 }
             }
         }.resume()
@@ -305,4 +402,11 @@ final class ApplyDeskMenuBar: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
+}
+
+private extension NSToolbarItem.Identifier {
+    static let back = NSToolbarItem.Identifier("ApplyDesk.back")
+    static let forward = NSToolbarItem.Identifier("ApplyDesk.forward")
+    static let workspace = NSToolbarItem.Identifier("ApplyDesk.workspace")
+    static let reload = NSToolbarItem.Identifier("ApplyDesk.reload")
 }

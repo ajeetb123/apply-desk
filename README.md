@@ -1,10 +1,10 @@
 # Apply Desk — local job search app
 
-Apply Desk is a Mac menu bar app with a local dashboard. It watches the active Chrome tab for job listings, compares them with your saved resume and preferences, and opens a role review when it finds a strong match. It does not need a Chrome extension.
+Apply Desk is a standalone Mac app with its own window and local workspace. It watches the active Chrome tab for job listings, compares them with your saved resume and preferences, and opens role reviews and employer pages inside the Apply Desk window. It does not need a Chrome extension or open the workspace in a separate browser.
 
 ## Start the app
 
-Double-click **Start Apply Desk.command**. It starts the local matcher and launches **Apply Desk.app**, which stays available from the Mac menu bar. Open the menu bar icon to:
+Double-click **Start Apply Desk.command**. It starts the local matcher and opens **Apply Desk.app** as a normal Mac app window. Apply Desk also stays available from the Mac menu bar. Use the app’s **Apply Desk** menu or menu bar icon to:
 
 - pause or resume background matching
 - scan the current Chrome tab immediately
@@ -12,20 +12,20 @@ Double-click **Start Apply Desk.command**. It starts the local matcher and launc
 - open your Apply Desk workspace
 - quit the background app
 
-Use **Stop Apply Desk.command** to stop the app and local matcher. The dashboard is at <http://127.0.0.1:8787>.
+Use **Stop Apply Desk.command** to stop the app and local matcher. The dashboard is at <http://127.0.0.1:8787> inside the Apply Desk app window.
 
 ### First-time Chrome setup
 
 Chrome protects webpage text from background apps. The first time Apply Desk needs to read a listing, enable **View → Developer → Allow JavaScript from Apple Events** in Chrome. macOS may also ask you to allow Apply Desk to control Chrome. Apply Desk checks the active tab locally; its watcher looks for job-listing URLs and reads page text only when a likely listing is open. It saves scanned roles in the local database.
 
-The menu bar app only opens Apply Desk’s review page for a strong match. You still check the listing and submit applications yourself. It does not click an employer’s Apply button or submit forms.
+The app opens its review page for a strong match. You still check the listing and submit applications yourself. It does not click an employer’s Apply button or submit forms.
 
 ## Setup
 
 1. Upload your resume from the dashboard.
 2. In **Matching preferences**, set graduation, skills, goals, target roles, and campaigns such as Wave 1, Wave 2, Defense, or Seed-stage startups.
 3. Keep Chrome open on a job listing. Apply Desk will save and score a recognized posting. Choose **Scan current Chrome tab** from the menu bar to run it immediately.
-4. Review the fit breakdown, role eligibility, campaign tags, and evidence. Confirm all details on the employer page.
+4. Review fit, eligibility, campaign tags, and evidence. Open the employer application from the review page; it stays in the Apply Desk window. Choose **Apply Desk → Fill Empty Application Fields** to fill safe, clearly labeled empty contact and education fields after confirmation. Review every value and submit the application yourself.
 
 To build or refresh the native app manually, double-click **Build Apply Desk App.command**. This creates `Apply Desk.app` in the project folder. The app binds its web service to localhost only.
 
@@ -33,7 +33,7 @@ To build or refresh the native app manually, double-click **Build Apply Desk App
 
 The fit score weights resume skill overlap (40%), target-role alignment (25%), career-goal terms (15%), campaign alignment (10%), and graduation-window evidence (10%). It is a triage aid, not an ATS score or hiring probability. Keyword matching does not establish proficiency. Graduation parsing can miss employer-specific rules, and campaign/funding details may be absent from listings, so verify them from company sources.
 
-Strong matches open the Apply Desk review page. If no resume is loaded, it opens the review as a reminder to add one. Lower scoring roles remain in the saved list. On an employer application form, **Fill empty application fields** copies only safe, clearly labeled contact and education values after your confirmation. It does not fill screening questions or submit applications. The app does not crawl job boards or write a polished resume.
+Strong matches open the Apply Desk review page inside the app. If no resume is loaded, it opens the review as a reminder to add one. Lower scoring roles remain in the saved list. **Fill Empty Application Fields** only copies clearly labeled contact and education values after confirmation. It does not fill screening questions or submit applications. The app does not crawl job boards or write a polished resume.
 
 ## Local data and privacy
 
