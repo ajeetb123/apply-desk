@@ -5,7 +5,7 @@
 {% set wide = ('name', 'email', 'address', 'school', 'degree', 'website') %}
 {% set placeholders = dict(placeholders, gpa='N/A, or 3.8') %}
 {% set hints = {'heard_about': 'Career Center/Campus Posting', 'phone_type': 'Mobile', 'country': 'United States of America', 'country_code': 'United States of America (+1)', 'enrollment_status': "Bachelor's", 'relatives': 'None'} %}
-{% set yesno = ('authorized_us', 'needs_sponsorship', 'has_clearance', 'previously_employed', 'over_18', 'relocate') %}
+{% set yesno = ('us_citizen', 'authorized_us', 'needs_sponsorship', 'clearance_eligible', 'has_clearance', 'foreign_official', 'dod_official', 'government_employee', 'previously_employed', 'currently_student', 'degree_recent', 'over_18', 'relocate') %}
 <section class="page-head with-mark">
   <span class="vault" data-reveal aria-hidden="true">{{ ui.orb() }}<span class="vault-lock">{{ ui.icon('lock') }}</span></span>
   <div>

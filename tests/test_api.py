@@ -500,6 +500,39 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.client.post("/answers/1/delete")
         self.assertEqual(self.client.get("/api/fill-plan").json["learned"], [])
 
+    def test_government_degree_and_clearance_questions_route_to_their_answers(self):
+        ask = application.applying.standard_key
+        self.assertEqual(ask("Are you legally eligible for employment in the United States?"), "authorized_us")
+        self.assertEqual(ask("Are you currently or have you ever been employed by the U.S. Government (including military)?"), "government_employee")
+        self.assertEqual(ask("Are you a current or former Department of Defense (DoD) official?"), "dod_official")
+        self.assertEqual(ask("Are you currently working towards a Bachelor's or Master's degree?"), "currently_student")
+        self.assertEqual(ask("What degree are you currently pursuing?"), "enrollment_status")
+        self.assertEqual(ask("Did you or will you obtain this degree in the last 24 months?"), "degree_recent")
+        self.assertEqual(ask("Are you eligible to obtain and maintain a U.S. security clearance?"), "clearance_eligible")
+        self.assertEqual(ask("Do you currently possess an active U.S. Government security clearance?"), "has_clearance")
+        self.assertEqual(ask("Are you a non-U.S. government official, or closely related to one?"), "foreign_official")
+        self.assertEqual(ask("Have you previously worked for Leidos?"), "previously_employed")
+        self.client.post("/profile", data={"government_employee": "No", "heard_about": "Career Center/Campus Posting", "school": "Virginia Tech",
+                                           "degree": "B.S. in Computer Science"})
+        plan = self.client.get("/api/fill-plan").json
+        answers = {a["key"]: a for a in plan["answers"]}
+        self.assertEqual(answers["government_employee"]["options"][:2], ["No", "I have never"])
+        self.assertEqual(answers["foreign_official"]["answer"], "")  # unanswered: left for the user
+        self.assertIn("University", answers["heard_about"]["options"])
+        self.assertEqual(answers["heard_about"]["options"][0], "Career Center/Campus Posting")
+        education = plan["education"][0]
+        self.assertEqual(education["school_options"][0], "Virginia Polytechnic Institute and State University")
+        self.assertIn("Virginia Tech", education["school_options"])
+        self.assertEqual(education["field_options"][0], "Computer Science")
+        self.assertNotIn("Computer Science and Engineering Technology", education["field_options"])
+
+    def test_pdf_words_repair_glued_and_split_layout_text(self):
+        words = {"an", "unintended", "write", "on", "a", "read", "Fairfax,", "VA", "call-recording", "test", "double"}
+        text = "Diagnosed anunintended write\nResearch Assistant    Fairfax, V A\ncall-recordingtest double"
+        fixed = application.respace(text, words)
+        self.assertEqual(fixed.splitlines(), ["Diagnosed an unintended write", "Research Assistant    Fairfax, VA", "call-recording test double"])
+        self.assertEqual(application.respace("Python    Remote", words), "Python    Remote")  # unknown words stay
+
     def test_skills_follow_named_tools_then_posting_themes(self):
         skills = ["TypeScript", "JavaScript", "Java", "SQL", "React", "Vite", "deck.gl", "Mapbox", "pandas", "Python"]
         data_ai = "Develop Power BI reports, contribute to AI agents, support automation, and work with data for reporting."
