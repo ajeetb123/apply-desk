@@ -17,10 +17,9 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleExecutable</key><string>ApplyDesk</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>LSUIElement</key><true/>
   <key>NSAppleEventsUsageDescription</key><string>Apply Desk reads the active job listing in Chrome so it can match the role against your resume locally.</string>
 </dict></plist>
 PLIST
-/usr/bin/swiftc -parse-as-library -O -framework AppKit -framework Foundation "$ROOT/macos/ApplyDeskMenuBar.swift" -o "$CONTENTS/MacOS/ApplyDesk"
+/usr/bin/swiftc -parse-as-library -O -framework AppKit -framework Foundation -framework WebKit "$ROOT/macos/ApplyDeskMenuBar.swift" -o "$CONTENTS/MacOS/ApplyDesk"
 /usr/bin/codesign --force --deep --sign - "$APP" >/dev/null
 echo "Built $APP"
