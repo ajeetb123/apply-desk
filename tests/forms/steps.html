@@ -54,7 +54,7 @@
 <section data-automation-id="workExperienceSection"><h3>Work Experience</h3><div class="blocks"></div><button type="button" data-automation-id="Add" data-kind="work">Add</button></section>
 <section data-automation-id="educationSection"><h3>Education</h3><div class="blocks"></div><button type="button" data-automation-id="Add" data-kind="edu">Add</button></section>
 <section data-automation-id="skillsSection"><h3>Skills</h3>
-  <div data-automation-id="formField-skills"><label id="l-skills">Type to Add Skills</label>
+  <div data-automation-id="formField-skills"><label id="l-skills">Type to Add Skills</label><p>You can add up to 6 skills.</p>
   <div data-automation-id="multiselectInputContainer" data-source="Python|SQL|Power BI|Git|Java|JavaScript|React|Node.js|Flask|Pandas"><input data-automation-id="searchBox" aria-labelledby="l-skills" type="text"></div></div></section>
 <div data-automation-id="formField-resume"><label for="resume">Resume/CV*</label><input type="file" id="resume" accept=".pdf"></div>
 </div>
@@ -67,6 +67,11 @@
 <div data-automation-id="formField-q6"><label id="q6">Do you currently possess an active U.S. Government security clearance?*</label><button aria-haspopup="listbox" aria-labelledby="q6" data-options="Interim Secret|Secret|Top Secret|None">Select One</button></div>
 <div data-automation-id="formField-q8"><label id="q8">Are you a non-U.S. government official, or closely related to one?*</label><button aria-haspopup="listbox" aria-labelledby="q8" data-options="Yes|No">Select One</button></div>
 <div data-automation-id="formField-noncompete"><label id="q9">Are you bound by any agreement that would restrict your work here?*</label><button aria-haspopup="listbox" aria-labelledby="q9" data-options="Yes|No|N/A">Select One</button></div>
+<fieldset data-automation-id="formField-locpref"><legend>Please indicate your location preference.*</legend>
+  <div><input type="checkbox" id="lp1"><label for="lp1">Reston, VA</label></div><div><input type="checkbox" id="lp2"><label for="lp2">Huntsville, AL</label></div><div><input type="checkbox" id="lp3"><label for="lp3">No Preference</label></div></fieldset>
+<div data-automation-id="formField-onsite"><label id="q10">Are you able to work on-site in Reston, VA?*</label><button aria-haspopup="listbox" aria-labelledby="q10" data-options="Yes|No">Select One</button></div>
+<div data-automation-id="formField-term"><label id="q11">Which internship term are you applying for?*</label><button aria-haspopup="listbox" aria-labelledby="q11" data-options="Spring 2027|Summer 2027|Fall 2027">Select One</button></div>
+<div data-automation-id="formField-req"><label for="req">Requisition Number</label><input id="req" type="text"></div>
 <div data-automation-id="formField-start"><label for="start">Proposed start date*</label><input id="start" type="text" placeholder="MM/DD/YYYY"></div>
 </div>
 
@@ -189,7 +194,8 @@ function showOptions(anchor, items, onPick, delay = 180) {
       li.addEventListener('click', () => {
         if (list.hasAttribute('data-closing')) { staleClicks += 1; return; }
         if (item.children) { showOptions(anchor, item.children, onPick, 120); return; }
-        onPick(item.label || item); closeLists();
+        onPick(item.label || item);
+        if (!anchor.parentElement || !anchor.parentElement.dataset.multi) closeLists();  // multi-select lists stay open
       });
       list.appendChild(li);
     }
@@ -206,8 +212,14 @@ document.addEventListener('click', e => {
 function prompt(input, term) {
   const box = input.parentElement;
   const pick = item => {
-    const pill = document.createElement('div'); pill.setAttribute('data-automation-id', 'selectedItem'); pill.textContent = item; box.insertBefore(pill, input);
-    input.value = '';
+    const pills = box.querySelectorAll('[data-automation-id=selectedItem]');
+    if (box.dataset.multi && pills.length >= 6) return;
+    if ([...pills].some(p => p.textContent === item)) { [...pills].find(p => p.textContent === item).remove(); return; }  // picking again removes it
+    const pill = document.createElement('div'); pill.setAttribute('data-automation-id', 'selectedItem'); pill.textContent = item;
+    const current = box.querySelector('[data-automation-id=searchBox]');
+    box.insertBefore(pill, current);
+    // Like Workday, the search box is redrawn after a pick.
+    const fresh = current.cloneNode(); fresh.value = ''; current.replaceWith(fresh);
   };
   if (box.dataset.tree) {
     const tree = JSON.parse(box.dataset.tree);

@@ -1411,7 +1411,15 @@ def api_fill_plan():
     hints = {**p, **{key: value for key, value in derived.items() if not p.get(key) or key == "previously_employed" or key == "degree"}}
     today = date.today()
     skills = tailored_skills(sections, posting, declared)
-    return {"profile": contact, "answers": applying.standard_answers(hints), "learned": learned,
+    # The listing answers some questions itself, and gives "open to all" its places.
+    facts = applying.listing_facts(row["title"], row["description"], row["url"]) if row else {"locations": []}
+    answers = applying.standard_answers(hints) + (applying.listing_answers(facts) if row else [])
+    for answer in answers:
+        if answer["key"] == "location_preference" and answer["answer"]:
+            answer["open"] = answer["options"][0] == "No preference"
+            if answer["open"]:  # with no "no preference" option, the listing's own places
+                answer["options"] = answer["options"] + facts["locations"] + applying.state_options(p.get("state", ""))[:1]
+    return {"profile": contact, "answers": answers, "learned": learned,
             "disclosures": applying.disclosure_answers(p), "today": applying.date_formats((today.year, today.month, today.day)),
             "experience": experience, "education": education, "skills": skills, "start": {**start, "source": start_source},
             "drafts": applying.drafts(p, education, experience, skills, role, posting),

@@ -66,6 +66,10 @@ STANDARD_QUESTIONS = [
     {"key": "over_18", "label": "18 or older", "default": "", "pattern": r"(18|eighteen) (years|or older)|at least 18|over (the age of )?18"},
     {"key": "relatives", "label": "Relatives employed there", "default": "", "pattern": r"relative|family members? (currently )?employed"},
     {"key": "relocate", "label": "Willing to relocate", "default": "", "pattern": r"relocat"},
+    {"key": "location_preference", "label": "Work locations you'd take", "default": "",
+     "pattern": r"location preference|preferred (work )?locations?|(which|what) (of (our|these|the following) )?(locations?|offices?|sites?)|where would you (like|prefer|want) to (work|be located|be based)|indicate your location|desired (work )?locations?"},
+    {"key": "work_onsite", "label": "Can work on-site or hybrid", "default": "",
+     "pattern": r"(able|willing|comfortable) to (work|commute|report|be)[^.]{0,40}(on.?site|in.?person|in the office|hybrid|office)|work (on.?site|in.?person|hybrid)( schedule| basis)?\b"},
 ]
 STANDARD_KEYS = [q["key"] for q in STANDARD_QUESTIONS]
 
@@ -162,6 +166,12 @@ def option_variants(key: str, answer: str) -> list[str]:
         return ["No", "None", "I have not", "Never", "N/A", "Not applicable"]
     if key == "currently_employed" and yes:
         return ["Yes", "Employed", "Currently employed"]
+    if key == "location_preference":
+        if re.search(r"open|any|all|flexib|no pref|anywhere", lower):
+            return ["No preference", "Any", "Any location", "All locations", "Open to all", "Open to any location", "Flexible", "Anywhere", "All"]
+        return [place.strip() for place in answer.split(";") if place.strip()]  # "Texas; Utah": each place on its own
+    if key == "work_onsite" and yes:
+        return ["Yes", "On-site", "Onsite", "Hybrid", "In person"]
     if key == "class_year":
         years = {"freshman": ["Freshman", "First Year", "First-year", "1st Year", "Year 1"], "sophomore": ["Sophomore", "Second Year", "Second-year", "2nd Year", "Year 2"],
                  "junior": ["Junior", "Third Year", "Third-year", "3rd Year", "Year 3"], "senior": ["Senior", "Fourth Year", "Fourth-year", "4th Year", "Year 4"]}
@@ -522,4 +532,42 @@ def drafts(profile: dict, education: list[dict], experience: list[dict], skills:
             doing = f"I'm currently a {job['title']} at {job['company']}" if job.get("current") else f"I've worked as a {job['title']} at {job['company']}"
             why += f" {doing}{f', working with {_join(skills[:3])}' if skills else ''}, and I'd like to bring that experience to {company}."
         out.append({"key": "why", "pattern": DRAFT_QUESTIONS[1][1], "text": why})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Answers the listing itself gives
+
+# (key, question pattern, fact): "Which position are you applying for?" and the like.
+LISTING_QUESTIONS = [
+    ("listing_position", r"(which|what) (position|job|role|opening)s? (are you )?(applying|interested)|position (title )?(you are |you're )?applying for|(job|position) (title )?applied for", "title"),
+    ("listing_job_id", r"(job|requisition|req|posting) (id|number|#|no)|requisition", "job_id"),
+    ("listing_term", r"(which|what) (term|season|semester|session)|(internship|co.?op) (term|session|period|season)|term (are you )?(applying|available|interested)", "term"),
+]
+
+
+def listing_facts(title: str, description: str, url: str) -> dict:
+    """What the posting says about itself: its title, requisition ID, term
+    ("Summer 2027"), and work locations ("Reston, VA", "Remote")."""
+    text = f"{title}\n{description}"
+    term = re.search(r"\b(summer|fall|autumn|spring|winter)\s*(?:of\s*)?(20\d{2})\b", text, re.I)
+    job_id = (re.search(r"_((?:R|JR|REQ)-?\d{4,}(?:-\d+)?)(?:$|[/?#])", url or "")
+              or re.search(r"(?:job|requisition|req|posting)\s*(?:id|#|number|no\.?)\s*[:#]?\s*([A-Z]{0,4}-?\d{4,}(?:-\d+)?)", text, re.I))
+    locations = []
+    for match in re.finditer(rf"\b([A-Z][a-zA-Z.'-]+(?: [A-Z][a-zA-Z.'-]+){{0,2}}),\s*({'|'.join(STATES)})\b", description or ""):
+        place = f"{match.group(1)}, {match.group(2)}"
+        if place not in locations:
+            locations.append(place)
+    if re.search(r"\bremote\b", text, re.I):
+        locations.append("Remote")
+    return {"title": title or "", "term": f"{term.group(1).title()} {term.group(2)}" if term else "",
+            "job_id": job_id.group(1) if job_id else "", "locations": locations[:4]}
+
+
+def listing_answers(facts: dict) -> list[dict]:
+    out = []
+    for key, pattern, fact in LISTING_QUESTIONS:
+        value = facts.get(fact, "")
+        if value:
+            out.append({"key": key, "pattern": pattern, "answer": value, "options": [value] + ([value.split()[0]] if fact == "term" else [])})
     return out
