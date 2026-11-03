@@ -1,3 +1,4 @@
+import base64
 import io
 import re
 import tempfile
@@ -347,6 +348,91 @@ class ApplyDeskApiTests(unittest.TestCase):
         with mock.patch("pypdf.PdfReader", return_value=mock.Mock(pages=[page])):
             text = application.extract_text(Path("resume.pdf"), "pdf")
         self.assertEqual(text, "Presented findings on a CI workflow")
+
+    JAKE = (r"\documentclass{article}" "\n" r"\newcommand{\resumeItem}[1]{\item\small{{#1}}}" "\n" r"\begin{document}" "\n"
+            r"\begin{center}\textbf{\Huge \scshape Riley Chen} \\ \small \href{mailto:r@x.edu}{\underline{r@x.edu}}\end{center}" "\n"
+            r"\section{Education}\resumeSubHeadingListStart\resumeSubheading{State University}{Austin, TX}{B.S. Computer Science}{May 2028}\resumeSubHeadingListEnd" "\n"
+            r"\section{Experience}\resumeSubHeadingListStart\resumeSubheading{SWE Intern}{2025}{Acme}{Austin, TX}" "\n"
+            r"\resumeItemListStart" "\n" r"  \resumeItem{Answered support tickets}" "\n"
+            r"  \resumeItem{Responsible for building a Postgres API with \textbf{Python}}" "\n" r"  \resumeItem{Wrote docs}" "\n" r"\resumeItemListEnd" "\n"
+            r"\resumeSubHeadingListEnd" "\n" r"\section{Technical Skills}\begin{itemize}\small{\item{\textbf{Languages}{: Java, Python} \\ \textbf{Developer Tools}{: Git, Docker}}}\end{itemize}" "\n"
+            r"\end{document}")
+    POSTING = "Backend intern building PostgreSQL APIs in Python on Kubernetes. Terraform a plus. Engineers react quickly to incidents. " * 3
+
+    def test_tailoring_keeps_the_latex_template_and_edits_wording_and_skills(self):
+        self.client.post("/profile", data={"skills": "Python, Kubernetes, React, Rust"})
+        tuned = application.tune_resume(self.JAKE, self.POSTING, "Backend Intern")
+        text = tuned["text"]
+        self.assertEqual(text.split(r"\begin{document}")[0], self.JAKE.split(r"\begin{document}")[0])
+        self.assertEqual(sorted(re.findall(r"\\[a-zA-Z]+", text)), sorted(re.findall(r"\\[a-zA-Z]+", self.JAKE)))
+        self.assertEqual(text.count("{"), text.count("}"))
+        self.assertIn(r"\resumeItem{Built a PostgreSQL API with \textbf{Python}}", text)
+        self.assertLess(text.index("Built a PostgreSQL API"), text.index("Answered support tickets"))
+        self.assertIn("{Software Engineering Intern}", text)
+        self.assertIn(r"\textbf{Developer Tools}{: Kubernetes, Git, Docker}", text)
+        self.assertNotIn("React", text)  # "react quickly" is not the framework
+        self.assertNotIn("Rust", text)   # declared, but the posting doesn't ask for it
+        education = lambda t: t[t.index(r"\section{Education}"):t.index(r"\section{Experience}")]
+        self.assertEqual(education(text), education(self.JAKE))
+        kinds = {change["kind"] for change in tuned["changes"]}
+        self.assertTrue({"wording", "title", "skills", "order"} <= kinds)
+
+    def test_tailoring_text_resume_rewords_without_inventing(self):
+        resume = ("Riley Chen\nEXPERIENCE\nSWE Intern    2025\n• Responsible for building a Postgres API.\n• Answered tickets.\n• Wrote docs.\n"
+                  "TECHNICAL SKILLS\nLanguages: Java, Python")
+        self.client.post("/profile", data={"skills": "Go, Rust"})
+        tuned = application.tune_resume(resume, "Backend intern using PostgreSQL and Go. " * 4, "Backend Intern")
+        self.assertIn("• Built a PostgreSQL API.", tuned["text"])
+        self.assertIn("Software Engineering Intern    2025", tuned["text"])
+        self.assertIn("Languages: Go, Java, Python", tuned["text"])
+        self.assertNotIn("Rust", tuned["text"])
+
+    def test_print_pages_render_jakes_layout(self):
+        self.assertEqual(self.client.get("/resume/print").status_code, 404)
+        self.add_resume(self.JAKE)
+        created = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "description": self.POSTING})
+        for path in ("/resume/print", f"/job/{created.json['saved_job_id']}/resume/print?preview=1"):
+            page = self.client.get(path)
+            self.assertEqual(page.status_code, 200, path)
+            self.assertIn(b'class="name">Riley Chen', page.data)
+            self.assertIn(b"<h2>Experience</h2>", page.data)
+            self.assertIn(b'<span class="right">Austin, TX</span>', page.data)
+            self.assertNotIn(b"\\resumeItem", page.data)
+
+    def test_application_copy_is_saved_downloaded_and_removed_with_role(self):
+        self.add_resume(self.JAKE)
+        job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "url": "https://boards.example.com/acme/jobs/4012345",
+                                                         "description": self.POSTING}).json["saved_job_id"]
+        pdf = b"%PDF-1.4 test resume"
+        bad = self.client.post("/api/applications", json={"job_id": job_id, "pdf": base64.b64encode(b"not a pdf").decode()})
+        self.assertEqual(bad.status_code, 400)
+        self.assertEqual(self.client.post("/api/applications", json={"job_id": 999}).status_code, 404)
+        saved = self.client.post("/api/applications", json={"job_id": job_id, "url": "https://boards.example.com/acme/jobs/4012345/apply",
+                                                            "attached": True, "fields": ["email", "phone"], "pages": 1, "pdf": base64.b64encode(pdf).decode()})
+        self.assertEqual(saved.status_code, 200)
+        copy_id = saved.json["id"]
+        self.assertEqual(self.client.get(f"/job/{job_id}/applications/{copy_id}.pdf").data, pdf)
+        self.assertIn(b"Software Engineering Intern", self.client.get(f"/job/{job_id}/applications/{copy_id}.tex").data)
+        self.assertNotIn(b"\\resumeItem", self.client.get(f"/job/{job_id}/applications/{copy_id}.txt").data)
+        self.assertEqual(self.client.get(f"/job/{job_id + 1}/applications/{copy_id}.pdf").status_code, 404)
+        page = self.client.get(f"/job/{job_id}").data
+        self.assertIn(b"What you sent", page)
+        self.assertIn(b"Attached to your application", page)
+        self.assertIn(b"Resume sent", self.client.get("/").data)
+        self.client.post(f"/job/{job_id}/delete")
+        import sqlite3
+        with sqlite3.connect(application.DB) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0], 0)
+
+    def test_application_url_maps_back_to_its_role(self):
+        listing = self.client.post("/api/evaluate", json={"title": "Backend Intern", "url": "https://boards.example.com/acme/jobs/4012345",
+                                                          "description": self.POSTING}).json["saved_job_id"]
+        self.client.post("/api/evaluate", json={"title": "Other", "url": "https://boards.example.com/acme/jobs/999888", "description": self.POSTING})
+        lookup = lambda url: self.client.get("/api/role-for-url", query_string={"url": url}).json["job_id"]
+        self.assertEqual(lookup("https://boards.example.com/acme/jobs/4012345/apply"), listing)
+        self.assertEqual(lookup("https://boards.example.com/acme/application?gh_jid=4012345"), listing)
+        self.assertIsNone(lookup("https://elsewhere.example.com/acme/jobs/4012345"))
+        self.assertIsNone(lookup("javascript:alert(1)"))
 
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})

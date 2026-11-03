@@ -9,7 +9,7 @@ done
 needs_build=0
 [[ -z "$APP" ]] && needs_build=1
 if (( ! needs_build )); then
-  for source in "$ROOT"/app.py "$ROOT"/macos/**/*.swift "$ROOT"/templates/* "$ROOT"/static/* "$ROOT/Build Apply Desk App.command"; do
+  for source in "$ROOT"/*.py "$ROOT"/macos/**/*.swift "$ROOT"/templates/* "$ROOT"/static/* "$ROOT/Build Apply Desk App.command"; do
     if [[ "$source" -nt "$APP/Contents/MacOS/ApplyDesk" ]]; then needs_build=1; break; fi
   done
 fi

@@ -24,6 +24,24 @@
   </div>
 </section>
 
+{% if applications %}
+<section class="panel sent" data-reveal style="--i:3">
+  <header class="panel-head"><div><p class="eyebrow">{{ ui.icon('check') }} Your copies</p><h2>What you sent</h2><p class="sub">The exact resume Apply Desk attached or saved for this role, kept even if your resume changes later.</p></div></header>
+  <ul class="copies">
+    {% for a in applications %}
+    <li><span class="copy-mark {{ 'is-sent' if a.attached }}">{{ ui.icon('resume') }}</span>
+      <div class="copy-text"><b>{{ 'Attached to your application' if a.attached else 'Saved as PDF' }}{% if a.host %} · {{ a.host }}{% endif %}</b>
+        <small><time datetime="{{ a.created }}">{{ a.created.replace('T', ' ') }}</time>{% if a.filled %} · filled {{ a.filled }}{% endif %}{% if a.pages > 1 %} · {{ a.pages }} pages{% endif %}</small></div>
+      <div class="copy-actions">
+        {% if a.has_pdf %}<a class="button" href="/job/{{ job.id }}/applications/{{ a.id }}.pdf">{{ ui.icon('download') }}<span>PDF</span></a>{% endif %}
+        {% if a.extension == 'tex' %}<a class="button ghost" href="/job/{{ job.id }}/applications/{{ a.id }}.tex">.tex</a>{% endif %}
+        <a class="button ghost" href="/job/{{ job.id }}/applications/{{ a.id }}.txt">.txt</a>
+      </div></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 <div class="role-grid">
   <section class="panel signals" data-reveal style="--i:4">
     <header class="panel-head"><div><p class="eyebrow">Why it matched</p><h2>Fit signals</h2></div></header>
@@ -46,12 +64,15 @@
   </section>
 </div>
 
+{% set kinds = {'order': 'Order', 'wording': 'Wording', 'title': 'Title', 'skills': 'Skills'} %}
 <section class="panel tuned" id="tuned" data-reveal style="--i:6">
   <header class="panel-head">
-    <div><p class="eyebrow">{{ ui.icon('sparkle') }} Tuned for this role</p><h2>Same facts, sharper order</h2><p class="sub">Your own lines, reordered so the most relevant evidence leads. Nothing is added or reworded; highlighted terms appear in the posting.</p></div>
+    <div><p class="eyebrow">{{ ui.icon('sparkle') }} Tuned for this role</p><h2>Your resume, sharpened for {{ job.company or 'this role' }}</h2><p class="sub">Same template, same facts. Wording mirrors the posting, the most relevant bullets lead, and skills from your profile that the posting asks for join your skills section.</p></div>
     {% if tuned %}<div class="head-actions">
       <button class="button ghost" type="button" data-copy="tuned-source">{{ ui.icon('copy') }}<span>Copy</span></button>
-      <a class="button primary" href="/job/{{ job.id }}/tuned">{{ ui.icon('download') }}<span>Download .{{ tuned.extension }}</span></a>
+      <a class="button ghost" href="/job/{{ job.id }}/tuned">{{ ui.icon('download') }}<span>.{{ tuned.extension }}</span></a>
+      <button class="button primary" type="button" data-native-only data-native-action="savePDF" data-job="{{ job.id }}">{{ ui.icon('download') }}<span>Save PDF</span></button>
+      <a class="button primary" data-web-only href="/job/{{ job.id }}/resume/print" target="_blank" rel="noopener">{{ ui.icon('external') }}<span>Printable</span></a>
     </div>{% endif %}
   </header>
   {% if tuned %}
@@ -61,28 +82,21 @@
     <i class="segmented-thumb" aria-hidden="true"></i>
   </div>
   <div data-panel="doc">
-    <article class="paper">
-      {% if tuned.sections %}
-      <header>{% for line in tuned.preamble %}<p class="{{ 'paper-name' if loop.first }}">{{ line }}</p>{% endfor %}</header>
-      {% for section in tuned.sections %}
-      <section><h3>{{ section.title }}</h3>
-        {% for entry in section.entries %}<div class="paper-entry">
-          {% for line in entry.header %}<p class="paper-head">{{ line|highlight(tuned.terms) }}</p>{% endfor %}
-          {% if entry.bullets %}<ul>{% for bullet in entry.bullets %}<li class="{{ 'is-hit' if bullet.hits }}">{{ bullet.text|highlight(tuned.terms) }}</li>{% endfor %}</ul>{% endif %}
-        </div>{% endfor %}
-      </section>
-      {% endfor %}
-      {% else %}<pre class="paper-raw">{{ tuned.text|highlight(tuned.terms) }}</pre>{% endif %}
-    </article>
+    <div class="sheet"><iframe src="/job/{{ job.id }}/resume/print?preview=1" title="Tuned resume, as it will be sent" data-resume-frame loading="lazy"></iframe></div>
+    <p class="fine warn" data-page-warning hidden>This version runs onto a second page even with tighter spacing. Trim a bullet in your resume to keep it to one page.</p>
   </div>
   <div data-panel="changes" hidden>
-    <ol class="changes">{% for change in tuned.changes %}<li style="--i: {{ loop.index0 }}">{{ change }}</li>{% else %}<li>Your resume already leads with the most relevant evidence for this role.</li>{% endfor %}</ol>
+    <ol class="edits">{% for change in tuned.changes %}{% if change.before %}{% set was, now = word_diff(change.before, change.after) %}{% endif %}
+      <li class="edit edit-{{ change.kind }}" style="--i: {{ loop.index0 }}"><span class="edit-kind">{{ kinds[change.kind] }}</span>
+        <div><b>{{ change.label }}</b><span>{{ change.note }}</span>{% if change.before %}<p class="was">{{ was }}</p><p class="now">{{ now }}</p>{% endif %}</div></li>
+    {% else %}<li class="edit"><div><b>Nothing to change</b><span>Your resume already leads with the most relevant evidence for this role.</span></div></li>{% endfor %}</ol>
   </div>
   <textarea id="tuned-source" hidden readonly>{{ tuned.text }}</textarea>
   {% else %}
-  {{ ui.empty('Add your resume to tune it', 'Apply Desk will reorder your own bullets and skills so what matters for this role comes first.', '/resume', 'Add resume') }}
+  {{ ui.empty('Add your resume to tune it', 'Apply Desk will tune your own bullets and skills so what matters for this role comes first.', '/resume', 'Add resume') }}
   {% endif %}
 </section>
+
 
 <div class="role-grid">
   <section class="panel checklist" data-reveal style="--i:7">
@@ -109,7 +123,7 @@
     </details>
     <div class="manage-row">
       <a class="link" href="/job/{{ job.id }}/resume.txt">{{ ui.icon('download') }}<span>Review notes</span></a>
-      <form action="/job/{{ job.id }}/delete" method="post" data-confirm="Remove this role from your shortlist?"><button class="link danger">{{ ui.icon('trash') }}<span>Remove role</span></button></form>
+      <form action="/job/{{ job.id }}/delete" method="post" data-confirm="{{ 'Remove this role and the resume copies saved with it?' if applications else 'Remove this role from your shortlist?' }}"><button class="link danger">{{ ui.icon('trash') }}<span>Remove role</span></button></form>
     </div>
   </section>
 </div>

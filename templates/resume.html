@@ -15,22 +15,11 @@
       <span class="doc-name"><b>{{ resume.filename }}</b><small>Imported {{ resume.uploaded[:16].replace('T', ' ') }}</small></span>
       <span class="doc-stats"><span><b data-count="{{ outline.words }}">{{ outline.words }}</b>words</span><span><b data-count="{{ outline.bullets }}">{{ outline.bullets }}</b>bullets</span><span><b data-count="{{ outline.sections|length }}">{{ outline.sections|length }}</b>sections</span></span>
     </div>
-    <article class="paper is-scanning">
+    <div class="sheet is-scanning">
       <i class="scan-beam" aria-hidden="true"></i>
-      {% if outline.sections %}
-      <header>{% for line in outline.preamble %}<p class="{{ 'paper-name' if loop.first }}">{{ line }}</p>{% endfor %}</header>
-      {% for section in outline.sections %}
-      <section><h3>{{ section.title }}</h3>
-        {% for entry in section.entries %}<div class="paper-entry">
-          {% for line in entry.header %}<p class="paper-head">{{ line }}</p>{% endfor %}
-          {% if entry.bullets %}<ul>{% for bullet in entry.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>{% endif %}
-        </div>{% endfor %}
-      </section>
-      {% endfor %}
-      {% else %}
-      <pre class="paper-raw">{{ resume.text }}</pre>
-      {% endif %}
-    </article>
+      <iframe src="/resume/print?preview=1" title="Your resume in Jake's layout" data-resume-frame></iframe>
+    </div>
+    <p class="fine warn" data-page-warning hidden>Your resume runs onto a second page even with tighter spacing.</p>
     {% if not outline.sections %}<p class="fine">Apply Desk couldn't find standard section headings (Education, Experience, Projects, Skills), so tuning will keep this text as is.</p>{% endif %}
     {% else %}
     <div class="panel">{{ ui.empty('No resume yet', 'Drop in your resume. Apply Desk reads it locally to score roles and to build a tuned version for each one.') }}</div>

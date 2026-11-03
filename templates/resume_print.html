@@ -1,0 +1,121 @@
+{# A resume laid out like Jake's Resume (letter, 11pt article, 0.5in margins).
+   Lengths are in px with 1px = 1pt so the Mac app can print each 612×792 page
+   straight to PDF. The same page is the on-screen preview (?preview=1). #}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>
+  :root { --gap: 1; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body { font-family: "CMU Serif", "Latin Modern Roman", "LM Roman 10", "Computer Modern Serif", Charter, "Bitstream Charter", "STIX Two Text", "Times New Roman", serif;
+         color: #000; font-size: 10.95px; line-height: 13.6px; -webkit-font-smoothing: antialiased; font-kerning: normal; }
+  body.preview { background: transparent; }
+  #flow { position: absolute; left: -10000px; top: 0; width: 540px; }
+  .page { position: relative; width: 612px; height: 792px; padding: 36px; overflow: hidden; background: #fff; }
+  body.preview #pages { display: grid; gap: 18px; justify-content: center; padding: 2px 0 6px; }
+  body.preview .page { box-shadow: 0 1px 2px rgba(0, 0, 0, .08), 0 10px 30px -12px rgba(20, 20, 60, .28); border-radius: 2px; }
+
+  .heading { text-align: center; margin-bottom: calc(4px * var(--gap)); }
+  .name { font-size: 24.88px; line-height: 30px; font-weight: bold; font-variant: small-caps; letter-spacing: .01em; }
+  .contact { font-size: 10px; line-height: 12px; margin-top: 1px; }
+  /* inline-block keeps a link's underline off the separator */
+  .contact span + span::before { content: "|"; display: inline-block; margin: 0 4px; text-decoration: none; }
+  .contact .link { text-decoration: underline; text-underline-offset: 1.5px; text-decoration-thickness: .4px; }
+
+  h2 { margin: calc(9px * var(--gap)) 0 calc(4px * var(--gap)); padding-bottom: 1px; font-size: 12px; line-height: 14px; font-weight: normal;
+       font-variant: small-caps; letter-spacing: .02em; border-bottom: .5px solid #000; }
+  .entries { padding-left: 10.8px; }
+  .entry { margin-top: calc(3px * var(--gap)); }
+  h2 + .entries .entry { margin-top: 0; }
+  .row { display: flex; justify-content: space-between; gap: 12px; width: 523.8px; }
+  .row .right { white-space: nowrap; text-align: right; }
+  .row.title .left { font-weight: bold; }
+  .row.sub { font-size: 10px; line-height: 12px; font-style: italic; }
+  .row.project { font-size: 10px; line-height: 12.5px; }
+  .row.project .left b { font-weight: bold; }
+  .row.project .left i { font-style: italic; }
+  ul.items { list-style: none; margin: calc(1px * var(--gap)) 0 0; padding: 0 0 0 23px; }
+  ul.items li { position: relative; font-size: 10px; line-height: 12px; margin-top: calc(1px * var(--gap)); width: 500px; }
+  ul.items li::before { content: ""; position: absolute; left: -10.5px; top: 5px; width: 3px; height: 3px; border-radius: 50%; background: #000; }
+  .skills { padding-left: 10.8px; font-size: 10px; line-height: 12px; }
+  .skills b { font-weight: bold; }
+  .plain { font-size: 10px; line-height: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body class="{{ 'preview' if preview }}">
+<div id="flow">
+  {% if outline.sections %}
+  <div class="block heading">
+    {% if outline.preamble %}<div class="name">{{ outline.preamble[0] }}</div>{% endif %}
+    {% for line in outline.preamble[1:] %}<div class="contact">{% for part in line.split('|') if part.strip() %}<span class="{{ 'link' if '@' in part or '.com' in part or '.io' in part or '.dev' in part or 'linkedin' in part or 'github' in part }}">{{ part.strip() }}</span>{% endfor %}</div>{% endfor %}
+  </div>
+  {% for section in outline.sections %}
+    {% if section.kind == 'skills' %}
+    <div class="block keep-with-title"><h2>{{ section.title|title if section.title.isupper() else section.title }}</h2>
+      <div class="skills">{% for entry in section.entries %}{% for line in entry.header + entry.bullets %}{% set label, colon, items = line.partition(':') %}<div>{% if colon %}<b>{{ label }}</b>:{{ items }}{% else %}{{ line }}{% endif %}</div>{% endfor %}{% endfor %}</div>
+    </div>
+    {% else %}
+    {% for entry in section.entries %}
+    <div class="block">
+      {% if loop.first %}<h2>{{ section.title|title if section.title.isupper() else section.title }}</h2>{% endif %}
+      <div class="entries"><div class="entry">
+        {% for line in entry.header %}{% set left, right = line|columns %}
+          {% if section.kind == 'projects' and loop.first and ' | ' in left %}{% set name, bar, tech = left.partition(' | ') %}
+          <div class="row project"><span class="left"><b>{{ name }}</b> | <i>{{ tech }}</i></span><span class="right">{{ right }}</span></div>
+          {% else %}
+          <div class="row {{ 'title' if loop.first else 'sub' }}"><span class="left">{{ left }}</span><span class="right">{{ right }}</span></div>
+          {% endif %}
+        {% endfor %}
+        {% if entry.bullets %}<ul class="items">{% for bullet in entry.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>{% endif %}
+      </div></div>
+    </div>
+    {% endfor %}
+    {% endif %}
+  {% endfor %}
+  {% else %}
+  <div class="block plain">{{ raw }}</div>
+  {% endif %}
+</div>
+<div id="pages"></div>
+<script>
+// Lay blocks onto 612×792 pages. A block (one entry, with its section title
+// when it is the first) never splits; spacing tightens before a second page.
+(async () => {
+  if (document.fonts && document.fonts.ready) await document.fonts.ready;
+  const flow = document.getElementById('flow');
+  const pages = document.getElementById('pages');
+  const bottomLimit = 792 - 36;
+  const layout = () => {
+    pages.replaceChildren();
+    let page = null;
+    const newPage = () => { page = document.createElement('div'); page.className = 'page'; pages.appendChild(page); };
+    for (const block of [...flow.querySelectorAll('.block')].map(b => b.cloneNode(true))) {
+      if (!page) newPage();
+      page.appendChild(block);
+      const bottom = block.getBoundingClientRect().bottom - page.getBoundingClientRect().top;
+      if (bottom > bottomLimit + 0.5 && page.children.length > 1) { block.remove(); newPage(); page.appendChild(block); }
+    }
+    return pages.children.length;
+  };
+  let count = layout();
+  for (const gap of [0.75, 0.5]) {
+    if (count <= 1) break;
+    document.documentElement.style.setProperty('--gap', gap);
+    count = layout();
+  }
+  if (count > 1) document.documentElement.style.setProperty('--gap', 1), count = layout();
+  document.body.dataset.pages = String(count);
+  if (document.body.classList.contains('preview')) {
+    const fit = () => { pages.style.zoom = String(Math.min(1.6, (window.innerWidth - 4) / 612)); };
+    fit();
+    addEventListener('resize', fit);
+  }
+  document.body.dataset.ready = '1';
+  if (window.parent !== window) window.parent.postMessage({resumePages: count, height: document.documentElement.scrollHeight}, location.origin);
+})();
+</script>
+</body>
+</html>

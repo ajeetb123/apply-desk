@@ -15,9 +15,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var fillHotKey: HotKey?
     private var watcherTimer: Timer?
     private var watching = UserDefaults.standard.object(forKey: "watchChrome") as? Bool ?? true
-    private var lastTabKey = ""
-    private var processedTabs = Set<String>()
+    private lazy var resumePDF = ResumePDF(backend: backend)
+    // Watching follows only the tab the user is on. A tab is read once it has
+    // finished loading, stayed in front briefly, and its text stopped growing.
+    private var candidate: (key: String, since: Date)?
+    private var pageLengths: [String: Int] = [:]
     private var pageLoadAttempts: [String: Int] = [:]
+    private var ignoredTabs = Set<String>()
+    private var tabRoles: [String: Int] = [:]          // "tab id|url" → saved role
+    private var tabLastRole: [String: Int] = [:]       // tab id → last role seen in it
+    private var current: (id: Int, title: String, seen: Date)?
     private var lastResult = "No listings yet"
     private var lastJobID: Int?
     private var launchedAtLogin = false
@@ -262,6 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch action {
         case "toggleWatcher": toggleWatching()
         case "scanNow": scanNow()
+        case "savePDF": if let job = body["job"] as? Int { savePDF(jobID: job) }
         case "copy":
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(body["text"] as? String ?? "", forType: .string)
@@ -281,17 +289,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         watcherTimer?.invalidate()
         watcherTimer = nil
         if enabled {
-            lastTabKey = ""
-            watcherTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
+            candidate = nil
+            watcherTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
                 DispatchQueue.main.async { self?.scanActiveTab(manual: false) }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.scanActiveTab(manual: false) }
         }
         pushState()
     }
 
     private func pushState() {
-        workspace.pushState(["watching": watching, "lastResult": lastResult == "No listings yet" ? "" : lastResult])
+        var state: [String: Any] = ["watching": watching, "lastResult": lastResult == "No listings yet" ? "" : lastResult]
+        if let current = current { state["current"] = ["id": current.id, "title": current.title] }
+        workspace.pushState(state)
+    }
+
+    private func setCurrent(_ jobID: Int, title: String) {
+        let changed = current?.id != jobID
+        current = (jobID, title, Date())
+        lastJobID = jobID
+        if changed { pushState() }
     }
 
     @objc private func scanNow() {
@@ -304,43 +320,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if manual { toasts.show(Toast(title: "Chrome isn't open", detail: "Open a job listing in Google Chrome, then scan again.", symbol: "globe")) }
             return
         }
+        // With many tabs and windows open, only the one in front of the user counts.
+        if !manual && !Chrome.isFrontmost { return }
         guard let tab = Chrome.activeTab() else {
             if Chrome.lastFailure != nil { chromeNeedsPermission(manual: manual) }
             else if manual { toasts.show(Toast(title: "No Chrome tab to scan", detail: "Open a job listing in Chrome, then scan again.", symbol: "globe")) }
             return
         }
         let url = tab.url.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = url + "\n" + tab.title
-        guard !url.isEmpty, manual || key != lastTabKey, manual || JobListing.isLikelyURL(url) else { return }
-        lastTabKey = key
-        guard manual || !processedTabs.contains(key) else { return }
+        let key = tab.id + "|" + url
+        if let role = tabRoles[key] {
+            // Back on a listing that was already scored: it becomes the current role.
+            tabLastRole[tab.id] = role
+            setCurrent(role, title: current?.id == role ? current!.title : tab.title)
+            if !manual { return }
+        }
+        guard !url.isEmpty, manual || JobListing.isLikelyURL(url) else {
+            ignoredTabs.insert(key)
+            return
+        }
+        if !manual {
+            guard !ignoredTabs.contains(key), !tab.loading else { return }
+            // Flipping through tabs shouldn't trigger reads; wait until one stays put.
+            if candidate?.key != key {
+                candidate = (key, Date())
+                return
+            }
+            guard Date().timeIntervalSince(candidate!.since) >= 1.2 else { return }
+        }
         guard let page = Chrome.readPage() else {
             chromeNeedsPermission(manual: manual)
             return
         }
         let text = String(page.description.prefix(50_000)).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.count >= 300, JobListing.looksLikePosting(text) else {
+        guard page.ready, text.count >= 300, JobListing.looksLikePosting(text) else {
             if manual {
                 toasts.show(Toast(title: "This tab doesn't look like a job listing", detail: "Open the full job description, then scan again.", symbol: "doc.text.magnifyingglass"))
             } else {
-                // Listings often render after the URL changes; look again a few times.
+                // Many boards render the description after the page loads; keep
+                // looking for about ten seconds, then stop.
                 let attempts = (pageLoadAttempts[key] ?? 0) + 1
                 pageLoadAttempts[key] = attempts
-                if attempts < 4 { lastTabKey = "" }
+                if attempts >= 7 { ignoredTabs.insert(key) }
             }
             return
         }
+        // Wait until the description stops growing so the whole posting is read.
+        if !manual && pageLengths[key] != text.count {
+            pageLengths[key] = text.count
+            return
+        }
         pageLoadAttempts.removeValue(forKey: key)
-        processedTabs.insert(key)
-        evaluate(page, url: url)
+        pageLengths.removeValue(forKey: key)
+        ignoredTabs.insert(key)
+        evaluate(page, url: url, tabID: tab.id, key: key)
     }
 
-    private func evaluate(_ page: Chrome.Page, url: String) {
+    private func evaluate(_ page: Chrome.Page, url: String, tabID: String, key: String) {
         let payload: [String: Any] = ["url": url, "title": String(page.roleTitle.prefix(200)),
                                       "company": String(page.company.prefix(200)), "description": String(page.description.prefix(50_000))]
         backend.send("api/evaluate", json: payload) { [weak self] result in
             guard let self = self else { return }
             guard let result = result, let jobID = result["saved_job_id"] as? Int else {
+                self.ignoredTabs.remove(key)
                 self.lastResult = "Couldn't reach the local service"
                 self.pushState()
                 return
@@ -349,8 +391,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let resumeLoaded = result["resume_loaded"] as? Bool ?? false
             let title = (result["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Untitled role"
             let company = result["company"] as? String ?? ""
-            self.lastJobID = jobID
+            self.tabRoles[key] = jobID
+            self.tabLastRole[tabID] = jobID
             self.lastResult = resumeLoaded ? "\(score) fit · \(title.prefix(40))" : "Resume needed · \(title.prefix(36))"
+            self.setCurrent(jobID, title: title)
             self.pushState()
             if self.workspace.isVisible { self.workspace.reload() }
             if !resumeLoaded {
@@ -399,14 +443,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    // MARK: Autofill
+    // MARK: Autofill and the resume that goes with it
 
     @objc private func fillApplication() {
-        guard Chrome.isRunning else {
-            toasts.show(Toast(title: "Open an application in Chrome", detail: "Press ⌃⌥F on an application form in Chrome's front tab.", symbol: "globe"))
+        guard Chrome.isRunning, Chrome.isFrontmost || NSApp.isActive else {
+            toasts.show(Toast(title: "Switch to the application in Chrome", detail: "Press ⌃⌥F while the application form is the tab in front.", symbol: "globe"))
             return
         }
         guard confirmFirstFill() else { return }
+        guard let tab = Chrome.activeTab() else {
+            if Chrome.lastFailure != nil { showChromeHelp() }
+            return
+        }
         backend.send("api/profile") { [weak self] profile in
             guard let self = self else { return }
             let values = (profile ?? [:]).compactMapValues { $0 as? String }
@@ -415,19 +463,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                        symbol: "person.text.rectangle", actionTitle: "Open Profile", action: { [weak self] in self?.workspace.show(path: "profile") }))
                 return
             }
-            guard let result = Autofill.parse(Chrome.runJavaScript(Autofill.script(profile: values))) else {
-                if Chrome.lastFailure != nil { self.showChromeHelp() }
-                else { self.toasts.show(Toast(title: "Couldn't read this form", detail: "This page may block autofill. Enter the remaining details yourself.", symbol: "exclamationmark.triangle")) }
-                return
+            self.roleForApplication(tab) { role in
+                guard let role = role else { return self.runFill(values, tab: tab, role: nil, resume: nil) }
+                self.resumePDF.make(jobID: role) { output in
+                    self.runFill(values, tab: tab, role: role, resume: output)
+                }
             }
-            if result.count > 0 {
-                self.toasts.show(Toast(title: "Filled \(result.count) field\(result.count == 1 ? "" : "s")",
-                                       detail: "Highlighted in green. Review every value, answer the rest, and submit it yourself.", symbol: "checkmark"))
-            } else if let form = result.embeddedForm {
-                self.toasts.show(Toast(title: "This form is embedded", detail: "Open it on its own page, then press ⌃⌥F again.", symbol: "rectangle.on.rectangle",
-                                       actionTitle: "Open Form", action: { Chrome.open(form) }), for: 12)
-            } else {
-                self.toasts.show(Toast(title: "No empty fields to fill", detail: "Apply Desk skips filled fields and questions that need your judgment.", symbol: "checkmark.circle"))
+        }
+    }
+
+    /// Which saved role this application belongs to: the role last scanned in
+    /// the same tab, then a URL match, then the role the user viewed last.
+    private func roleForApplication(_ tab: Chrome.Tab, completion: @escaping (Int?) -> Void) {
+        if let role = tabLastRole[tab.id] { return completion(role) }
+        let query = tab.url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=+?#"))) ?? ""
+        backend.send("api/role-for-url?url=\(query)") { [weak self] result in
+            if let role = result?["job_id"] as? Int { return completion(role) }
+            if let current = self?.current, Date().timeIntervalSince(current.seen) < 2 * 3600 { return completion(current.id) }
+            completion(nil)
+        }
+    }
+
+    private func runFill(_ values: [String: String], tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?) {
+        let name = values["name"].map { "\($0) Resume.pdf" } ?? "Resume.pdf"
+        let script = Autofill.script(profile: values, resume: resume.map { (name, $0.pdf) })
+        guard let result = Autofill.parse(Chrome.runJavaScript(script)) else {
+            if Chrome.lastFailure != nil { showChromeHelp() }
+            else { toasts.show(Toast(title: "Couldn't read this form", detail: "This page may block autofill. Enter the remaining details yourself.", symbol: "exclamationmark.triangle")) }
+            return
+        }
+        if let role = role, let resume = resume, result.count > 0 || result.attached {
+            // Keep the exact resume that went with this application.
+            backend.send("api/applications", json: ["job_id": role, "url": tab.url, "attached": result.attached, "fields": result.fields,
+                                                    "pages": resume.pages, "pdf": resume.pdf.base64EncodedString()]) { [weak self] _ in
+                if self?.workspace.isVisible == true { self?.workspace.reload() }
+            }
+        }
+        let open: () -> Void = { [weak self] in if let role = role { self?.workspace.show(path: "job/\(role)") } }
+        if result.count > 0 || result.attached {
+            let parts = [result.count > 0 ? "filled \(result.count) field\(result.count == 1 ? "" : "s")" : nil,
+                         result.attached ? "attached your resume tuned for this role" : nil].compactMap { $0 }
+            let detail = result.attached || role == nil ? "Review every value, answer the rest, and submit it yourself."
+                : resume == nil ? "Couldn't prepare your tuned resume. Save it from the role page and upload it yourself."
+                : "No resume upload was found here. If the form asks for one later, save your tuned PDF from the role page."
+            toasts.show(Toast(title: parts.joined(separator: " and ").prefix(1).uppercased() + parts.joined(separator: " and ").dropFirst(),
+                              detail: detail, symbol: "checkmark", actionTitle: role == nil ? nil : "See What Was Sent", action: open), for: 10)
+        } else if let form = result.embeddedForm {
+            toasts.show(Toast(title: "This form is embedded", detail: "Open it on its own page, then press ⌃⌥F again.", symbol: "rectangle.on.rectangle",
+                              actionTitle: "Open Form", action: { Chrome.open(form) }), for: 12)
+        } else {
+            toasts.show(Toast(title: "No empty fields to fill", detail: "Apply Desk skips filled fields and questions that need your judgment.", symbol: "checkmark.circle"))
+        }
+    }
+
+    /// Saves the role-tuned PDF to Downloads and keeps a copy with the role.
+    private func savePDF(jobID: Int) {
+        resumePDF.make(jobID: jobID) { [weak self] output in
+            guard let self = self else { return }
+            guard let output = output else {
+                return self.toasts.show(Toast(title: "Couldn't make the PDF", detail: "Try again in a moment.", symbol: "exclamationmark.triangle"))
+            }
+            self.backend.send("api/applications", json: ["job_id": jobID, "attached": false, "pages": output.pages, "pdf": output.pdf.base64EncodedString()]) { [weak self] result in
+                guard let self = self else { return }
+                let stem = ((result?["filename"] as? String) ?? "Resume.pdf").replacingOccurrences(of: ".pdf", with: "")
+                let company = (result?["company"] as? String).flatMap { $0.isEmpty ? nil : " - \($0)" } ?? ""
+                let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+                var target = folder.appendingPathComponent("\(stem)\(company).pdf")
+                var copy = 2
+                while FileManager.default.fileExists(atPath: target.path) {
+                    target = folder.appendingPathComponent("\(stem)\(company) \(copy).pdf")
+                    copy += 1
+                }
+                do {
+                    try output.pdf.write(to: target)
+                } catch {
+                    return self.toasts.show(Toast(title: "Couldn't save the PDF", detail: error.localizedDescription, symbol: "exclamationmark.triangle"))
+                }
+                self.workspace.reload()
+                self.toasts.show(Toast(title: "Saved to Downloads", detail: target.lastPathComponent + (output.pages > 1 ? " · \(output.pages) pages" : ""),
+                                       symbol: "arrow.down.doc", actionTitle: "Show in Finder", action: { NSWorkspace.shared.activateFileViewerSelecting([target]) }))
             }
         }
     }
@@ -437,7 +551,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Fill this application with your details?"
-        alert.informativeText = "Apply Desk types your saved contact, education, and link details into empty, clearly labeled fields in Chrome's front tab. It skips sponsorship, demographic, and screening questions and never submits. Review everything before you apply."
+        alert.informativeText = "Apply Desk types your saved contact, education, and link details into empty, clearly labeled fields in Chrome's front tab, and attaches your resume tuned for this role to the resume upload. It skips sponsorship, demographic, and screening questions and never submits. Review everything before you apply."
         alert.addButton(withTitle: "Fill Fields")
         alert.addButton(withTitle: "Cancel")
         alert.showsSuppressionButton = true

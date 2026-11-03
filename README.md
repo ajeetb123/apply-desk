@@ -10,9 +10,17 @@ Apply Desk opens at login by default and lives in the menu bar. Closing the wind
 
 ## What it does
 
-- **Watches Chrome for listings.** When the front Chrome tab is a job posting, Apply Desk saves it and scores it. A strong match (60+) slides in as a notification you can open. Pause watching from the menu bar icon or the switch in the sidebar.
-- **Fills applications on ⌃⌥F.** On an employer application in Chrome, press Control-Option-F. Apply Desk types your saved contact, education, and link details into empty, clearly labeled fields and highlights them in green. It skips sponsorship, work-authorization, demographic, referral, and screening questions, and it never submits. Forms embedded in another site (for example a Greenhouse iframe) need to be opened on their own page first.
-- **Tunes your resume per role.** Each role page shows your resume reordered so the bullets and skills that match the posting come first, with matching terms highlighted. Nothing is added or reworded. Copy it, or download it as `.txt` — or as `.tex` when your resume is a Jake's-style LaTeX file, so you can compile it in Overleaf.
+- **Watches the tab you're on.** With many tabs and windows open, Apply Desk only reads the active tab of Chrome's front window, and only while Chrome is in front. It waits until the tab has finished loading, stayed in front for a moment, and its text has stopped changing, so it reads the whole posting once. Each tab remembers its role, and the sidebar shows the one you're viewing. A strong match (60+) slides in as a notification. Pause watching from the menu bar icon or the switch in the sidebar.
+- **Fills applications on ⌃⌥F.** On an employer application in Chrome, press Control-Option-F. Apply Desk types your saved contact, education, and link details into empty, clearly labeled fields and highlights them in green. It also attaches your resume tuned for that role, as a PDF, to the resume upload field (never to cover letter, transcript, or portfolio uploads). It skips sponsorship, work-authorization, demographic, referral, and screening questions, and it never submits. It knows the role from the tab you scanned the listing in, the application's URL, or the role you viewed last. Forms embedded in another site (for example a Greenhouse iframe) need to be opened on their own page first.
+- **Tunes your resume per role, without touching the template.** The layout, sections, and facts stay the same. Tuning:
+  - puts the bullets most relevant to the posting first within each entry;
+  - spells technologies the way the posting does ("Postgres" or "PostgreSQL") and fixes their capitals ("Github" → "GitHub");
+  - opens bullets with an action ("Responsible for building" → "Built") and keeps bullet punctuation consistent;
+  - spells out title abbreviations ("SWE Intern" → "Software Engineering Intern");
+  - adds up to four skills to the matching Technical Skills line, only when you listed them in your Profile and the posting asks for them.
+
+  Every edit appears under **What changed** with the old and new wording. The preview is the exact page that gets sent.
+- **Keeps what you sent.** The tuned resume renders in Jake's layout (Letter, 0.5in margins) as a one-page PDF with selectable text. **Save PDF** puts it in Downloads, and ⌃⌥F attaches it. Either way, the exact copy is kept with the role under **What you sent**, as PDF, `.tex` (for LaTeX resumes), and `.txt`, even if your resume changes later.
 - **Explains every score.** Fit weights resume skill overlap (40%), target-role alignment (25%), career-goal terms (15%), campaign alignment (10%), and graduation-window evidence (10%). It is a triage aid, not an ATS score or hiring probability.
 
 ### First-time Chrome setup
@@ -27,8 +35,8 @@ Chrome protects page text from other apps. Enable **View → Developer → Allow
 
 ## How it's built
 
-- `macos/` — the Swift app: `AppDelegate.swift` (menus, menu bar, Chrome watching, autofill), `Backend.swift` (starts and supervises the bundled local service), `WorkspaceWindow.swift` (the window, over native vibrancy), `Chrome.swift`, `Autofill.swift`, `Toast.swift`, `HotKey.swift`, and `tools/make_icon.swift` (draws the app icon at build time).
-- `app.py`, `templates/`, `static/` — the local Flask service and workspace UI, bundled inside the app with its Python packages. It listens on `127.0.0.1:8787` only and requires a private per-install token, so other software and web pages can't read your profile through the port.
+- `macos/` — the Swift app: `AppDelegate.swift` (menus, menu bar, Chrome watching, autofill), `Backend.swift` (starts and supervises the bundled local service), `WorkspaceWindow.swift` (the window, over native vibrancy), `ResumePDF.swift` (renders the PDF offscreen), `Chrome.swift`, `Autofill.swift`, `Toast.swift`, `HotKey.swift`, and `tools/make_icon.swift` (draws the app icon at build time).
+- `app.py`, `tailoring.py`, `templates/`, `static/` — the local Flask service, the resume tuning rules, and the workspace UI (`templates/resume_print.html` is the Jake's-layout PDF page), bundled inside the app with its Python packages. It listens on `127.0.0.1:8787` only and requires a private per-install token, so other software and web pages can't read your profile through the port.
 
 ## Local data and privacy
 
@@ -36,20 +44,25 @@ Your resume versions, profile, saved roles, and notes live in `~/Library/Applica
 
 ## Resume-writing choices
 
-- Keep Jake's Resume as the selected single-column LaTeX output format; do not copy another applicant's resume text.
-- Use concise action + context + outcome bullets when the source resume supports them.
-- Quantify only with supplied evidence and surface education and relevant technical work early for a current student.
-- Match job-description terms only when they truthfully describe the candidate.
-- Treat online resume feedback as anecdotal; prefer specific, repeated critiques and employer guidance.
+Tuning follows these rules, gathered from the sources below. Everything it can't do truthfully on its own (adding numbers, rewriting a weak bullet) is left to you.
+
+- **Jake's Resume is the template.** A LaTeX resume keeps its preamble and every command; only bullet text, title abbreviations, and skill lists change. PDFs are drawn with Jake's measurements (11pt base, 10pt items, small-caps 12pt section titles over a rule, 0.5in margins) in Computer Modern when installed, otherwise Charter.
+- **One page, at least 10pt.** Spacing tightens before content spills to a second page, and the role page warns when it still does.
+- **Mirror the posting's wording.** ATS keyword matching is often literal, so a technology you already list is spelled the posting's way. Skills are added only from your own Profile, capped at four, to avoid keyword stuffing.
+- **Lead with an action, in an active voice.** Weak openers become past-tense verbs; aim for accomplishment, action, and measurable result (Google's XYZ formula) in your own edits.
+- **Standard titles and grouped skills.** Spell out abbreviated job titles, and keep skills grouped as Languages, Frameworks, Developer Tools, and Libraries.
+- **Education first while you're a student.** Section order is never changed.
 
 ## Research references
 
+- [Tech Interview Handbook: resume guide](https://www.techinterviewhandbook.org/resume/) — one page, PDF, 0.5in margins, 10pt minimum, imitate the posting's language without keyword stuffing.
+- [Jake's Resume source (jakegut/resume)](https://github.com/jakegut/resume) — layout measurements and section structure.
+- [Jobscan: ATS resume guide](https://www.jobscan.co/blog/ats-resume/) — mirror the posting's exact terms.
+- [Google XYZ formula (Inc.)](https://www.inc.com/bill-murphy-jr/google-recruiters-say-these-5-resume-tips-including-x-y-z-formula-will-improve-your-odds-of-getting-hired-at-google.html)
 - [Google resume writing tips](https://services.google.com/fh/files/misc/resume-writing-tips-for-veterans-2021.pdf)
-- [Google interns' resume tips](https://students.googleblog.com/2015/07/google-interns-top-5-resume-tips.html)
-- [MIT first-year resume guidance](https://capd.mit.edu/blog/2023/09/01/enhance-your-resume-a-guide-for-first-year-undergraduates/)
 - [MIT ATS-friendly resume guide](https://capd.mit.edu/resources/make-your-resume-ats-friendly/)
 - [Jake's Resume on Overleaf](https://www.overleaf.com/latex/templates/jakes-resume/syzfjbzwjncs)
-- [r/EngineeringResumes](https://www.reddit.com/r/EngineeringResumes/) — useful peer feedback, not a representative hiring study.
+- [r/EngineeringResumes](https://www.reddit.com/r/EngineeringResumes/) — XYZ/STAR/CAR bullets and Bitstream Charter as a font; useful peer feedback, not a representative hiring study.
 
 ## Tests
 
