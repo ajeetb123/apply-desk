@@ -315,6 +315,39 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertIn("attachment", response.headers["Content-Disposition"])
         self.assertLess(response.data.index(b"Built Python APIs"), response.data.index(b"Answered tickets"))
 
+    def test_repeated_graduation_year_is_not_a_window(self):
+        self.add_resume("Python software engineering intern project")
+        self.client.post("/profile", data={"graduation": "May 2028"})
+        description = "Software Engineering Intern for students graduating in 2027. Build Python services. " * 3
+        response = self.client.post("/api/evaluate", json={"title": "Software Engineering Intern", "description": description})
+        self.assertEqual(response.json["eligibility"], "verify")
+
+    def test_skills_match_whole_words_only(self):
+        self.add_resume("Built tools in C and Java")
+        self.client.post("/profile", data={"skills": "C, Java, Go"})
+        nurse = "Registered nurse providing patient care. JavaScript not required. Good communication skills. " * 3
+        response = self.client.post("/api/evaluate", json={"title": "Registered Nurse", "description": nurse})
+        self.assertEqual(response.json["matched_skills"], [])
+        backend = "Backend intern writing Go and C services; Java is a plus. " * 3
+        response = self.client.post("/api/evaluate", json={"title": "Backend Intern", "description": backend})
+        self.assertEqual(sorted(response.json["matched_skills"])[:3], ["c", "go", "java"])
+
+    def test_resume_page_warns_about_missing_watched_file(self):
+        self.client.post("/profile", data={"watch_path": str(Path(self.temp.name) / "missing.pdf"), "next": "resume"})
+        self.assertIn(b"can't find a file at this path", self.client.get("/resume").data)
+        present = Path(self.temp.name) / "resume.txt"
+        present.write_text("Built Python tools")
+        self.client.post("/profile", data={"watch_path": str(present), "next": "resume"})
+        self.assertNotIn(b"can't find a file at this path", self.client.get("/resume").data)
+
+    def test_pdf_ligatures_are_normalized(self):
+        from unittest import mock
+        page = mock.Mock()
+        page.extract_text.return_value = "Presented ﬁndings on a CI workﬂow"
+        with mock.patch("pypdf.PdfReader", return_value=mock.Mock(pages=[page])):
+            text = application.extract_text(Path("resume.pdf"), "pdf")
+        self.assertEqual(text, "Presented findings on a CI workflow")
+
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})
         self.assertEqual(response.status_code, 421)

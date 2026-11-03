@@ -26,7 +26,8 @@ enum Autofill {
             ['address', /street address|address line 1|address 1|^address$/], ['city', /(^| )city( |$)|town/],
             ['state', /(^| )state( |$)|province/], ['postal', /zip|postal code|postcode/],
             ['school', /school|university|college/], ['degree', /degree/], ['graduation', /graduat|expected completion/]];
-          const judgment = /sponsor|visa|will you|are you|do you|have you|race|ethnic|gender|pronoun|disab|veteran|authori[sz]|salary|compensation|password|(^| )referr|hear about|why /;
+          // Questions only the applicant should answer, and fields about other people.
+          const judgment = /sponsor|visa|will you|are you|do you|have you|race|ethnic|gender|pronoun|disab|veteran|authori[sz]|salary|compensation|password|(^| )referr|hear about|why |reference|emergency|supervisor|manager|guardian|parent|high school|extension/;
           const norm = s => (s || '').toLowerCase().replace(/[_-]+/g, ' ').replace(/\\s+/g, ' ').trim();
           const text = id => (document.getElementById(id) || {}).innerText;
           // A wrapper's label counts only when the wrapper holds this one field.

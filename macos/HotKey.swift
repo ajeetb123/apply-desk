@@ -7,6 +7,8 @@ final class HotKey {
     private static var installed = false
     private static var nextID: UInt32 = 1
     private var reference: EventHotKeyRef?
+    /// False when another app already owns this shortcut.
+    private(set) var isRegistered = false
 
     init(keyCode: Int, modifiers: Int, handler: @escaping () -> Void) {
         HotKey.installHandler()
@@ -14,7 +16,9 @@ final class HotKey {
         HotKey.nextID += 1
         HotKey.handlers[id] = handler
         let hotKeyID = EventHotKeyID(signature: OSType(0x4150_4453), id: id) // "APDS"
-        RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID, GetApplicationEventTarget(), 0, &reference)
+        let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID, GetApplicationEventTarget(), 0, &reference)
+        isRegistered = status == noErr
+        if !isRegistered { NSLog("Apply Desk couldn't register its shortcut (status %d); another app may use it", status) }
     }
 
     deinit {
