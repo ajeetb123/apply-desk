@@ -39,8 +39,8 @@
 
     <aside class="rail">
       <section class="panel autofill" data-reveal style="--i:4">
-        <header class="panel-head"><div><p class="eyebrow">{{ ui.icon('bolt') }} Autofill</p><h2>What ⌃⌥F fills</h2></div></header>
-        <p class="sub">On an application open in Chrome, Apply Desk types these into empty, clearly labeled fields. You review and submit.</p>
+        <header class="panel-head"><div><p class="eyebrow">{{ ui.icon('bolt') }} Autofill</p><h2>What the <kbd class="key-wide">`</kbd> key fills</h2></div></header>
+        <p class="sub">Press <kbd class="key-wide">`</kbd> (top left, under Esc) on an application open in Chrome. Apply Desk types these into empty, clearly labeled fields and attaches your tuned resume. You review and submit.</p>
         <ul class="fill-list">
           {% for key, label in autofill_fields if key != 'work_authorization' %}<li class="{{ 'is-set' if profile.get(key) }}" data-fill-for="{{ key }}"><i>{{ ui.icon('check') }}</i>{{ label }}</li>{% endfor %}
         </ul>

@@ -4,8 +4,8 @@ import ServiceManagement
 
 /// Apply Desk runs in the background from the menu bar. It watches the
 /// active Chrome tab for job listings, scores them against the resume and
-/// profile kept on this Mac, and fills applications on ⌃⌥F. The window is
-/// the workspace; closing it leaves the app running.
+/// profile kept on this Mac, and fills applications with the ` key. The
+/// window is the workspace; closing it leaves the app running.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let backend = Backend()
@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var workspace: WorkspaceWindow!
     private var statusItem: NSStatusItem!
     private var fillHotKey: HotKey?
-    private var watcherTimer: Timer?
+    private var monitorTimer: Timer?
     private var watching = UserDefaults.standard.object(forKey: "watchChrome") as? Bool ?? true
     private lazy var resumePDF = ResumePDF(backend: backend)
     // Watching follows only the tab the user is on. A tab is read once it has
@@ -27,6 +27,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var current: (id: Int, title: String, seen: Date)?
     private var lastResult = "No listings yet"
     private var lastJobID: Int?
+    /// What stands between Apply Desk and Chrome right now. Watching stays on
+    /// while this is not `.ready`; the sidebar and menu say how to fix it.
+    private enum ChromeStatus: String { case ready, notAsked, denied, javaScriptOff, notRunning }
+    private var chromeStatus = ChromeStatus.ready
+    private var lastAccessCheck = Date.distantPast
+    private var lastJavaScriptCheck = Date.distantPast
+    private var askedForAccess = false
+    private var accessVerified = false
     private var launchedAtLogin = false
     private var showingHelp = false
     private var remindedAboutResume = false
@@ -48,10 +56,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         backend.onFailure = { [weak self] in self?.serviceFailed() }
         configureMainMenu()
         configureStatusItem()
-        fillHotKey = HotKey(keyCode: kVK_ANSI_F, modifiers: controlKey | optionKey) { [weak self] in self?.fillApplication() }
-        if fillHotKey?.isRegistered == false {
-            toasts.show(Toast(title: "⌃⌥F is taken by another app", detail: "Use Fill Application in Chrome from the Apply Desk menu bar icon instead.",
-                              symbol: "keyboard"), for: 10)
+        // One key, `, claimed only while a job or application page is in front
+        // in Chrome (see tick()); everywhere else it types a backtick as usual.
+        fillHotKey = HotKey(keyCode: kVK_ANSI_Grave, modifiers: 0) { [weak self] in self?.fillApplication() }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                if !Chrome.isFrontmost { self?.fillHotKey?.isEnabled = false }
+                else { self?.tick() }
+            }
         }
         registerLoginItemOnFirstLaunch()
         if launchedAtLogin { NSApp.setActivationPolicy(.accessory) } else { workspace.show() }
@@ -153,11 +165,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func populateAssistItems(_ menu: NSMenu) {
         menu.removeAllItems()
         let scan = item("Scan Current Chrome Tab", #selector(scanNow), "j")
-        let fill = item("Fill Application in Chrome", #selector(fillApplication), "f")
-        fill.keyEquivalentModifierMask = [.control, .option]
+        let fill = item("Fill Application in Chrome (` key)", #selector(fillApplication))
         let watch = item("Watch Chrome for Listings", #selector(toggleWatching))
         watch.state = watching ? .on : .off
         for entry in [scan, fill, watch] { menu.addItem(entry) }
+        if chromeStatus != .ready && chromeStatus != .notRunning {
+            menu.addItem(item(chromeStatus == .javaScriptOff ? "Fix Chrome Setting…" : "Allow Chrome Access…", #selector(fixChromeAccess)))
+        }
     }
 
     private func configureStatusItem() {
@@ -172,7 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func rebuildStatusMenu(_ menu: NSMenu) {
         menu.removeAllItems()
-        let heading = NSMenuItem(title: watching ? "Watching Chrome for listings" : "Watching paused", action: nil, keyEquivalent: "")
+        let heading = NSMenuItem(title: statusHeadline, action: nil, keyEquivalent: "")
         heading.isEnabled = false
         menu.addItem(heading)
         let last = item(lastResult, lastJobID == nil ? nil : #selector(openLastJob))
@@ -270,6 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "toggleWatcher": toggleWatching()
         case "scanNow": scanNow()
         case "savePDF": if let job = body["job"] as? Int { savePDF(jobID: job) }
+        case "chromeAccess": fixChromeAccess()
         case "copy":
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(body["text"] as? String ?? "", forType: .string)
@@ -280,27 +295,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Watching Chrome
 
     @objc private func toggleWatching() {
-        setWatching(!watching)
+        setWatching(!watching, userInitiated: true)
     }
 
-    private func setWatching(_ enabled: Bool) {
+    /// Watching is the user's choice and is never switched off for them; when
+    /// Chrome can't be read yet, the status explains why and how to fix it.
+    private func setWatching(_ enabled: Bool, userInitiated: Bool = false) {
         watching = enabled
         UserDefaults.standard.set(enabled, forKey: "watchChrome")
-        watcherTimer?.invalidate()
-        watcherTimer = nil
-        if enabled {
-            candidate = nil
-            watcherTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-                DispatchQueue.main.async { self?.scanActiveTab(manual: false) }
+        candidate = nil
+        if monitorTimer == nil {
+            monitorTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+                DispatchQueue.main.async { self?.tick() }
             }
+        }
+        if enabled {
+            // Show the real status right away; ask for access only when the
+            // user just turned watching on, never by surprise at launch.
+            let access = refreshChromeAccess()
+            if userInitiated && access == .notAsked { requestChromeAccess() }
+            if userInitiated && access == .denied { askAgainForChromeAccess() }
         }
         pushState()
     }
 
+    /// Reads Automation permission without prompting and updates the status.
+    @discardableResult
+    private func refreshChromeAccess() -> Chrome.Access {
+        guard Chrome.isRunning else {
+            setChromeStatus(.notRunning)
+            return .notRunning
+        }
+        lastAccessCheck = Date()
+        let access = Chrome.automationAccess(ask: false)
+        accessVerified = access == .granted
+        switch access {
+        case .granted: if chromeStatus != .javaScriptOff { setChromeStatus(.ready) }
+        case .denied: setChromeStatus(.denied)
+        case .notAsked: setChromeStatus(.notAsked)
+        case .notRunning: setChromeStatus(.notRunning)
+        }
+        return access
+    }
+
+    private var statusHeadline: String {
+        guard watching else { return "Watching paused" }
+        switch chromeStatus {
+        case .ready: return "Watching Chrome for listings"
+        case .notAsked: return "Chrome access needed"
+        case .denied: return "Chrome access is off"
+        case .javaScriptOff: return "One Chrome setting left"
+        case .notRunning: return "Waiting for Chrome"
+        }
+    }
+
     private func pushState() {
-        var state: [String: Any] = ["watching": watching, "lastResult": lastResult == "No listings yet" ? "" : lastResult]
+        var state: [String: Any] = ["watching": watching, "chrome": chromeStatus.rawValue,
+                                    "lastResult": lastResult == "No listings yet" ? "" : lastResult]
         if let current = current { state["current"] = ["id": current.id, "title": current.title] }
         workspace.pushState(state)
+    }
+
+    private func setChromeStatus(_ status: ChromeStatus) {
+        guard status != chromeStatus else { return }
+        chromeStatus = status
+        pushState()
+        guard watching, Chrome.isFrontmost else { return }
+        switch status {
+        case .denied:
+            toasts.show(Toast(title: "Chrome access is off", detail: "macOS is blocking Apply Desk from reading Chrome. Watching stays on and resumes once access is back.",
+                              symbol: "lock.shield", actionTitle: "Ask macOS Again", action: { [weak self] in self?.fixChromeAccess() }), for: 12)
+        case .javaScriptOff:
+            toasts.show(Toast(title: "One Chrome setting left", detail: "In Chrome: View → Developer → Allow JavaScript from Apple Events. Watching resumes on its own.",
+                              symbol: "gearshape", actionTitle: "Show Me", action: { [weak self] in self?.fixChromeAccess() }), for: 12)
+        default: break
+        }
     }
 
     private func setCurrent(_ jobID: Int, title: String) {
@@ -310,23 +379,144 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if changed { pushState() }
     }
 
-    @objc private func scanNow() {
-        scanActiveTab(manual: true)
+    /// Runs every 1.5 seconds. Cheap unless Chrome is in front: then it reads
+    /// the front tab's identity once, decides whether the ` key fills, and
+    /// (when watching) scores a listing that has finished loading.
+    private func tick() {
+        guard Chrome.isRunning else {
+            fillHotKey?.isEnabled = false
+            if chromeStatus == .ready || chromeStatus == .javaScriptOff { setChromeStatus(.notRunning) }
+            return
+        }
+        guard Chrome.isFrontmost else {
+            fillHotKey?.isEnabled = false
+            return
+        }
+        if chromeStatus == .notRunning { setChromeStatus(.ready) }
+        if !accessVerified {
+            // Check permission without sending Chrome anything, so macOS never
+            // blocks this thread with its prompt; re-check every few seconds in
+            // case access was granted in System Settings.
+            guard Date().timeIntervalSince(lastAccessCheck) > 3 else { return }
+            lastAccessCheck = Date()
+            switch Chrome.automationAccess(ask: false) {
+            case .granted:
+                accessVerified = true
+                if chromeStatus == .notAsked || chromeStatus == .denied { setChromeStatus(.ready) }
+            case .denied: setChromeStatus(.denied); return
+            case .notRunning: return
+            case .notAsked:
+                setChromeStatus(.notAsked)
+                if watching && !askedForAccess { requestChromeAccess() }
+                return
+            }
+        }
+        guard let tab = Chrome.activeTab() else {
+            fillHotKey?.isEnabled = false
+            noteChromeFailure()
+            return
+        }
+        fillHotKey?.isEnabled = JobListing.mayHaveApplication(tab.url) || tabLastRole[tab.id] != nil
+        if watching { scan(tab, manual: false) }
     }
 
-    private func scanActiveTab(manual: Bool) {
-        guard watching || manual else { return }
+    /// Classifies a failed Apple Event without ever turning watching off.
+    private func noteChromeFailure() {
+        switch Chrome.lastFailure {
+        case .notAuthorized?:
+            accessVerified = false
+            lastAccessCheck = Date()
+            setChromeStatus(Chrome.automationAccess(ask: false) == .denied ? .denied : .notAsked)
+        case .javaScriptOff?:
+            lastJavaScriptCheck = Date()
+            setChromeStatus(.javaScriptOff)
+        default: break
+        }
+    }
+
+    /// Shows macOS's own "control Google Chrome" prompt. It blocks until
+    /// answered, so it runs off the main thread.
+    private func requestChromeAccess(then next: (() -> Void)? = nil) {
+        askedForAccess = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let access = Chrome.automationAccess(ask: true)
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.lastAccessCheck = Date()
+                switch access {
+                case .granted: self.accessVerified = true; self.setChromeStatus(.ready); next?()
+                case .denied: self.setChromeStatus(.denied)
+                case .notRunning: self.setChromeStatus(.notRunning)
+                case .notAsked: self.setChromeStatus(.notAsked)
+                }
+            }
+        }
+    }
+
+    /// The one button for every Chrome problem, from the sidebar or the menu.
+    @objc private func fixChromeAccess() {
         guard Chrome.isRunning else {
-            if manual { toasts.show(Toast(title: "Chrome isn't open", detail: "Open a job listing in Google Chrome, then scan again.", symbol: "globe")) }
+            toasts.show(Toast(title: "Open Chrome first", detail: "Apply Desk asks for access while Chrome is running.", symbol: "globe"))
             return
         }
-        // With many tabs and windows open, only the one in front of the user counts.
-        if !manual && !Chrome.isFrontmost { return }
-        guard let tab = Chrome.activeTab() else {
-            if Chrome.lastFailure != nil { chromeNeedsPermission(manual: manual) }
-            else if manual { toasts.show(Toast(title: "No Chrome tab to scan", detail: "Open a job listing in Chrome, then scan again.", symbol: "globe")) }
+        switch Chrome.automationAccess(ask: false) {
+        case .granted:
+            accessVerified = true
+            if chromeStatus == .javaScriptOff || Chrome.lastFailure == .javaScriptOff { showJavaScriptHelp() } else { setChromeStatus(.ready) }
+        case .denied:
+            askAgainForChromeAccess()
+        default:
+            requestChromeAccess()
+        }
+    }
+
+    /// macOS never asks twice. A stale or refused answer is cleared for Apply
+    /// Desk alone (`tccutil reset AppleEvents <its bundle id>`), then macOS asks again.
+    private func askAgainForChromeAccess() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Let Apply Desk read and fill Chrome tabs?"
+        alert.informativeText = "macOS has a saved \"Don't Allow\" for Apply Desk controlling Google Chrome, often left over from an earlier build. Apply Desk can clear that one answer so macOS asks you again. Choose OK when the prompt appears."
+        alert.addButton(withTitle: "Ask Again")
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            let reset = Process()
+            reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            reset.arguments = ["reset", "AppleEvents", Bundle.main.bundleIdentifier ?? "com.ajeet.applydesk"]
+            try? reset.run()
+            reset.waitUntilExit()
+            requestChromeAccess()
+        case .alertSecondButtonReturn:
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") { NSWorkspace.shared.open(url) }
+        default: break
+        }
+    }
+
+    private func showJavaScriptHelp() {
+        guard !showingHelp else { return }
+        showingHelp = true
+        defer { showingHelp = false }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Turn on one Chrome setting"
+        alert.informativeText = "In Chrome's menu bar, choose View → Developer → Allow JavaScript from Apple Events, so a check mark appears next to it. Apply Desk picks it up within a few seconds; watching stays on."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        Chrome.activate()
+    }
+
+    @objc private func scanNow() {
+        guard Chrome.isRunning, let tab = Chrome.activeTab() else {
+            if Chrome.isRunning { noteChromeFailure(); fixChromeAccess() }
+            else { toasts.show(Toast(title: "Chrome isn't open", detail: "Open a job listing in Google Chrome, then scan again.", symbol: "globe")) }
             return
         }
+        scan(tab, manual: true)
+    }
+
+    private func scan(_ tab: Chrome.Tab, manual: Bool) {
         let url = tab.url.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = tab.id + "|" + url
         if let role = tabRoles[key] {
@@ -347,11 +537,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             guard Date().timeIntervalSince(candidate!.since) >= 1.2 else { return }
+            // While Chrome's JavaScript setting is off, retry every few seconds.
+            if chromeStatus == .javaScriptOff && Date().timeIntervalSince(lastJavaScriptCheck) < 4 { return }
         }
         guard let page = Chrome.readPage() else {
-            chromeNeedsPermission(manual: manual)
+            noteChromeFailure()
+            if manual { fixChromeAccess() }
             return
         }
+        if chromeStatus == .javaScriptOff { setChromeStatus(.ready) }
         let text = String(page.description.prefix(50_000)).trimmingCharacters(in: .whitespacesAndNewlines)
         guard page.ready, text.count >= 300, JobListing.looksLikePosting(text) else {
             if manual {
@@ -409,50 +603,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func chromeNeedsPermission(manual: Bool) {
-        if !manual {
-            // Stop polling so a missing permission doesn't nag every few seconds.
-            setWatching(false)
-            toasts.show(Toast(title: "Chrome needs one setting", detail: "Apply Desk paused watching until it can read job listings in Chrome.",
-                              symbol: "exclamationmark.shield", actionTitle: "Show Me How", action: { [weak self] in self?.showChromeHelp() }), for: 12)
-        } else {
-            showChromeHelp()
-        }
-    }
-
-    private func showChromeHelp() {
-        guard !showingHelp else { return }
-        showingHelp = true
-        defer { showingHelp = false }
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "Let Apply Desk read the job listing in Chrome"
-        if Chrome.lastFailure == .notAuthorized {
-            alert.informativeText = "macOS blocked Apply Desk from controlling Chrome. Open System Settings → Privacy & Security → Automation, allow Apply Desk to control Google Chrome, then turn watching back on."
-            alert.addButton(withTitle: "Open Automation Settings")
-            alert.addButton(withTitle: "Not Now")
-            if alert.runModal() == .alertFirstButtonReturn,
-               let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
-                NSWorkspace.shared.open(url)
-            }
-        } else {
-            alert.informativeText = "In Chrome, choose View → Developer → Allow JavaScript from Apple Events. Then turn watching back on from the Apply Desk menu bar icon. Apply Desk reads the front tab on this Mac only."
-            alert.addButton(withTitle: "Turn Watching On")
-            alert.addButton(withTitle: "Not Now")
-            if alert.runModal() == .alertFirstButtonReturn { setWatching(true) }
-        }
-    }
-
     // MARK: Autofill and the resume that goes with it
 
     @objc private func fillApplication() {
         guard Chrome.isRunning, Chrome.isFrontmost || NSApp.isActive else {
-            toasts.show(Toast(title: "Switch to the application in Chrome", detail: "Press ⌃⌥F while the application form is the tab in front.", symbol: "globe"))
+            toasts.show(Toast(title: "Switch to the application in Chrome", detail: "Press ` while the application form is the tab in front.", symbol: "globe"))
             return
+        }
+        switch Chrome.automationAccess(ask: false) {
+        case .granted: break
+        case .denied: return askAgainForChromeAccess()
+        default: return requestChromeAccess { [weak self] in self?.fillApplication() }
         }
         guard confirmFirstFill() else { return }
         guard let tab = Chrome.activeTab() else {
-            if Chrome.lastFailure != nil { showChromeHelp() }
+            noteChromeFailure()
+            fixChromeAccess()
             return
         }
         backend.send("api/profile") { [weak self] profile in
@@ -488,7 +654,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let name = values["name"].map { "\($0) Resume.pdf" } ?? "Resume.pdf"
         let script = Autofill.script(profile: values, resume: resume.map { (name, $0.pdf) })
         guard let result = Autofill.parse(Chrome.runJavaScript(script)) else {
-            if Chrome.lastFailure != nil { showChromeHelp() }
+            if Chrome.lastFailure != nil { noteChromeFailure(); fixChromeAccess() }
             else { toasts.show(Toast(title: "Couldn't read this form", detail: "This page may block autofill. Enter the remaining details yourself.", symbol: "exclamationmark.triangle")) }
             return
         }
@@ -509,7 +675,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             toasts.show(Toast(title: parts.joined(separator: " and ").prefix(1).uppercased() + parts.joined(separator: " and ").dropFirst(),
                               detail: detail, symbol: "checkmark", actionTitle: role == nil ? nil : "See What Was Sent", action: open), for: 10)
         } else if let form = result.embeddedForm {
-            toasts.show(Toast(title: "This form is embedded", detail: "Open it on its own page, then press ⌃⌥F again.", symbol: "rectangle.on.rectangle",
+            toasts.show(Toast(title: "This form is embedded", detail: "Open it on its own page, then press ` again.", symbol: "rectangle.on.rectangle",
                               actionTitle: "Open Form", action: { Chrome.open(form) }), for: 12)
         } else {
             toasts.show(Toast(title: "No empty fields to fill", detail: "Apply Desk skips filled fields and questions that need your judgment.", symbol: "checkmark.circle"))

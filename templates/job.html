@@ -16,7 +16,7 @@
       {% if job.url %}<a class="button primary" href="{{ job.url }}" target="_blank" rel="noreferrer">{{ ui.icon('external') }}<span>Open listing in Chrome</span></a>{% endif %}
       {% if tuned %}<a class="button" href="#tuned">{{ ui.icon('sparkle') }}<span>See tuned resume</span></a>{% endif %}
     </div>
-    <p class="fine" data-reveal style="--i:4">Fit is a transparent triage estimate from your profile and this posting, not a hiring probability. On the application, press <kbd>⌃</kbd><kbd>⌥</kbd><kbd>F</kbd> to fill your details, then review and submit it yourself.</p>
+    <p class="fine" data-reveal style="--i:4">Fit is a transparent triage estimate from your profile and this posting, not a hiring probability. On the application, press <kbd class="key-wide">`</kbd> to fill your details and attach this tuned resume, then review and submit it yourself.</p>
   </div>
   <div class="role-score" data-reveal style="--i:2">
     {{ ui.ring(match.score, 184, 'ring-hero') }}

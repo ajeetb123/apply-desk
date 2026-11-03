@@ -11,7 +11,7 @@ Apply Desk opens at login by default and lives in the menu bar. Closing the wind
 ## What it does
 
 - **Watches the tab you're on.** With many tabs and windows open, Apply Desk only reads the active tab of Chrome's front window, and only while Chrome is in front. It waits until the tab has finished loading, stayed in front for a moment, and its text has stopped changing, so it reads the whole posting once. Each tab remembers its role, and the sidebar shows the one you're viewing. A strong match (60+) slides in as a notification. Pause watching from the menu bar icon or the switch in the sidebar.
-- **Fills applications on ⌃⌥F.** On an employer application in Chrome, press Control-Option-F. Apply Desk types your saved contact, education, and link details into empty, clearly labeled fields and highlights them in green. It also attaches your resume tuned for that role, as a PDF, to the resume upload field (never to cover letter, transcript, or portfolio uploads). It skips sponsorship, work-authorization, demographic, referral, and screening questions, and it never submits. It knows the role from the tab you scanned the listing in, the application's URL, or the role you viewed last. Forms embedded in another site (for example a Greenhouse iframe) need to be opened on their own page first.
+- **Fills applications with one key: `** (top left, under Esc). On an employer application in Chrome, press it. Apply Desk types your saved contact, education, and link details into empty, clearly labeled fields and highlights them in green, and attaches your resume tuned for that role, as a PDF, to the resume upload field (never to cover letter, transcript, or portfolio uploads). It skips sponsorship, work-authorization, demographic, referral, and screening questions, and it never submits. The key only does this while a job board, careers site, or application page is in front in Chrome; everywhere else it types a backtick as usual. Apply Desk knows the role from the tab you scanned the listing in, the application's URL, or the role you viewed last. Forms embedded in another site (for example a Greenhouse iframe) need to be opened on their own page first.
 - **Tunes your resume per role, without touching the template.** The layout, sections, and facts stay the same. Tuning:
   - puts the bullets most relevant to the posting first within each entry;
   - spells technologies the way the posting does ("Postgres" or "PostgreSQL") and fixes their capitals ("Github" → "GitHub");
@@ -20,17 +20,22 @@ Apply Desk opens at login by default and lives in the menu bar. Closing the wind
   - adds up to four skills to the matching Technical Skills line, only when you listed them in your Profile and the posting asks for them.
 
   Every edit appears under **What changed** with the old and new wording. The preview is the exact page that gets sent.
-- **Keeps what you sent.** The tuned resume renders in Jake's layout (Letter, 0.5in margins) as a one-page PDF with selectable text. **Save PDF** puts it in Downloads, and ⌃⌥F attaches it. Either way, the exact copy is kept with the role under **What you sent**, as PDF, `.tex` (for LaTeX resumes), and `.txt`, even if your resume changes later.
+- **Keeps what you sent.** The tuned resume renders in Jake's layout (Letter, 0.5in margins) as a one-page PDF with selectable text. **Save PDF** puts it in Downloads, and the ` key attaches it. Either way, the exact copy is kept with the role under **What you sent**, as PDF, `.tex` (for LaTeX resumes), and `.txt`, even if your resume changes later.
 - **Explains every score.** Fit weights resume skill overlap (40%), target-role alignment (25%), career-goal terms (15%), campaign alignment (10%), and graduation-window evidence (10%). It is a triage aid, not an ATS score or hiring probability.
 
 ### First-time Chrome setup
 
-Chrome protects page text from other apps. Enable **View → Developer → Allow JavaScript from Apple Events** in Chrome, and allow Apply Desk when macOS asks to let it control Chrome (System Settings → Privacy & Security → Automation). Apply Desk only reads the front tab, only when it looks like a job listing or when you press ⌃⌥F.
+Apply Desk needs two things to read and fill Chrome tabs:
+
+1. **macOS Automation access.** The first time you turn on watching or press `, macOS asks "Apply Desk wants access to control Google Chrome" — choose **OK**. If macOS has an old "Don't Allow" saved (an earlier build can leave one behind), the sidebar shows **Chrome access is off**; click **Ask macOS Again** and Apply Desk clears that one saved answer (`tccutil reset AppleEvents com.ajeet.applydesk`) so macOS asks again. You can also turn on **Google Chrome** under **Apply Desk** in System Settings → Privacy & Security → Automation.
+2. **One Chrome setting.** In Chrome, choose **View → Developer → Allow JavaScript from Apple Events**.
+
+Watching stays on while either is missing; the sidebar and menu bar say what's left, and Apply Desk resumes on its own once it's fixed. It only reads the front tab, only when it looks like a job listing or when you press `.
 
 ## Setup
 
 1. Open **Resume** and drop in your resume (PDF, DOCX, TXT, or LaTeX). Optionally set a file to watch so saved edits import automatically.
-2. Open **Profile** and fill in your contact details, education, links, target roles, skills, goals, and search campaigns. The autofill preview shows exactly what ⌃⌥F will type.
+2. Open **Profile** and fill in your contact details, education, links, target roles, skills, goals, and search campaigns. The autofill preview shows exactly what the ` key will type.
 3. Browse jobs in Chrome. Review roles on **Today**, where each saved role orbits you — closer means a better fit.
 
 ## How it's built

@@ -7,22 +7,40 @@ final class HotKey {
     private static var installed = false
     private static var nextID: UInt32 = 1
     private var reference: EventHotKeyRef?
-    /// False when another app already owns this shortcut.
-    private(set) var isRegistered = false
+    private let keyCode: Int
+    private let modifiers: Int
+    private let id: UInt32
 
+    /// Creates the shortcut switched off; `isEnabled` turns it on and off, so a
+    /// plain key can be claimed only while it is useful and type normally otherwise.
     init(keyCode: Int, modifiers: Int, handler: @escaping () -> Void) {
         HotKey.installHandler()
-        let id = HotKey.nextID
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+        id = HotKey.nextID
         HotKey.nextID += 1
         HotKey.handlers[id] = handler
-        let hotKeyID = EventHotKeyID(signature: OSType(0x4150_4453), id: id) // "APDS"
-        let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID, GetApplicationEventTarget(), 0, &reference)
-        isRegistered = status == noErr
-        if !isRegistered { NSLog("Apply Desk couldn't register its shortcut (status %d); another app may use it", status) }
+    }
+
+    var isEnabled: Bool {
+        get { reference != nil }
+        set {
+            if newValue && reference == nil {
+                let hotKeyID = EventHotKeyID(signature: OSType(0x4150_4453), id: id) // "APDS"
+                let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hotKeyID, GetApplicationEventTarget(), 0, &reference)
+                if status != noErr {
+                    reference = nil
+                    NSLog("Apply Desk couldn't register its shortcut (status %d)", status)
+                }
+            } else if !newValue, let current = reference {
+                UnregisterEventHotKey(current)
+                reference = nil
+            }
+        }
     }
 
     deinit {
-        if let reference = reference { UnregisterEventHotKey(reference) }
+        isEnabled = false
     }
 
     private static func installHandler() {

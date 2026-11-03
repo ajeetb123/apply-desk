@@ -1,10 +1,11 @@
 import AppKit
+import Carbon
 
 /// Reads and fills the active Google Chrome tab through Apple Events.
 /// Chrome needs View → Developer → Allow JavaScript from Apple Events.
 @MainActor
 enum Chrome {
-    static let bundleID = "com.google.Chrome"
+    nonisolated static let bundleID = "com.google.Chrome"
 
     enum Failure {
         case notAuthorized, javaScriptOff, other
@@ -43,6 +44,28 @@ enum Chrome {
         let url: String
         let title: String
         let loading: Bool
+    }
+
+    /// Whether macOS lets Apply Desk send Apple Events to Chrome (Automation).
+    enum Access {
+        case granted, notAsked, denied, notRunning
+    }
+
+    /// Checks Automation permission for Chrome. With `ask`, macOS shows its
+    /// "Apply Desk wants access to control Google Chrome" prompt when it has
+    /// not been answered yet; that call blocks, so run it off the main thread.
+    nonisolated static func automationAccess(ask: Bool) -> Access {
+        var target = AEAddressDesc()
+        let identifier = Data(bundleID.utf8)
+        let created = identifier.withUnsafeBytes { AECreateDesc(typeApplicationBundleID, $0.baseAddress, identifier.count, &target) }
+        guard created == noErr else { return .notRunning }
+        defer { AEDisposeDesc(&target) }
+        switch AEDeterminePermissionToAutomateTarget(&target, typeWildCard, typeWildCard, ask) {
+        case noErr: return .granted
+        case OSStatus(errAEEventNotPermitted): return .denied
+        case OSStatus(procNotFound): return .notRunning
+        default: return .notAsked
+        }
     }
 
     /// True when Chrome is the app in front, so its active tab is what the user sees.
@@ -129,6 +152,17 @@ enum JobListing {
                         "ashbyhq.com", "myworkdayjobs.com", "smartrecruiters.com", "linkedin.com/jobs", "indeed.com/viewjob",
                         "simplify.jobs", "careers.", "jobs.", "workatastartup.com", "wellfound.com"]
         return patterns.contains(where: lower.contains)
+    }
+
+    /// Pages where the one-key fill shortcut is live: job boards, careers
+    /// sites, and application systems. Elsewhere the key types normally.
+    static func mayHaveApplication(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        let hints = ["apply", "application", "career", "job", "greenhouse", "lever.co", "ashbyhq", "workday", "smartrecruiters", "icims",
+                     "jobvite", "taleo", "successfactors", "bamboohr", "workable", "recruitee", "breezy", "jazzhr", "rippling", "paylocity",
+                     "ultipro", "dayforce", "handshake", "wellfound", "indeed", "simplify", "talent", "recruit", "hiring", "position",
+                     "opening", "vacanc", "intern"]
+        return hints.contains(where: lower.contains)
     }
 
     static func looksLikePosting(_ value: String) -> Bool {

@@ -147,6 +147,12 @@ kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; 
 .agent[data-state="watching"] .agent-beacon i + i { animation-delay: 1.2s; }
 .agent[data-state="paused"] .agent-beacon b { background: var(--amber); }
 .agent-last { position: relative; font-size: 11.5px; color: var(--ink-2); padding: 7px 9px; border-radius: 9px; background: var(--field); line-height: 1.35; }
+.agent[data-state="attention"] .agent-beacon b { background: var(--amber); box-shadow: 0 0 10px var(--amber); }
+.agent[data-state="attention"] .agent-beacon i { border-color: var(--amber); animation: beacon 2.4s var(--ease) infinite; }
+.agent-fix { position: relative; height: 32px; border: 0; border-radius: 10px; cursor: pointer; font-size: 12.5px; font-weight: 650; color: #fff;
+  background: linear-gradient(135deg, var(--amber), var(--coral)); box-shadow: 0 8px 18px -10px var(--coral); transition: transform .3s var(--spring); }
+.agent-fix:hover { transform: translateY(-1px); }
+kbd.key-wide { min-width: 26px; font: 700 13px/1 ui-monospace, "SF Mono", Menlo, monospace; }
 .agent-now { position: relative; display: grid; gap: 1px; padding: 8px 10px; border-radius: 10px; background: var(--accent-soft); color: var(--ink); line-height: 1.3; transition: transform .3s var(--spring); }
 .agent-now:hover { transform: translateY(-1px); }
 .agent-now small { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); }
