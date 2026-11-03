@@ -9,6 +9,7 @@ import re
 import sqlite3
 import threading
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -162,7 +163,10 @@ def watch_resume_loop():
 def extract_text(path: Path, ext: str) -> str:
     if ext == "pdf":
         from pypdf import PdfReader
-        return "\n".join(page.extract_text() or "" for page in PdfReader(str(path)).pages)
+        text = "\n".join(page.extract_text() or "" for page in PdfReader(str(path)).pages)
+        # PDFs often store "fi"/"fl" as single ligature characters, which would
+        # hide words like "configuration" or "workflow" from matching.
+        return unicodedata.normalize("NFKC", text)
     if ext == "docx":
         from docx import Document
         doc = Document(path)
@@ -384,7 +388,7 @@ def tuning_terms(description: str, title: str = "") -> list[str]:
     terms = [term for term in keywords(f"{title} {description}") if term not in TUNING_NOISE]
     skills = [x.strip().lower() for x in re.split(r"[,;\n]", profile().get("skills", "")) if x.strip()]
     body = f"{title} {description}".lower()
-    return list(dict.fromkeys(terms + [skill for skill in skills if skill in body]))
+    return list(dict.fromkeys(terms + term_hits(body, skills)))
 
 
 def reorder_list_items(items: str, terms) -> tuple[str, list[str]]:
@@ -544,13 +548,14 @@ def match_role(description: str, title: str = "", wave: str = "", sector: str = 
     explicit_skills = [x.strip().lower() for x in re.split(r"[,;\n]", p.get("skills", "")) if x.strip()]
     inferred_skills = keywords(resume_plain(resume["text"]))
     candidate_skills = list(dict.fromkeys(explicit_skills + inferred_skills))
-    matched_skills = [skill for skill in candidate_skills if skill in body]
+    # Whole-word matches, so "C" doesn't match every posting and "Java" doesn't match "JavaScript".
+    matched_skills = term_hits(body, candidate_skills)
     skill_score = round(100 * len(matched_skills) / max(1, min(8, len(candidate_skills)))) if candidate_skills else 0
     targets = [x.strip().lower() for x in re.split(r"[,;\n]", p.get("target_roles", "")) if x.strip()]
     role_hits = [target for target in targets if target in title.lower() or (len(target.split()) > 1 and target in body)]
     role_score = 100 if role_hits else (35 if any(word in body for word in ("intern", "internship", "early career", "new grad")) else 0)
     goals = [x.strip().lower() for x in re.split(r"[,;\n]", p.get("career_goals", "")) if x.strip()]
-    goal_hits = [goal for goal in goals if goal in body]
+    goal_hits = term_hits(body, goals)
     goal_score = round(100 * len(goal_hits) / len(goals)) if goals else 50
     campaigns = [x.strip() for x in re.split(r"[,;\n]", p.get("role_campaigns", "")) if x.strip()]
     campaign_text = " ".join([wave, sector, funding_stage, title, description]).lower()
@@ -563,6 +568,8 @@ def match_role(description: str, title: str = "", wave: str = "", sector: str = 
         snippet = description[max(0, marker.start() - 50):min(len(description), marker.end() + 100)]
         graduation_context_years.extend(int(y) for y in re.findall(r"\b20\d{2}\b", snippet))
     grad_year = int(grad.group(1)) if grad else None
+    # A listing often repeats its one graduation year; repeats are not a window.
+    graduation_context_years = sorted(set(graduation_context_years))
     eligibility = "unknown"
     grad_score = 50
     reasons = []
@@ -715,7 +722,11 @@ def resume_page():
         outline = {"preamble": preamble, "sections": sections,
                    "words": len(re.findall(r"\w+", outline_text(preamble, sections))),
                    "bullets": sum(len(e["bullets"]) for s in sections for e in s["entries"])}
-    return render_template("resume.html", page="resume", title="Resume", resume=resume, outline=outline, versions=versions, profile=profile())
+    p = profile()
+    watch_path = p.get("watch_path", "").strip()
+    watch_missing = bool(watch_path) and not Path(watch_path).expanduser().is_file()
+    return render_template("resume.html", page="resume", title="Resume", resume=resume, outline=outline, versions=versions,
+                           profile=p, watch_missing=watch_missing)
 
 
 @app.route("/profile", methods=["GET", "POST"])

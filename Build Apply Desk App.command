@@ -65,8 +65,6 @@ cp "$ROOT/app.py" "$RESOURCES/backend/"
 /usr/bin/ditto "$ROOT/static" "$RESOURCES/backend/static"
 /usr/bin/rsync -a --exclude '__pycache__' --exclude 'pip' --exclude 'pip-*' --exclude 'setuptools' --exclude 'setuptools-*' \
   --exclude 'pkg_resources' --exclude '_distutils_hack' --exclude '*.pth' "$SITE_PACKAGES/" "$RESOURCES/backend/site-packages/"
-# Precompile so the signed bundle never needs to write bytecode.
-"$BASE_PYTHON" -m compileall -q "$RESOURCES/backend" >/dev/null || true
 
 /usr/bin/codesign --force --deep --sign - "$APP" >/dev/null
 

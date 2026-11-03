@@ -42,6 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         configureMainMenu()
         configureStatusItem()
         fillHotKey = HotKey(keyCode: kVK_ANSI_F, modifiers: controlKey | optionKey) { [weak self] in self?.fillApplication() }
+        if fillHotKey?.isRegistered == false {
+            toasts.show(Toast(title: "⌃⌥F is taken by another app", detail: "Use Fill Application in Chrome from the Apply Desk menu bar icon instead.",
+                              symbol: "keyboard"), for: 10)
+        }
         registerLoginItemOnFirstLaunch()
         if launchedAtLogin { NSApp.setActivationPolicy(.accessory) } else { workspace.show() }
         startService()

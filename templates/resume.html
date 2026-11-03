@@ -52,6 +52,7 @@
       <form action="/profile" method="post" class="stack">
         <input type="hidden" name="next" value="resume">
         <input name="watch_path" value="{{ profile.get('watch_path', '') }}" placeholder="/Users/you/Documents/resume.tex" aria-label="Resume file to watch">
+        {% if watch_missing %}<p class="fine warn">Apply Desk can't find a file at this path, so nothing is syncing. Check the path, or clear it to stop watching.</p>{% endif %}
         <button class="button">{{ 'Update watched file' if profile.get('watch_path') else 'Watch this file' }}</button>
       </form>
     </section>

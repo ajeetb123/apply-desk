@@ -22,19 +22,22 @@
   const dateLine = $('[data-greeting]');
   if (dateLine) dateLine.textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 
-  // Numbers count up alongside the ring animation.
+  // Numbers count up alongside the ring animation. The real value stays in
+  // place until frames actually run, so a page loaded in a hidden window
+  // never shows a stuck "0".
   $$('[data-count]').forEach(node => {
     const target = Number(node.dataset.count) || 0;
     if (reduceMotion || !target) return;
-    const start = performance.now() + 150;
     const duration = 1300 + Math.min(target, 100) * 5;
-    node.textContent = '0';
-    const tick = now => {
-      const t = Math.max(0, Math.min(1, (now - start) / duration));
-      node.textContent = String(Math.round(target * (1 - Math.pow(1 - t, 4))));
-      if (t < 1) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
+    requestAnimationFrame(first => {
+      const start = first + 150;
+      const tick = now => {
+        const t = Math.max(0, Math.min(1, (now - start) / duration));
+        node.textContent = String(Math.round(target * (1 - Math.pow(1 - t, 4))));
+        if (t < 1) requestAnimationFrame(tick);
+      };
+      tick(first);
+    });
   });
 
   // The page title slides into the toolbar once the heading scrolls away.

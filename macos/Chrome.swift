@@ -52,9 +52,10 @@ enum Chrome {
         return (url, parts.dropFirst().joined(separator: "\n"))
     }
 
+    nonisolated static let readPageScript = "JSON.stringify({url:location.href,roleTitle:(document.querySelector('h1')||{}).innerText||document.title,company:(document.querySelector(\"meta[property='og:site_name']\")||{}).content||'',description:document.body?document.body.innerText:''})"
+
     static func readPage() -> Page? {
-        let source = "JSON.stringify({url:location.href,roleTitle:(document.querySelector('h1')||{}).innerText||document.title,company:(document.querySelector(\"meta[property='og:site_name']\")||{}).content||'',description:document.body?document.body.innerText:''})"
-        guard let value = runJavaScript(source), let data = value.data(using: .utf8),
+        guard let value = runJavaScript(readPageScript), let data = value.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return Page(url: object["url"] as? String ?? "", roleTitle: object["roleTitle"] as? String ?? "",
                     company: object["company"] as? String ?? "", description: object["description"] as? String ?? "")
@@ -65,17 +66,22 @@ enum Chrome {
         guard isRunning else { return nil }
         // Passed as an AppleScript string literal, not eval(), so pages with a
         // strict Content Security Policy still run it.
-        let literal = source
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
         let script = """
         tell application id "\(bundleID)"
             if (count of windows) is 0 then return ""
-            return execute active tab of front window javascript "\(literal)"
+            return execute active tab of front window javascript "\(appleScriptLiteral(source))"
         end tell
         """
         return run(script)
+    }
+
+    /// Escapes text for use inside an AppleScript "…" string literal.
+    nonisolated static func appleScriptLiteral(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\t", with: "\\t")
     }
 
     private static func run(_ source: String) -> String? {

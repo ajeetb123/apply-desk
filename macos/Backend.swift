@@ -6,7 +6,9 @@ import Security
 /// so other software on this Mac can't read the profile through the port.
 @MainActor
 final class Backend {
-    static let port = 8787
+    // APPLY_DESK_PORT and APPLY_DESK_DATA match app.py; they let a test copy run
+    // beside the installed app without touching its data.
+    static let port = Int(ProcessInfo.processInfo.environment["APPLY_DESK_PORT"] ?? "") ?? 8787
     let baseURL = URL(string: "http://127.0.0.1:\(Backend.port)/")!
     let dataDirectory: URL
     let token: String
@@ -19,7 +21,8 @@ final class Backend {
 
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        dataDirectory = support.appendingPathComponent("Apply Desk", isDirectory: true)
+        dataDirectory = ProcessInfo.processInfo.environment["APPLY_DESK_DATA"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? support.appendingPathComponent("Apply Desk", isDirectory: true)
         try? FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
         token = Backend.loadToken(in: dataDirectory)
     }
@@ -98,7 +101,10 @@ final class Backend {
         process.currentDirectoryURL = dataDirectory
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONPATH"] = backend.appendingPathComponent("site-packages").path
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        // Cache compiled Python outside the signed bundle so later launches start fast.
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        environment["PYTHONPYCACHEPREFIX"] = caches.appendingPathComponent("Apply Desk/pycache").path
+        environment.removeValue(forKey: "PYTHONDONTWRITEBYTECODE")
         environment["PYTHONUNBUFFERED"] = "1"
         environment["APPLY_DESK_DATA"] = dataDirectory.path
         environment["APPLY_DESK_TOKEN"] = token
