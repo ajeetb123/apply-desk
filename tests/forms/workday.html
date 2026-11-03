@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Workday-style application (test)</title>
+<style>
+  body { font: 14px -apple-system, sans-serif; max-width: 760px; margin: 20px auto; }
+  [data-automation-id^="formField"] { margin: 10px 0; }
+  label, legend { display: block; font-weight: 600; margin-bottom: 4px; }
+  input[type=text], textarea, button[aria-haspopup] { width: 320px; padding: 6px; font: inherit; text-align: left; }
+  [role=listbox] { border: 1px solid #888; background: #fff; list-style: none; margin: 0; padding: 0; width: 330px; position: absolute; max-height: 180px; overflow: auto; z-index: 5; }
+  [role=option] { padding: 4px 8px; cursor: pointer; }
+  .gone { display: none; }
+  [data-automation-id="selectedItem"] { display: inline-block; background: #eef; padding: 2px 6px; margin: 2px; }
+  .date input { width: 40px; }
+  section { border-top: 2px solid #ccc; margin-top: 18px; padding-top: 6px; }
+</style></head>
+<body>
+<h2>My Information</h2>
+<div data-automation-id="formField-source"><label id="l-source">How Did You Hear About Us?*</label>
+  <div data-automation-id="multiselectInputContainer" data-tree='{"Job Board":["LinkedIn","Indeed","Glassdoor"],"Social Media":["Facebook","Instagram"],"University/College":["Career Fair","Handshake","Professor/Faculty"],"Referral":["Employee Referral"],"Company Careers Site":[],"Other":[]}'><input data-automation-id="searchBox" aria-labelledby="l-source" type="text"></div></div>
+<fieldset data-automation-id="formField-previousWorker"><legend><label>Have you previously worked for this organization? If Yes, please answer the questions below.*</label></legend>
+  <div><input type="radio" name="prev" id="prev-yes" value="true"><label for="prev-yes">Yes</label></div>
+  <div><input type="radio" name="prev" id="prev-no" value="false"><label for="prev-no">No</label></div></fieldset>
+<div data-automation-id="formField-country"><label id="l-country">Country*</label><button aria-haspopup="listbox" aria-labelledby="l-country" data-options="Canada|Mexico|United States of America|United Kingdom">Select One</button></div>
+<div data-automation-id="formField-legalNameSection_firstName"><label for="first">First Name*</label><input id="first" type="text" data-automation-id="legalNameSection_firstName"></div>
+<div data-automation-id="formField-legalNameSection_lastName"><label for="last">Last Name*</label><input id="last" type="text" data-automation-id="legalNameSection_lastName"></div>
+<div data-automation-id="formField-addressLine1"><label for="addr">Address Line 1*</label><input id="addr" type="text"></div>
+<div data-automation-id="formField-city"><label for="city">City*</label><input id="city" type="text"></div>
+<div data-automation-id="formField-countryRegion"><label id="l-state">State*</label><button aria-haspopup="listbox" aria-labelledby="l-state" data-options="Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|District of Columbia|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming">Select One</button></div>
+<div data-automation-id="formField-postalCode"><label for="zip">Postal Code*</label><input id="zip" type="text"></div>
+<div data-automation-id="formField-phoneType"><label id="l-ptype">Phone Device Type*</label><button aria-haspopup="listbox" aria-labelledby="l-ptype" data-options="Home|Mobile|Work">Select One</button></div>
+<div data-automation-id="formField-countryPhoneCode"><label id="l-pcode">Country Phone Code*</label>
+  <div data-automation-id="multiselectInputContainer" data-source="Canada (+1)|United Kingdom (+44)|United States of America (+1)|India (+91)"><input data-automation-id="searchBox" aria-labelledby="l-pcode" type="text"></div></div>
+<div data-automation-id="formField-phoneNumber"><label for="phone">Phone Number*</label><input id="phone" type="text"></div>
+<div data-automation-id="formField-phoneExtension"><label for="ext">Phone Extension</label><input id="ext" type="text"></div>
+
+<h2>My Experience</h2>
+<section data-automation-id="workExperienceSection"><h3>Work Experience</h3><div class="blocks"></div><button type="button" data-automation-id="Add" data-kind="work">Add</button></section>
+<section data-automation-id="educationSection"><h3>Education</h3><div class="blocks"></div><button type="button" data-automation-id="Add" data-kind="edu">Add</button></section>
+<section data-automation-id="skillsSection"><h3>Skills</h3>
+  <div data-automation-id="formField-skills"><label id="l-skills">Type to Add Skills</label>
+  <div data-automation-id="multiselectInputContainer" data-source="Python|Python (Programming Language)|SQL|Microsoft Power BI|Power BI|Git|Java|JavaScript|React.js|React|Node.js|Flask|Pandas|Go (Programming Language)|C (Programming Language)" data-multi="1"><input data-automation-id="searchBox" aria-labelledby="l-skills" type="text"></div></div></section>
+<div data-automation-id="formField-resume"><label for="resume">Resume/CV</label><input type="file" id="resume" data-automation-id="file-upload-input-ref" accept=".pdf,.doc,.docx"></div>
+
+<h2>Application Questions</h2>
+<div data-automation-id="formField-enroll"><label for="enroll">Please provide your current college enrollment status (pursuing an Associate's, Bachelor's, Master's or PhD degree).*</label>
+  <select id="enroll"><option value="">Select One</option><option value="a">Associate's</option><option value="b">Bachelor's</option><option value="m">Master's</option><option value="p">PhD</option></select></div>
+<div data-automation-id="formField-grad"><label for="grad">If you are currently enrolled in school, when will you graduate?</label><input id="grad" type="text" placeholder="MM/DD/YYYY"></div>
+<div data-automation-id="formField-plans"><label for="plans">What are your plans after graduation?*</label><textarea id="plans"></textarea></div>
+<div data-automation-id="formField-relatives"><label for="rel">Please provide the name/s of any relatives currently employed at The Aerospace Corporation.*</label><textarea id="rel"></textarea></div>
+<div data-automation-id="formField-salary"><label for="sal">Salary expectations.</label><textarea id="sal"></textarea></div>
+<div data-automation-id="formField-auth"><label id="l-auth">Are you legally authorized to work in the United States?*</label><button aria-haspopup="listbox" aria-labelledby="l-auth" data-options="Yes|No">Select One</button></div>
+<div data-automation-id="formField-spons"><label id="l-spons">Will you now or in the future require sponsorship for employment visa status?*</label><button aria-haspopup="listbox" aria-labelledby="l-spons" data-options="Yes|No">Select One</button></div>
+<fieldset data-automation-id="formField-clear"><legend>Do you currently hold an active U.S. security clearance?*</legend>
+  <div><input type="radio" name="clr" id="clr-y"><label for="clr-y">Yes</label></div><div><input type="radio" name="clr" id="clr-n"><label for="clr-n">No</label></div></fieldset>
+<div data-automation-id="formField-start"><label for="start">Proposed start date</label><input id="start" type="text" placeholder="MM/DD/YYYY"></div>
+<fieldset data-automation-id="formField-loc"><legend>We have offices nationwide. Please indicate your location preference.</legend>
+  <div><input type="checkbox" id="l1"><label for="l1">No Preference</label></div><div><input type="checkbox" id="l2"><label for="l2">Texas</label></div><div><input type="checkbox" id="l3"><label for="l3">Washington DC Metro (DC, MD, VA)</label></div></fieldset>
+<div data-automation-id="formField-statement"><label for="stmt">Please provide a brief statement (150 words or less) on why you are interested in Aerospace.</label><textarea id="stmt"></textarea></div>
+
+<h2>Leidos-style Questions</h2>
+<div data-automation-id="formField-q1"><label id="q1">Are you legally eligible for employment in the United States?*</label><button aria-haspopup="listbox" aria-labelledby="q1" data-options="Yes|No">Select One</button></div>
+<div data-automation-id="formField-q2"><label id="q2">Will you now, or in the future, require Leidos sponsorship for an employment visa?*</label><button aria-haspopup="listbox" aria-labelledby="q2" data-options="Yes|No">Select One</button></div>
+<div data-automation-id="formField-q3"><label id="q3">Are you currently or have you ever been employed by the U.S. Government (including military)? Post-government employment restrictions may apply.*</label><button aria-haspopup="listbox" aria-labelledby="q3" data-options="Yes, I am currently employed by the U.S. Government|Yes, I was formerly employed by the U.S. Government|No, I have never been employed by the U.S. Government">Select One</button></div>
+<div data-automation-id="formField-q4"><label id="q4">Are you a current or former Department of Defense (DoD) official?*</label><button aria-haspopup="listbox" aria-labelledby="q4" data-options="Yes|No">Select One</button></div>
+<div data-automation-id="formField-q5"><label id="q5">Are you currently working towards a Bachelor's or Master's degree?*</label><button aria-haspopup="listbox" aria-labelledby="q5" data-options="Yes|No">Select One</button></div>
+<div data-automation-id="formField-q6"><label id="q6">Do you currently possess an active U.S. Government security clearance?*</label><button aria-haspopup="listbox" aria-labelledby="q6" data-options="Interim Secret|Secret|Top Secret|TS/SCI|None">Select One</button></div>
+<div data-automation-id="formField-q7"><label id="q7">Did you or will you obtain this degree in the last 24 months?*</label><button aria-haspopup="listbox" aria-labelledby="q7" data-options="Yes|No">Select One</button></div>
+<div data-automation-id="formField-q8"><label id="q8">Are you a non-U.S. government official, or closely related to one?*</label><button aria-haspopup="listbox" aria-labelledby="q8" data-options="Yes|No">Select One</button></div>
+<div data-automation-id="formField-q9"><label id="q9">Are you eligible to obtain and maintain a U.S. security clearance?*</label><button aria-haspopup="listbox" aria-labelledby="q9" data-options="Yes|No">Select One</button></div>
+
+<div data-automation-id="formField-gender"><label id="l-gender">Gender</label><button aria-haspopup="listbox" aria-labelledby="l-gender" data-options="Male|Female|Decline">Select One</button></div>
+<fieldset data-automation-id="formField-vet"><legend>Veteran status</legend><div><input type="radio" name="vet" id="v1"><label for="v1">I am not a protected veteran</label></div></fieldset>
+<div data-automation-id="formField-transcript"><label for="tr">Please upload a current unofficial transcript.</label><input type="file" id="tr"></div>
+
+<script>
+// React-like controlled state: values count only if they arrive as input events.
+window.formState = {};
+window.staleClicks = 0;
+document.addEventListener('input', e => { if (e.target.id || e.target.closest('[data-automation-id^="formField"]')) formState[e.target.id || e.target.getAttribute('aria-labelledby') || e.target.getAttribute('data-automation-id')] = e.target.value; }, true);
+let uid = 0;
+// Closing a list: it stays visible for a moment (fade), then a hidden copy stays in the page.
+const closeLists = () => document.querySelectorAll('[role=listbox]:not([data-closing])').forEach(list => {
+  list.setAttribute('data-closing', '1');
+  setTimeout(() => { list.setAttribute('aria-hidden', 'true'); list.classList.add('gone'); }, 350);
+});
+function place(list, anchor) {
+  const r = anchor.getBoundingClientRect();
+  list.style.left = (r.left + scrollX) + 'px'; list.style.top = (r.bottom + scrollY) + 'px';
+  document.body.appendChild(list);
+}
+function showOptions(anchor, items, onPick, delay = 180) {
+  closeLists();
+  setTimeout(() => {
+    const list = document.createElement('ul'); list.setAttribute('role', 'listbox');
+    if (!items.length) { list.innerHTML = '<li>No Items.</li>'; place(list, anchor); return; }
+    for (const item of items) {
+      const li = document.createElement('li'); li.setAttribute('role', 'option');
+      li.setAttribute('data-automation-label', item.label || item); li.innerHTML = `<div data-automation-id="promptOption">${item.label || item}${item.children ? ' ›' : ''}</div>`;
+      li.addEventListener('click', () => {
+        if (list.hasAttribute('data-closing')) { staleClicks += 1; return; }
+        if (item.children) { showOptions(anchor, item.children, onPick, 120); return; }
+        onPick(item.label || item); closeLists();
+      });
+      list.appendChild(li);
+    }
+    place(list, anchor);
+  }, delay);
+}
+document.addEventListener('click', e => {
+  const button = e.target.closest('button[aria-haspopup=listbox]');
+  if (!button) return;
+  if (button.getAttribute('aria-expanded') === 'true') { button.setAttribute('aria-expanded', 'false'); closeLists(); return; }
+  button.setAttribute('aria-expanded', 'true');
+  showOptions(button, button.dataset.options.split('|'), item => { button.textContent = item; button.dataset.value = item; button.setAttribute('aria-expanded', 'false'); });
+});
+function prompt(input, term) {
+  const box = input.parentElement;
+  const pick = item => {
+    const pill = document.createElement('div'); pill.setAttribute('data-automation-id', 'selectedItem'); pill.textContent = item; box.insertBefore(pill, input);
+    input.value = '';
+  };
+  if (box.dataset.tree) {
+    const tree = JSON.parse(box.dataset.tree);
+    if (!term) return showOptions(input, Object.entries(tree).map(([label, kids]) => kids.length ? { label, children: kids } : label), pick, 250);
+    const leaves = Object.entries(tree).flatMap(([label, kids]) => kids.length ? kids : [label]);
+    return showOptions(input, leaves.filter(l => l.toLowerCase().includes(term.toLowerCase())), pick, 450);
+  }
+  const words = term.toLowerCase().split(/\s+/).filter(Boolean);
+  showOptions(input, box.dataset.source.split('|').filter(s => words.every(w => s.toLowerCase().includes(w))), pick, 450);
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeLists(); document.querySelectorAll('[aria-expanded=true]').forEach(b => b.setAttribute('aria-expanded', 'false')); }
+  const input = e.target.closest && e.target.closest('[data-automation-id="searchBox"]');
+  if (input && e.key === 'Enter') prompt(input, input.value.trim());
+});
+document.addEventListener('click', e => {
+  const input = e.target.closest && e.target.closest('[data-automation-id="searchBox"]');
+  if (input && !input.value) prompt(input, '');
+});
+function dateField(label, year, month) {
+  return `<div data-automation-id="formField-${label}"><label>${label}*</label><div class="date" data-automation-id="dateInputWrapper">` +
+    (month ? `<input type="text" data-automation-id="dateSectionMonth-input" aria-label="Month" placeholder="MM">` : '') +
+    `<input type="text" data-automation-id="dateSectionYear-input" aria-label="Year" placeholder="YYYY"></div></div>`;
+}
+document.querySelectorAll('button[data-automation-id=Add]').forEach(add => add.addEventListener('click', () => {
+  const blocks = add.parentElement.querySelector('.blocks'); const n = blocks.children.length + 1; uid += 1;
+  const block = document.createElement('div'); block.setAttribute('role', 'group');
+  block.innerHTML = add.dataset.kind === 'work'
+    ? `<h4>Work Experience ${n}</h4><div data-automation-id="formField-jobTitle"><label for="jt${uid}">Job Title*</label><input id="jt${uid}" type="text"></div>
+       <div data-automation-id="formField-company"><label for="co${uid}">Company*</label><input id="co${uid}" type="text"></div>
+       <div data-automation-id="formField-location"><label for="lo${uid}">Location</label><input id="lo${uid}" type="text"></div>
+       <div data-automation-id="formField-currentlyWorkHere"><label for="cw${uid}">I currently work here</label><input id="cw${uid}" type="checkbox"></div>
+       ${dateField('From', true, true)}${dateField('To', true, true)}
+       <div data-automation-id="formField-roleDescription"><label for="rd${uid}">Role Description</label><textarea id="rd${uid}"></textarea></div>`
+    : `<h4>Education ${n}</h4><div data-automation-id="formField-school"><label id="ls${uid}">School or University*</label>
+       <div data-automation-id="multiselectInputContainer" data-source="Virginia Tech Carilion School of Medicine|Virginia State University|University of Virginia|Virginia Polytechnic Institute and State University|George Mason University|Texas State University"><input data-automation-id="searchBox" aria-labelledby="ls${uid}" type="text"></div></div>
+       <div data-automation-id="formField-degree"><label id="ld${uid}">Degree*</label><button aria-haspopup="listbox" aria-labelledby="ld${uid}" data-options="Associate's Degree|Bachelor of Arts|Bachelor of Science|Master of Science">Select One</button></div>
+       <div data-automation-id="formField-field"><label id="lf${uid}">Field of Study</label>
+       <div data-automation-id="multiselectInputContainer" data-source="Computer Science and Engineering Technology|Computer Engineering|Computer Science|Data Science"><input data-automation-id="searchBox" aria-labelledby="lf${uid}" type="text"></div></div>
+       <div data-automation-id="formField-gpa"><label for="gpa${uid}">Overall Result (GPA)</label><input id="gpa${uid}" type="text"></div>
+       ${dateField('From', true, false)}${dateField('To (Actual or Expected)', true, false)}`;
+  setTimeout(() => blocks.appendChild(block), 200);
+}));
+</script>
+</body></html>

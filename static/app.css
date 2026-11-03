@@ -624,6 +624,13 @@ html:not(.native) [data-native-only], html.native [data-web-only] { display: non
 .copy-text b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .copy-text small { font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .copy-actions { margin-left: auto; display: flex; gap: 6px; flex: none; }
+.copies li:has(.copy-review[open]) { align-items: flex-start; }
+.copy-review summary { font-size: 12px; color: var(--ink-2); cursor: pointer; margin-top: 4px; }
+.copy-review ul { list-style: none; margin: 8px 0 2px; padding: 0; display: grid; gap: 6px; max-height: 320px; overflow: auto; }
+.copy-review li { display: grid; gap: 1px; padding: 0; background: none; border: 0; font-size: 12px; }
+.copy-review li span { color: var(--ink-3); }
+.copy-review li b { font-weight: 500; white-space: normal; overflow-wrap: anywhere; }
+.copy-review li em { font-style: normal; color: var(--amber, #d9822b); }
 .copy-actions .button { height: 32px; padding: 0 12px; }
 .chip-sent { color: #fff; background: linear-gradient(135deg, var(--mint), var(--cyan)); }
 
