@@ -5,6 +5,7 @@ __pycache__/
 .env
 instance/*
 !instance/.gitkeep
+Apply Desk.app/
 *.pdf
 *.docx
 *.tex

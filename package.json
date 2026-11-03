@@ -1,8 +1,0 @@
-{
-  "name": "apply-desk-extension",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "node --test extension/core.test.js"
-  }
-}
