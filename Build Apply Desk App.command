@@ -66,7 +66,10 @@ cp "$ROOT/app.py" "$ROOT/tailoring.py" "$RESOURCES/backend/"
 /usr/bin/rsync -a --exclude '__pycache__' --exclude 'pip' --exclude 'pip-*' --exclude 'setuptools' --exclude 'setuptools-*' \
   --exclude 'pkg_resources' --exclude '_distutils_hack' --exclude '*.pth' "$SITE_PACKAGES/" "$RESOURCES/backend/site-packages/"
 
-/usr/bin/codesign --force --deep --sign - "$APP" >/dev/null
+# Ad-hoc signatures change with every build, which makes macOS forget (or
+# silently refuse) Automation access to Chrome. Pinning the designated
+# requirement to the bundle ID keeps that permission across rebuilds.
+/usr/bin/codesign --force --deep --sign - -r="designated => identifier \"$BUNDLE_ID\"" "$APP" >/dev/null
 
 # Stop the running app and any older Terminal-started service before replacing it.
 if /usr/bin/pgrep -qf "$APP_NAME/Contents/MacOS/ApplyDesk"; then

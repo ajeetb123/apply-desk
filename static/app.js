@@ -243,9 +243,20 @@
   window.ApplyDesk = {
     native(state) {
       if (!agent) return;
-      agent.dataset.state = state.watching ? 'watching' : 'paused';
-      $('[data-agent-title]', agent).textContent = state.title || (state.watching ? 'Watching Chrome' : 'Watching paused');
-      $('[data-agent-detail]', agent).textContent = state.detail || (state.watching ? 'Spots job listings as you browse' : 'Turn on to spot listings as you browse');
+      // Watching is the user's choice; Chrome problems show here with a fix.
+      const issues = {
+        notAsked: ['Chrome access needed', 'Let Apply Desk read and fill Chrome tabs.', 'Allow Chrome Access'],
+        denied: ['Chrome access is off', 'macOS is blocking Apply Desk from Chrome.', 'Ask macOS Again'],
+        javaScriptOff: ['One Chrome setting left', 'View → Developer → Allow JavaScript from Apple Events.', 'Show Me'],
+        notRunning: ['Waiting for Chrome', 'Open Chrome and browse jobs as usual.', ''],
+      };
+      const issue = state.watching && issues[state.chrome];
+      agent.dataset.state = !state.watching ? 'paused' : issue ? 'attention' : 'watching';
+      $('[data-agent-title]', agent).textContent = issue ? issue[0] : state.watching ? 'Watching Chrome' : 'Watching paused';
+      $('[data-agent-detail]', agent).textContent = issue ? issue[1] : state.watching ? 'Reads the tab you\u2019re on' : 'Turn on to spot listings as you browse';
+      const fix = $('[data-native-action=chromeAccess]', agent);
+      fix.hidden = !(issue && issue[2]);
+      fix.textContent = issue ? issue[2] : '';
       const toggle = $('.switch', agent);
       toggle.hidden = false;
       toggle.setAttribute('aria-checked', String(Boolean(state.watching)));
