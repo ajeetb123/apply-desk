@@ -251,7 +251,14 @@
       toggle.setAttribute('aria-checked', String(Boolean(state.watching)));
       const last = $('[data-agent-last]', agent);
       last.textContent = state.lastResult || '';
-      last.hidden = !state.lastResult;
+      last.hidden = !state.lastResult || Boolean(state.current);
+      // The role open in Chrome's front tab right now, one click away.
+      const now = $('[data-agent-now]', agent);
+      now.hidden = !state.current;
+      if (state.current) {
+        now.href = `/job/${state.current.id}`;
+        $('b', now).textContent = state.current.title;
+      }
     },
   };
   if (bridge && agent) {
@@ -268,6 +275,21 @@
     if (button.getAttribute('role') === 'switch') {
       button.setAttribute('aria-checked', String(button.getAttribute('aria-checked') !== 'true'));
     }
-    send(button.dataset.nativeAction);
+    send(button.dataset.nativeAction, button.dataset.job ? { job: Number(button.dataset.job) } : {});
+  }));
+
+  // Resume previews size themselves to their pages and warn past one page.
+  window.addEventListener('message', event => {
+    if (event.origin !== location.origin || !event.data || !event.data.resumePages) return;
+    const frame = $$('[data-resume-frame]').find(f => f.contentWindow === event.source);
+    if (!frame) return;
+    const doc = frame.contentDocument;
+    if (doc) frame.style.height = `${doc.documentElement.scrollHeight}px`;
+    const warning = frame.closest('[data-panel], .doc-column')?.querySelector('[data-page-warning]');
+    if (warning) warning.hidden = event.data.resumePages <= 1;
+  });
+  addEventListener('resize', () => $$('[data-resume-frame]').forEach(frame => {
+    const doc = frame.contentDocument;
+    if (doc && doc.body && doc.body.dataset.ready) frame.style.height = `${doc.documentElement.scrollHeight}px`;
   }));
 })();

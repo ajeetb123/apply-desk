@@ -52,7 +52,7 @@
       <li style="--i: {{ loop.index0 }}"><a class="role-row" href="/job/{{ j.id }}">
         {{ ui.ring(j.score, 42) }}
         <span class="role-text"><b>{{ j.title or 'Untitled role' }}</b><small>{{ j.company or 'Company not set' }}{% if j.wave %} · {{ j.wave }}{% endif %}</small></span>
-        <span class="chip chip-{{ 'warn' if j.match.eligibility == 'possible mismatch' else j.score|tier }}">{{ j.match.status.split(' — ')[0] }}</span>
+        {% if j.sent %}<span class="chip chip-sent">Resume sent</span>{% else %}<span class="chip chip-{{ 'warn' if j.match.eligibility == 'possible mismatch' else j.score|tier }}">{{ j.match.status.split(' — ')[0] }}</span>{% endif %}
         <span class="go">{{ ui.icon('arrow') }}</span>
       </a></li>
       {% endfor %}

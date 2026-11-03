@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import atexit
+import base64
 import hashlib
 import hmac
 import ipaddress
+import json
 import os
 import re
 import sqlite3
@@ -17,6 +19,8 @@ from urllib.parse import urlparse
 from flask import Flask, Response, flash, redirect, render_template, request, send_file, url_for
 from markupsafe import Markup, escape
 from werkzeug.utils import secure_filename
+
+import tailoring
 
 ROOT = Path(__file__).resolve().parent
 # The Mac app keeps data in ~/Library/Application Support/Apply Desk so the
@@ -71,6 +75,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS resume (id INTEGER PRIMARY KEY, filename TEXT, text TEXT NOT NULL, uploaded TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY, company TEXT, title TEXT, url TEXT, description TEXT, saved TEXT NOT NULL, wave TEXT NOT NULL DEFAULT '', sector TEXT NOT NULL DEFAULT '', funding_stage TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, summary TEXT NOT NULL, created TEXT NOT NULL);
+        -- The exact resume Apply Desk attached or saved for a role, kept even if
+        -- the resume changes later.
+        CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL, created TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', attached INTEGER NOT NULL DEFAULT 0, filled TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, extension TEXT NOT NULL, pdf BLOB, pages INTEGER NOT NULL DEFAULT 1, changes TEXT NOT NULL DEFAULT '[]');
         """)
         # Personal contact details live only in the ignored local database. Do
         # not put an individual's address, phone, or email into tracked code.
@@ -163,10 +170,19 @@ def watch_resume_loop():
 def extract_text(path: Path, ext: str) -> str:
     if ext == "pdf":
         from pypdf import PdfReader
-        text = "\n".join(page.extract_text() or "" for page in PdfReader(str(path)).pages)
+        pages = []
+        for page in PdfReader(str(path)).pages:
+            try:
+                # Layout mode keeps right-aligned dates and locations apart
+                # from the text on their left, as in Jake's resume.
+                pages.append(page.extract_text(extraction_mode="layout") or "")
+            except Exception:
+                pages.append(page.extract_text() or "")
         # PDFs often store "fi"/"fl" as single ligature characters, which would
         # hide words like "configuration" or "workflow" from matching.
-        return unicodedata.normalize("NFKC", text)
+        text = unicodedata.normalize("NFKC", "\n".join(pages))
+        # Mark a wide gap between columns with four spaces (see header_columns).
+        return "\n".join(re.sub(r"(?<=\S) {3,}(?=\S)", "    ", line.strip()) for line in text.splitlines())
     if ext == "docx":
         from docx import Document
         doc = Document(path)
@@ -315,7 +331,7 @@ def latex_outline(source: str):
                 current["entries"].append({"header": [], "bullets": []})
             current["entries"][-1]["bullets"].append(plain[0])
         elif current is not None:
-            pairs = [" · ".join(part for part in plain[i:i + 2] if part) for i in range(0, len(plain), 2)]
+            pairs = ["    ".join(part for part in plain[i:i + 2] if part) for i in range(0, len(plain), 2)]
             current["entries"].append({"header": [pair for pair in pairs if pair], "bullets": []})
         pos = end
     return preamble, sections
@@ -417,42 +433,129 @@ def section_name(section) -> str:
     return section["title"].title() if section["title"].isupper() else section["title"]
 
 
-def tune_text_resume(text: str, terms):
+def change(kind: str, label: str, note: str, before: str | None = None, after: str | None = None) -> dict:
+    """One reviewable tuning edit; `kind` is order, wording, title, or skills."""
+    return {"kind": kind, "label": label, "note": note, "before": before, "after": after}
+
+
+def latex_escape(text: str) -> str:
+    return re.sub(r"([#$%&_{}])", r"\\\1", text)
+
+
+def tailor_skill_lists(lists, terms, rules, resume_text: str, changes, spell, escape=lambda text: text):
+    """Spell, reorder, and extend skill lists given as (label or None, items)."""
+    labeled = [i for i, (label, _) in enumerate(lists) if label]
+    additions = rules.skills_to_add(resume_text) if labeled else []
+    placed = tailoring.place_skills([lists[i][0] for i in labeled], additions)
+    out = []
+    for i, (label, items) in enumerate(lists):
+        name = label or "Skills"
+        spelled = spell(items)
+        if spelled != items:
+            changes.append(change("wording", name, "Matched the posting's spelling.", latex_plain(items), latex_plain(spelled)))
+        ordered, lead = reorder_list_items(spelled, terms)
+        extra = placed.get(labeled.index(i), []) if i in labeled else []
+        if extra:
+            parts = [part.strip() for part in ordered.split(",") if part.strip()]
+            parts[len(lead):len(lead)] = [escape(skill) for skill in extra]
+            ordered = ", ".join(parts)
+            changes.append(change("skills", name, f"Added {', '.join(extra)} from your profile; the posting asks for {'it' if len(extra) == 1 else 'them'}."))
+        if lead:
+            changes.append(change("order", name, f"Led with {', '.join(latex_plain(x) for x in lead[:4])}."))
+        out.append(ordered)
+    return out
+
+
+def tune_text_resume(text: str, terms, rules):
     preamble, sections = text_outline(text)
     changes = []
+    style = tailoring.period_style([b for s in sections if s["kind"] in {"experience", "projects"} for e in s["entries"] for b in e["bullets"]])
     for section in sections:
         if section["kind"] in {"education", "summary"}:
             continue
         if section["kind"] == "skills":
-            for entry in section["entries"]:
-                for key in ("header", "bullets"):
-                    updated = []
-                    for line in entry[key]:
-                        label, colon, items = line.partition(":")
-                        new_items, lead = reorder_list_items(items if colon else line, terms)
-                        if lead:
-                            changes.append(f"{section_name(section)}: led {label.strip() if colon else 'the list'} with {', '.join(lead[:4])}.")
-                        updated.append(f"{label}: {new_items}" if colon else new_items)
-                    entry[key] = updated
+            slots = [(entry, key, index) for entry in section["entries"] for key in ("header", "bullets") for index in range(len(entry[key]))]
+            lists = []
+            for entry, key, index in slots:
+                label, colon, items = entry[key][index].partition(":")
+                lists.append((label.strip(), items) if colon else (None, entry[key][index]))
+            tuned = tailor_skill_lists(lists, terms, rules, text, changes, rules.spell)
+            for (entry, key, index), (label, _), items in zip(slots, lists, tuned):
+                entry[key][index] = f"{label}: {items.strip()}" if label else items
             continue
         for entry in section["entries"]:
-            entry["bullets"], moved = relevance_sort(entry["bullets"], terms)
+            label = entry_label(entry) or section_name(section)
+            if section["kind"] == "experience":
+                titled = [tailoring.expand_title(line) for line in entry["header"]]
+                for before, after in zip(entry["header"], titled):
+                    if before != after:
+                        changes.append(change("title", label, "Spelled out the job title.", before.split("    ")[0], after.split("    ")[0]))
+                entry["header"] = titled
+            if section["kind"] == "projects" and entry["header"]:
+                name, bar, rest = entry["header"][0].partition(" | ")
+                if bar and rules.spell(rest) != rest:
+                    changes.append(change("wording", name.strip(), "Matched the posting's spelling.", rest.split("    ")[0], rules.spell(rest).split("    ")[0]))
+                    entry["header"][0] = name + bar + rules.spell(rest)
+            edited = []
+            for bullet in entry["bullets"]:
+                after, reasons = tailoring.reword(bullet, rules, style)
+                if reasons:
+                    changes.append(change("wording", label, tailoring.describe(reasons), bullet, after))
+                edited.append(after)
+            entry["bullets"], moved = relevance_sort(edited, terms)
             if moved:
                 lead = term_hits(entry["bullets"][0], terms)[:3]
-                changes.append(f"{entry_label(entry) or section_name(section)}: opened with the bullet on {', '.join(lead)}.")
-        if section["kind"] == "projects" and len(section["entries"]) > 1:
-            ranked = sorted(section["entries"], key=lambda entry: -sum(len(term_hits(line, terms)) for line in entry["header"] + entry["bullets"]))
-            if ranked != section["entries"]:
-                section["entries"] = ranked
-                changes.append(f"{section_name(section)}: moved {entry_label(ranked[0]) or 'the most relevant project'} to the top.")
+                changes.append(change("order", label, f"Opened with the bullet on {', '.join(lead)}."))
     return outline_text(preamble, sections), changes
 
 
-def tune_latex_resume(source: str, terms):
-    changes = []
+def latex_section_at(source: str, index: int) -> str:
+    """Kind of the \section that contains position `index`."""
+    start = source.rfind("\\section{", 0, index)
+    if start < 0:
+        return "other"
+    groups, _ = read_groups(source, start + len("\\section"), 1)
+    return heading_kind(latex_plain(groups[0])) if groups else "other"
 
-    def reorder_block(match):
-        body = match.group(2)
+
+def tune_latex_resume(source: str, terms, rules):
+    changes = []
+    body_start = source.find("\\begin{document}")
+    items = [read_groups(source, m.end(), 1)[0] for m in re.finditer(r"\\resume(?:Sub)?Item\b", source) if m.start() > body_start]
+    style = tailoring.period_style([latex_plain(item[0]) for item in items if item])
+
+    def reword_items(body: str, label: str) -> str:
+        pos = 0
+        pattern = re.compile(r"\\resume(?:Sub)?Item\b")
+        rebuilt, last = [], 0
+        while True:
+            item = pattern.search(body, pos)
+            if not item:
+                break
+            groups, end = read_groups(body, item.end(), 1)
+            if groups is None:
+                return body
+            brace = body.index("{", item.end())
+            edited, reasons = tailoring.edit_latex_bullet(groups[0], rules, style)
+            if reasons:
+                changes.append(change("wording", label or "Bullet", tailoring.describe(reasons), latex_plain(groups[0]), latex_plain(edited)))
+            rebuilt.append(body[last:brace + 1] + edited + "}")
+            last = pos = end
+        rebuilt.append(body[last:])
+        return "".join(rebuilt)
+
+    def heading_label(before: str) -> str:
+        heading = max(before.rfind("\\resumeSubheading"), before.rfind("\\resumeProjectHeading"))
+        if heading < 0:
+            return ""
+        groups, _ = read_groups(before, before.index("{", heading), 1)
+        return latex_plain(groups[0]).split("|")[0].strip() if groups else ""
+
+    def tune_block(match):
+        if latex_section_at(source, match.start()) in {"education", "summary"}:
+            return match.group(0)
+        label = heading_label(source[:match.start()])
+        body = reword_items(match.group(2), label)
         spans, pos = [], 0
         while True:
             item = re.compile(r"\\resume(?:Sub)?Item\b").search(body, pos)
@@ -460,44 +563,79 @@ def tune_latex_resume(source: str, terms):
                 break
             groups, end = read_groups(body, item.end(), 1)
             if groups is None:
-                return match.group(0)
+                return match.group(1) + body + match.group(3)
             spans.append((item.start(), end))
             pos = end
         gaps = [body[spans[i][1]:spans[i + 1][0]] for i in range(len(spans) - 1)]
         if len(spans) < 2 or any(gap.strip() for gap in gaps):
-            return match.group(0)
-        items = [body[start:end] for start, end in spans]
-        ordered, moved = relevance_sort(items, terms)
-        if not moved:
-            return match.group(0)
-        before = source[:match.start()]
-        heading = max(before.rfind("\\resumeSubheading"), before.rfind("\\resumeProjectHeading"))
-        label = ""
-        if heading >= 0:
-            groups, _ = read_groups(before, before.index("{", heading), 1)
-            label = latex_plain(groups[0]).split("|")[0].strip() if groups else ""
-        lead = term_hits(latex_plain(ordered[0]), terms)[:3]
-        changes.append(f"{label or 'Bullet list'}: opened with the bullet on {', '.join(lead)}.")
-        rebuilt = body[:spans[0][0]] + "".join(ordered[i] + (gaps[i] if i < len(gaps) else "") for i in range(len(ordered))) + body[spans[-1][1]:]
-        return match.group(1) + rebuilt + match.group(3)
+            return match.group(1) + body + match.group(3)
+        ordered, moved = relevance_sort([body[start:end] for start, end in spans], terms)
+        if moved:
+            lead = term_hits(latex_plain(ordered[0]), terms)[:3]
+            changes.append(change("order", label or "Bullet list", f"Opened with the bullet on {', '.join(lead)}."))
+            body = body[:spans[0][0]] + "".join(ordered[i] + (gaps[i] if i < len(gaps) else "") for i in range(len(ordered))) + body[spans[-1][1]:]
+        return match.group(1) + body + match.group(3)
 
-    def reorder_skills(match):
-        new_items, lead = reorder_list_items(match.group(2), terms)
-        if not lead:
-            return match.group(0)
-        changes.append(f"Skills: led {latex_plain(match.group(1)) or 'the list'} with {', '.join(latex_plain(x) for x in lead[:4])}.")
-        return "\\textbf{" + match.group(1) + "}{: " + new_items + "}"
+    def tune_heading(match):
+        kind = latex_section_at(source, match.start())
+        count = 4 if match.group(1) == "Subheading" else 2
+        groups, end = read_groups(source, match.end(), count)
+        if groups is None or kind == "education":
+            return None
+        if match.group(1) == "Subheading":
+            edited = [tailoring.expand_title(g) if i in (0, 2) else g for i, g in enumerate(groups)]
+            note = "Spelled out the job title."
+            kind_name = "title"
+        else:
+            edited = [tailoring.map_latex_text(groups[0], rules.spell, protect=("href", "url", "textbf"))] + groups[1:]
+            note = "Matched the posting's spelling."
+            kind_name = "wording"
+        for before, after in zip(groups, edited):
+            if before != after:
+                changes.append(change(kind_name, latex_plain(groups[0]).split("|")[0].strip(), note, latex_plain(before), latex_plain(after)))
+        return end, edited
 
-    tuned = re.sub(r"(\\resumeItemListStart)(.*?)(\\resumeItemListEnd)", reorder_block, source, flags=re.S)
-    tuned = re.sub(r"\\textbf\{([^{}]*)\}\{:\s*([^{}]*)\}", reorder_skills, tuned)
+    # Headings first (titles, project tech lists), editing only their arguments.
+    out, pos = [], 0
+    for match in re.finditer(r"\\resume(Subheading|ProjectHeading)\b", source):
+        if match.start() < body_start or match.start() < pos:
+            continue
+        result = tune_heading(match)
+        if not result:
+            continue
+        end, edited = result
+        out.append(source[pos:match.end()] + "".join("{" + g + "}" for g in edited))
+        pos = end
+    out.append(source[pos:])
+    tuned = "".join(out)
+
+    source = tuned  # section lookups below read the heading-edited text
+    tuned = re.sub(r"(\\resumeItemListStart)(.*?)(\\resumeItemListEnd)", tune_block, tuned, flags=re.S)
+
+    skills = [m for m in re.finditer(r"\\textbf\{([^{}]*)\}\{:\s*([^{}]*)\}", tuned) if latex_section_at(tuned, m.start()) == "skills"]
+    if skills:
+        lists = [(latex_plain(m.group(1)), m.group(2)) for m in skills]
+        new_items = tailor_skill_lists(lists, terms, rules, latex_plain(tuned), changes,
+                                       lambda items: tailoring.map_latex_text(items, rules.spell), latex_escape)
+        pieces, last = [], 0
+        for m, items in zip(skills, new_items):
+            pieces.append(tuned[last:m.start()] + "\\textbf{" + m.group(1) + "}{: " + items.strip() + "}")
+            last = m.end()
+        pieces.append(tuned[last:])
+        tuned = "".join(pieces)
     return tuned, changes
 
 
 def tune_resume(text: str, description: str, title: str = ""):
-    """Reorder the user's own resume so evidence relevant to this role leads."""
+    """Tune the user's own resume for one role without touching its layout:
+    relevant bullets lead, wording mirrors the posting's spelling and opens
+    with an action, and skills the posting asks for (that the user listed in
+    their profile) are added to the skills section."""
     terms = tuning_terms(description, title)
+    declared = [x.strip() for x in re.split(r"[,;\n]", profile().get("skills", "")) if x.strip()]
+    rules = tailoring.Rules(f"{title}\n{description}", declared)
     latex = is_latex(text)
-    tuned, changes = tune_latex_resume(text, terms) if latex else tune_text_resume(text, terms)
+    tuned, changes = tune_latex_resume(text, terms, rules) if latex else tune_text_resume(text, terms, rules)
     preamble, sections = resume_outline(tuned)
     plain = outline_text(preamble, sections)
     present = term_hits(plain, terms)
@@ -517,6 +655,24 @@ def highlight(text: str, terms) -> Markup:
     return Markup(pattern.sub(r"<mark>\1</mark>", safe))
 
 
+def header_columns(line: str) -> tuple[str, str]:
+    """Split an entry heading into its left text and right-aligned date or place."""
+    left, gap, right = line.rpartition("    ")
+    return (left.strip(), right.strip()) if gap and left.strip() else (line.strip(), "")
+
+
+def word_diff(before: str, after: str) -> tuple[Markup, Markup]:
+    """Before/after text with removed words struck and added words marked."""
+    import difflib
+    a, b = re.findall(r"\S+|\s+", before or ""), re.findall(r"\S+|\s+", after or "")
+    old, new = [], []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
+        left, right = str(escape("".join(a[i1:i2]))), str(escape("".join(b[j1:j2])))
+        old.append(left if op == "equal" else f"<del>{left}</del>" if left.strip() else left)
+        new.append(right if op == "equal" else f"<ins>{right}</ins>" if right.strip() else right)
+    return Markup("".join(old)), Markup("".join(new))
+
+
 def tier(score) -> str:
     score = int(score or 0)
     return "high" if score >= 60 else "mid" if score >= 40 else "low"
@@ -524,6 +680,8 @@ def tier(score) -> str:
 
 app.jinja_env.filters["highlight"] = highlight
 app.jinja_env.filters["tier"] = tier
+app.jinja_env.filters["columns"] = header_columns
+app.jinja_env.globals["word_diff"] = word_diff
 
 
 def analyze(description: str):
@@ -633,7 +791,7 @@ def campaign_options(p=None):
 
 def scored_jobs():
     with db() as conn:
-        jobs = [dict(r) for r in conn.execute("SELECT * FROM jobs ORDER BY id DESC")]
+        jobs = [dict(r) for r in conn.execute("SELECT jobs.*, (SELECT MAX(attached) FROM applications WHERE job_id=jobs.id) AS sent FROM jobs ORDER BY id DESC")]
     for item in jobs:
         item["match"] = match_role(item["description"], item["title"], item.get("wave", ""), item.get("sector", ""), item.get("funding_stage", ""))
         item["score"] = item["match"]["score"]
@@ -778,14 +936,20 @@ def job(job_id):
                   "Confident": "Lead with the strongest relevant work already on the resume; use clear action and outcome language where the source supports it.",
                   "Assertive": "Several posting terms already appear in the resume. Put those proven skills and outcomes first, without inflating scope or metrics."}[voice]
     p = profile()
+    with db() as conn:
+        sent = [dict(r) for r in conn.execute("SELECT id, created, url, attached, filled, extension, pages, pdf IS NOT NULL AS has_pdf FROM applications WHERE job_id=? ORDER BY id DESC", (job_id,))]
+    for application in sent:
+        application["host"] = urlparse(application["url"]).netloc
     return render_template("job.html", page="job", title=item["title"] or "Role", job=item, report=report, match=match, resume=resume,
-                           tuned=tuned, profile=p, voice=voice, voice_note=voice_note, campaign_options=campaign_options(p))
+                           tuned=tuned, profile=p, voice=voice, voice_note=voice_note, campaign_options=campaign_options(p),
+                           applications=sent, pdf_name=resume_pdf_name())
 
 
 @app.route("/job/<int:job_id>/delete", methods=["POST"])
 def delete_job(job_id):
     with db() as conn:
         conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+        conn.execute("DELETE FROM applications WHERE job_id=?", (job_id,))
     log_activity("Role removed", "Removed a saved role")
     return redirect(url_for("home"))
 
@@ -876,6 +1040,127 @@ def api_rank_jobs():
         item["eligibility"] = match["eligibility"]
     items.sort(key=lambda item: (item["score"], item["saved"]), reverse=True)
     return {"jobs": [{key: item.get(key, "") for key in ("id", "company", "title", "url", "saved", "score", "fit_status", "eligibility")} for item in items[:limit]], "count": len(items)}
+
+
+def printable(preamble, sections) -> dict:
+    """An outline with plain-string bullets for resume_print.html."""
+    return {"preamble": preamble, "sections": [{**section, "entries": [{"header": entry["header"], "bullets": [
+        bullet["text"] if isinstance(bullet, dict) else bullet for bullet in entry["bullets"]]} for entry in section["entries"]]}
+        for section in sections]}
+
+
+def resume_pdf_name() -> str:
+    name = profile().get("name", "").strip()
+    return f"{secure_filename(name).replace('_', ' ')} Resume.pdf" if secure_filename(name) else "Resume.pdf"
+
+
+def render_resume(text: str, title: str):
+    preamble, sections = resume_outline(text)
+    return render_template("resume_print.html", title=title, outline=printable(preamble, sections), raw=resume_plain(text),
+                           preview=request.args.get("preview") == "1")
+
+
+@app.route("/resume/print")
+def resume_print():
+    resume = resume_row()
+    if not resume:
+        return "No resume yet", 404
+    return render_resume(resume["text"], resume_pdf_name()[:-4])
+
+
+@app.route("/job/<int:job_id>/resume/print")
+def tuned_resume_print(job_id):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    resume = resume_row()
+    if not row or not resume:
+        return "Job or resume not found", 404
+    tuned = tune_resume(resume["text"], row["description"], row["title"] or "")
+    return render_resume(tuned["text"], resume_pdf_name()[:-4])
+
+
+@app.route("/job/<int:job_id>/applications/<int:application_id>/print")
+def application_print(job_id, application_id):
+    with db() as conn:
+        row = conn.execute("SELECT source FROM applications WHERE id=? AND job_id=?", (application_id, job_id)).fetchone()
+    if not row:
+        return "Not found", 404
+    return render_resume(row["source"], resume_pdf_name()[:-4])
+
+
+@app.post("/api/applications")
+def api_save_application():
+    """Keep the role-tuned resume the Mac app attached to (or saved for) an application."""
+    data = request.get_json(silent=True) or {}
+    try:
+        job_id = int(data.get("job_id") or 0)
+        pdf = base64.b64decode(data.get("pdf") or "", validate=True) or None
+    except (TypeError, ValueError):
+        return {"error": "Send a job_id and a base64 PDF."}, 400
+    if pdf is not None and not pdf.startswith(b"%PDF"):
+        return {"error": "The attachment is not a PDF."}, 400
+    with db() as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    resume = resume_row()
+    if not row or not resume:
+        return {"error": "Job or resume not found."}, 404
+    tuned = tune_resume(resume["text"], row["description"], row["title"] or "")
+    attached = bool(data.get("attached"))
+    filled = ", ".join(str(field) for field in (data.get("fields") or [])[:30])
+    try:
+        pages = max(1, min(int(data.get("pages") or 1), 9))
+    except (TypeError, ValueError):
+        pages = 1
+    with db() as conn:
+        cursor = conn.execute("INSERT INTO applications(job_id,created,url,attached,filled,source,extension,pdf,pages,changes) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                              (job_id, datetime.now().isoformat(timespec="minutes"), safe_http_url(data.get("url", "")), int(attached), filled,
+                               tuned["text"], tuned["extension"], pdf, pages, json.dumps(tuned["changes"])))
+        application_id = cursor.lastrowid
+    log_activity("Resume attached" if attached else "Resume saved",
+                 f"{'Attached' if attached else 'Saved'} a resume tuned for {row['title'] or 'a role'} at {row['company'] or 'company not set'}")
+    return {"id": application_id, "filename": resume_pdf_name(), "company": row["company"] or "", "title": row["title"] or ""}
+
+
+@app.route("/job/<int:job_id>/applications/<int:application_id>.<ext>")
+def download_application(job_id, application_id, ext):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM applications WHERE id=? AND job_id=?", (application_id, job_id)).fetchone()
+    if not row or ext not in {"pdf", "tex", "txt"} or (ext == "pdf" and not row["pdf"]) or (ext == "tex" and row["extension"] != "tex"):
+        return "Not found", 404
+    stem = resume_pdf_name()[:-4]
+    if ext == "pdf":
+        return Response(row["pdf"], mimetype="application/pdf", headers={"Content-Disposition": f'attachment; filename="{stem}.pdf"'})
+    body = row["source"] if ext == "tex" else resume_plain(row["source"])
+    return Response(body, mimetype="application/x-tex" if ext == "tex" else "text/plain",
+                    headers={"Content-Disposition": f'attachment; filename="{secure_filename(stem)}.{ext}"'})
+
+
+@app.get("/api/role-for-url")
+def api_role_for_url():
+    """The saved role an application page belongs to, judged by its URL."""
+    url = safe_http_url(request.args.get("url", ""))
+    if not url:
+        return {"job_id": None}
+    target = urlparse(url)
+    target_tokens = set(re.findall(r"[A-Za-z0-9_-]{5,}", target.path + " " + target.query))
+    best = (0, "", None)
+    with db() as conn:
+        rows = conn.execute("SELECT id, url, title, saved FROM jobs WHERE url != ''").fetchall()
+    for row in rows:
+        listing = urlparse(row["url"])
+        if listing.netloc.lower() != target.netloc.lower():
+            continue
+        path = listing.path.rstrip("/")
+        if url == row["url"] or (len(path) > 1 and target.path.startswith(path)):
+            score = 3
+        elif {t for t in re.findall(r"[A-Za-z0-9_-]{5,}", listing.path + " " + listing.query) if any(c.isdigit() for c in t)} & target_tokens:
+            score = 2
+        else:
+            continue
+        if (score, row["saved"]) > best[:2]:
+            best = (score, row["saved"], row)
+    row = best[2]
+    return {"job_id": row["id"], "title": row["title"]} if row else {"job_id": None}
 
 
 @app.route("/job/<int:job_id>/tuned")

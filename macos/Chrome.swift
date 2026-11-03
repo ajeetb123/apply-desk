@@ -15,6 +15,7 @@ enum Chrome {
 
     struct Page {
         let url: String
+        let ready: Bool
         let roleTitle: String
         let company: String
         let description: String
@@ -36,28 +37,41 @@ enum Chrome {
         }
     }
 
-    /// URL and title of the front tab, without reading the page.
-    static func activeTab() -> (url: String, title: String)? {
+    /// The tab the user is looking at: the active tab of Chrome's front window.
+    struct Tab {
+        let id: String
+        let url: String
+        let title: String
+        let loading: Bool
+    }
+
+    /// True when Chrome is the app in front, so its active tab is what the user sees.
+    static var isFrontmost: Bool {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID
+    }
+
+    /// Identity of the front tab, without reading the page.
+    static func activeTab() -> Tab? {
         guard isRunning else { return nil }
         let script = """
         tell application id "\(bundleID)"
             if (count of windows) is 0 then return ""
             set currentTab to active tab of front window
-            return (URL of currentTab) & linefeed & (title of currentTab)
+            return ((id of currentTab) as text) & linefeed & ((loading of currentTab) as text) & linefeed & (URL of currentTab) & linefeed & (title of currentTab)
         end tell
         """
         guard let value = run(script), !value.isEmpty else { return nil }
         let parts = value.components(separatedBy: "\n")
-        guard let url = parts.first, !url.isEmpty else { return nil }
-        return (url, parts.dropFirst().joined(separator: "\n"))
+        guard parts.count >= 3, !parts[2].isEmpty else { return nil }
+        return Tab(id: parts[0], url: parts[2], title: parts.dropFirst(3).joined(separator: "\n"), loading: parts[1] == "true")
     }
 
-    nonisolated static let readPageScript = "JSON.stringify({url:location.href,roleTitle:(document.querySelector('h1')||{}).innerText||document.title,company:(document.querySelector(\"meta[property='og:site_name']\")||{}).content||'',description:document.body?document.body.innerText:''})"
+    nonisolated static let readPageScript = "JSON.stringify({url:location.href,ready:document.readyState,roleTitle:(document.querySelector('h1')||{}).innerText||document.title,company:(document.querySelector(\"meta[property='og:site_name']\")||{}).content||'',description:document.body?document.body.innerText:''})"
 
     static func readPage() -> Page? {
         guard let value = runJavaScript(readPageScript), let data = value.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return Page(url: object["url"] as? String ?? "", roleTitle: object["roleTitle"] as? String ?? "",
+        return Page(url: object["url"] as? String ?? "", ready: object["ready"] as? String == "complete", roleTitle: object["roleTitle"] as? String ?? "",
                     company: object["company"] as? String ?? "", description: object["description"] as? String ?? "")
     }
 
