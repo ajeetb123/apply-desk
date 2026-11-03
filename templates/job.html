@@ -24,6 +24,17 @@
   </div>
 </section>
 
+<section class="panel odds odds-{{ odds.label|lower|replace(' ', '-') }}" data-reveal style="--i:3">
+  <header class="panel-head"><div><p class="eyebrow">{{ ui.icon('target') }} Honest odds{% if odds.year %} as a {{ odds.year|lower }}{% endif %}</p>
+    <h2>{{ odds.label }} <span class="odds-range">{{ odds.odds }}</span></h2>
+    <p class="sub">Rough odds of an offer from this one application, judged from the posting's wording and how internship hiring usually goes. Not data from {{ job.company or 'this employer' }}.{% if not odds.year %} Set your year in school in Profile for a sharper read.{% endif %}</p></div></header>
+  <ul class="odds-reasons">
+    {% for text in odds.blockers %}<li class="is-block">{{ text }}</li>{% endfor %}
+    {% for r in odds.reasons %}<li class="{{ 'is-up' if r.delta > 0 else 'is-down' }}">{{ r.text }}</li>{% endfor %}
+  </ul>
+  <p class="odds-help"><b>What would help most:</b> {{ odds.helps }}</p>
+</section>
+
 {% if applications %}
 <section class="panel sent" data-reveal style="--i:3">
   <header class="panel-head"><div><p class="eyebrow">{{ ui.icon('check') }} Your copies</p><h2>What you sent</h2><p class="sub">The exact resume Apply Desk attached or saved for this role, kept even if your resume changes later.</p></div></header>
