@@ -71,8 +71,8 @@ def init_db():
         for column in ("wave", "sector", "funding_stage"):
             if column not in columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
-        # Split legacy "City, ST" profile entries so the extension doesn't
-        # put the whole string in a city-only field.
+        # Split legacy "City, ST" profile entries so a browser form helper
+        # won't put the whole string in a city-only field.
         values = {row["key"]: row["value"] for row in conn.execute("SELECT * FROM profile")}
         if not values.get("state") and "," in values.get("city", ""):
             parts = [part.strip() for part in values["city"].rsplit(",", 1)]
@@ -391,8 +391,7 @@ def api_health():
 
 @app.get("/api/profile")
 def api_profile():
-    # This endpoint is reachable only through the loopback app and is called by
-    # the user's explicitly installed extension when they request field fill.
+    # This endpoint is reachable only through the loopback app.
     p = profile()
     return {key: p.get(key, "") for key in (
         "name", "email", "phone", "city", "state", "postal_code", "address",
