@@ -1,11 +1,116 @@
-{% extends 'base.html' %}{% block body %}
-<a class="back" href="/">← Back to workspace</a>
-<section class="workspace-heading role-heading"><div><p class="eyebrow">ROLE MATCH · {{ job.company or 'COMPANY NOT SET' }}</p><h1>{{ job.title or 'Untitled role' }}</h1><p class="sub">{% if job.url %}<a href="{{ job.url }}" target="_blank" rel="noreferrer">Open the original listing ↗</a>{% else %}No listing link saved{% endif %}</p></div><div class="role-fit-large">{{ match.score }}<small>fit score</small></div></section>
-<div class="role-explainer"><b>{{ match.status }}</b><span>This is a transparent triage estimate from your saved profile and the posting. It is not a hiring probability. Review employer eligibility, campaign details, and all application answers yourself.</span></div>
-<section class="panel fit-panel"><div class="section-heading"><div><p class="eyebrow">WHY IT MATCHED</p><h2>Fit signals</h2></div><span class="sort-note">Graduation: {{ match.eligibility }}</span></div><div class="fit-grid">{% for key,label in [('skills','Skills'),('role','Target roles'),('goals','Career goals'),('campaign','Campaign'),('graduation','Graduation')] %}<div class="fit-signal"><span>{{ label }}</span><b>{{ match.breakdown[key] }}%</b><div class="fit-meter"><i style="--fit-width:{{ match.breakdown[key] }}%"></i></div></div>{% endfor %}</div><ul class="fit-reasons">{% for reason in match.reasons %}<li>{{ reason }}</li>{% endfor %}</ul><details class="campaign-edit"><summary>Edit this role's campaign tags</summary><form action="/job/{{ job.id }}/campaign" method="post" class="form-grid"><label>Wave / campaign<select name="wave"><option value="">Not specified</option>{% for option in campaign_options %}<option value="{{ option }}"{% if job.wave == option %} selected{% endif %}>{{ option }}</option>{% endfor %}</select></label><label>Sector<input name="sector" value="{{ job.sector }}" placeholder="e.g. cybersecurity"></label><label>Funding stage<input name="funding_stage" value="{{ job.funding_stage }}" placeholder="e.g. Seed, Series A"></label><button class="button outline">Save role tags</button></form><small class="field-hint">Verify funding and sector notes from company sources; job descriptions may not identify these reliably.</small></details></section>
-<div class="role-detail-grid"><section class="panel"><p class="eyebrow">MATCHING TERMS</p><h2>Already present in your resume</h2><div class="chips">{% for t in report.matched %}<span class="chip good">{{ t }}</span>{% else %}<span class="muted">No terms matched yet. Add your resume in the workspace.</span>{% endfor %}</div><div class="hairline"></div><p class="eyebrow">TERMS TO VERIFY</p><h2>Only add these if you can support them</h2><div class="chips">{% for t in report.missing %}<span class="chip">{{ t }}</span>{% else %}<span class="muted">No additional terms found.</span>{% endfor %}</div></section>
-<section class="panel"><p class="eyebrow">ROLE CHECK</p><h2>Confirm the basics on the employer page</h2><div class="check-list"><div><span>Role type</span><b>Internship / early career?</b></div><div><span>Graduation window</span><b>{{ profile.graduation or 'Add your expected graduation date' }}</b></div><div><span>Work authorization</span><b>{{ profile.work_authorization or 'Add your work authorization' }}</b></div><div><span>Application deadline</span><b>Check the original listing</b></div></div></section></div>
-<section class="panel evidence-panel"><div class="section-heading"><div><p class="eyebrow">SOURCE EVIDENCE</p><h2>Resume lines that may be relevant</h2></div><a class="button outline" href="/job/{{ job.id }}/resume.txt">Download review notes ↓</a></div>{% if relevant %}<p class="panel-copy">These are existing lines from your uploaded resume. Use them as a starting point and keep every claim accurate.</p><ul class="evidence-list">{% for line in relevant %}<li>{{ line }}</li>{% endfor %}</ul>{% else %}<p class="panel-copy">No existing lines matched the extracted terms. Review your experience manually before deciding what belongs.</p>{% endif %}<div class="voice-summary"><span>Suggested writing tone</span><b>{{ voice }}</b><small>{{ voice_note }}</small></div></section>
-<section class="writing-check"><b>When you edit your resume</b><span>Lead bullets with an action, explain the relevant work, and state the result when you know it. Use job terms naturally. Add numbers only when you can substantiate them.</span><a href="https://capd.mit.edu/blog/2023/09/01/enhance-your-resume-a-guide-for-first-year-undergraduates/" target="_blank" rel="noreferrer">MIT undergraduate resume guidance ↗</a></section>
-<div class="role-actions"><a class="button dark" href="{{ job.url if job.url else '/' }}" {% if job.url %}target="_blank" rel="noreferrer"{% endif %}>Continue to application ↗</a><span>Review all details and submit yourself.</span><form action="/job/{{ job.id }}/delete" method="post"><button class="text-button danger">Remove role</button></form></div>
+{% extends 'base.html' %}
+{% import '_ui.html' as ui %}
+{% block body %}
+{% set signals = [('skills', 'Skills'), ('role', 'Target role'), ('goals', 'Goals'), ('campaign', 'Campaign'), ('graduation', 'Graduation')] %}
+<a class="crumb" href="/" data-reveal>{{ ui.icon('back') }}<span>Today</span></a>
+<section class="role-hero">
+  <div class="role-hero-copy">
+    <p class="eyebrow" data-reveal>{{ job.company or 'Company not set' }}</p>
+    <h1 data-reveal style="--i:1">{{ job.title or 'Untitled role' }}</h1>
+    <div class="tags" data-reveal style="--i:2">
+      <span class="chip chip-{{ 'warn' if match.eligibility == 'possible mismatch' else match.score|tier }}">{{ match.status }}</span>
+      <span class="chip">Graduation: {{ match.eligibility }}</span>
+      {% for tag in [job.wave, job.sector, job.funding_stage] if tag %}<span class="chip">{{ tag }}</span>{% endfor %}
+    </div>
+    <div class="actions" data-reveal style="--i:3">
+      {% if job.url %}<a class="button primary" href="{{ job.url }}" target="_blank" rel="noreferrer">{{ ui.icon('external') }}<span>Open listing in Chrome</span></a>{% endif %}
+      {% if tuned %}<a class="button" href="#tuned">{{ ui.icon('sparkle') }}<span>See tuned resume</span></a>{% endif %}
+    </div>
+    <p class="fine" data-reveal style="--i:4">Fit is a transparent triage estimate from your profile and this posting, not a hiring probability. On the application, press <kbd>⌃</kbd><kbd>⌥</kbd><kbd>F</kbd> to fill your details, then review and submit it yourself.</p>
+  </div>
+  <div class="role-score" data-reveal style="--i:2">
+    {{ ui.ring(match.score, 184, 'ring-hero') }}
+    <span class="role-score-label">fit score</span>
+  </div>
+</section>
+
+<div class="role-grid">
+  <section class="panel signals" data-reveal style="--i:4">
+    <header class="panel-head"><div><p class="eyebrow">Why it matched</p><h2>Fit signals</h2></div></header>
+    <div class="signals-body">
+      <svg class="radar tier-{{ match.score|tier }}" viewBox="-176 -128 352 252" data-labels="{% for key, label in signals %}{{ label }}{{ ',' if not loop.last }}{% endfor %}" data-values="{% for key, label in signals %}{{ match.breakdown[key] }}{{ ',' if not loop.last }}{% endfor %}" role="img" aria-label="Fit signal chart"></svg>
+      <ul class="signal-list">
+        {% for key, label in signals %}<li style="--v: {{ match.breakdown[key] }}; --i: {{ loop.index0 }}"><span>{{ label }}</span><b>{{ match.breakdown[key] }}%</b><i class="bar"><i></i></i></li>{% endfor %}
+      </ul>
+    </div>
+    <ul class="reasons">{% for reason in match.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
+  </section>
+
+  <section class="panel terms" data-reveal style="--i:5">
+    <p class="eyebrow">Already on your resume</p>
+    <div class="chips">{% for t in report.matched %}<span class="chip chip-high" style="--i: {{ loop.index0 }}">{{ t }}</span>{% else %}<span class="fine">No posting terms found on your resume yet.</span>{% endfor %}</div>
+    <p class="eyebrow">Gaps to consider</p>
+    <div class="chips">{% for t in report.missing %}<span class="chip chip-gap" style="--i: {{ loop.index0 }}">{{ t }}</span>{% else %}<span class="fine">No other terms stood out.</span>{% endfor %}</div>
+    <p class="fine">Add a gap term only if it truly describes your work.</p>
+    <div class="voice"><span class="eyebrow">Suggested tone</span><b>{{ voice }}</b><p class="fine">{{ voice_note }}</p></div>
+  </section>
+</div>
+
+<section class="panel tuned" id="tuned" data-reveal style="--i:6">
+  <header class="panel-head">
+    <div><p class="eyebrow">{{ ui.icon('sparkle') }} Tuned for this role</p><h2>Same facts, sharper order</h2><p class="sub">Your own lines, reordered so the most relevant evidence leads. Nothing is added or reworded; highlighted terms appear in the posting.</p></div>
+    {% if tuned %}<div class="head-actions">
+      <button class="button ghost" type="button" data-copy="tuned-source">{{ ui.icon('copy') }}<span>Copy</span></button>
+      <a class="button primary" href="/job/{{ job.id }}/tuned">{{ ui.icon('download') }}<span>Download .{{ tuned.extension }}</span></a>
+    </div>{% endif %}
+  </header>
+  {% if tuned %}
+  <div class="segmented" role="tablist" data-tabs>
+    <button type="button" role="tab" aria-selected="true" data-tab="doc">Preview</button>
+    <button type="button" role="tab" aria-selected="false" data-tab="changes">What changed <em>{{ tuned.changes|length }}</em></button>
+    <i class="segmented-thumb" aria-hidden="true"></i>
+  </div>
+  <div data-panel="doc">
+    <article class="paper">
+      {% if tuned.sections %}
+      <header>{% for line in tuned.preamble %}<p class="{{ 'paper-name' if loop.first }}">{{ line }}</p>{% endfor %}</header>
+      {% for section in tuned.sections %}
+      <section><h3>{{ section.title }}</h3>
+        {% for entry in section.entries %}<div class="paper-entry">
+          {% for line in entry.header %}<p class="paper-head">{{ line|highlight(tuned.terms) }}</p>{% endfor %}
+          {% if entry.bullets %}<ul>{% for bullet in entry.bullets %}<li class="{{ 'is-hit' if bullet.hits }}">{{ bullet.text|highlight(tuned.terms) }}</li>{% endfor %}</ul>{% endif %}
+        </div>{% endfor %}
+      </section>
+      {% endfor %}
+      {% else %}<pre class="paper-raw">{{ tuned.text|highlight(tuned.terms) }}</pre>{% endif %}
+    </article>
+  </div>
+  <div data-panel="changes" hidden>
+    <ol class="changes">{% for change in tuned.changes %}<li style="--i: {{ loop.index0 }}">{{ change }}</li>{% else %}<li>Your resume already leads with the most relevant evidence for this role.</li>{% endfor %}</ol>
+  </div>
+  <textarea id="tuned-source" hidden readonly>{{ tuned.text }}</textarea>
+  {% else %}
+  {{ ui.empty('Add your resume to tune it', 'Apply Desk will reorder your own bullets and skills so what matters for this role comes first.', '/resume', 'Add resume') }}
+  {% endif %}
+</section>
+
+<div class="role-grid">
+  <section class="panel checklist" data-reveal style="--i:7">
+    <header class="panel-head"><div><p class="eyebrow">Before you apply</p><h2>Confirm on the employer page</h2></div></header>
+    <ul class="check-rows">
+      <li><span>Role type</span><b>Internship or early career?</b></li>
+      <li><span>Graduation window</span><b>{{ profile.graduation or 'Add your graduation date' }}</b></li>
+      <li><span>Work authorization</span><b>{{ profile.work_authorization or 'Add it to your profile' }}</b></li>
+      <li><span>Deadline</span><b>Check the original listing</b></li>
+    </ul>
+  </section>
+
+  <section class="panel manage" data-reveal style="--i:8">
+    <header class="panel-head"><div><p class="eyebrow">Organize</p><h2>Tags & notes</h2></div></header>
+    <details class="more">
+      <summary>Edit this role's campaign tags</summary>
+      <form action="/job/{{ job.id }}/campaign" method="post" class="fields">
+        <label><span>Campaign</span><select name="wave"><option value="">Not specified</option>{% for option in campaign_options %}<option value="{{ option }}"{% if job.wave == option %} selected{% endif %}>{{ option }}</option>{% endfor %}</select></label>
+        <label><span>Sector</span><input name="sector" value="{{ job.sector }}" placeholder="Cybersecurity"></label>
+        <label class="wide"><span>Funding stage</span><input name="funding_stage" value="{{ job.funding_stage }}" placeholder="Seed, Series A"></label>
+        <button class="button wide">Save tags</button>
+      </form>
+      <p class="fine">Verify funding and sector from company sources; listings often leave them out.</p>
+    </details>
+    <div class="manage-row">
+      <a class="link" href="/job/{{ job.id }}/resume.txt">{{ ui.icon('download') }}<span>Review notes</span></a>
+      <form action="/job/{{ job.id }}/delete" method="post" data-confirm="Remove this role from your shortlist?"><button class="link danger">{{ ui.icon('trash') }}<span>Remove role</span></button></form>
+    </div>
+  </section>
+</div>
 {% endblock %}

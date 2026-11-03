@@ -1,3 +1,50 @@
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f6f8f6"><title>Apply Desk</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"><link rel="stylesheet" href="{{ url_for('static', filename='extra.css') }}"><link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}"><link rel="stylesheet" href="{{ url_for('static', filename='role.css') }}"><link rel="stylesheet" href="{{ url_for('static', filename='memory.css') }}"><link rel="stylesheet" href="{{ url_for('static', filename='design.css') }}"><link rel="stylesheet" href="{{ url_for('static', filename='product.css') }}"></head>
-<body><header class="top"><a href="/" class="brand"><span class="mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M8 23 16 7l8 16M11 18h10"/></svg></span><span>Apply Desk</span></a><div class="top-right"><span class="local"><i></i>LOCAL WORKSPACE</span></div></header><main>{% with messages = get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}{% endwith %}{% block body %}{% endblock %}</main><footer>Resume and profile data stay on this Mac.</footer></body></html>
+{% import '_ui.html' as ui %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{ title ~ ' · ' if title }}Apply Desk</title>
+<script>if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.applyDesk) document.documentElement.classList.add('native')</script>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body data-page="{{ page }}">
+<svg class="defs" aria-hidden="true" focusable="false"><defs>
+  <linearGradient id="grad-high" x1="0" y1="0" x2="1" y2="1"><stop class="s-mint" offset="0"/><stop class="s-cyan" offset="1"/></linearGradient>
+  <linearGradient id="grad-mid" x1="0" y1="0" x2="1" y2="1"><stop class="s-amber" offset="0"/><stop class="s-coral" offset="1"/></linearGradient>
+  <linearGradient id="grad-low" x1="0" y1="0" x2="1" y2="1"><stop class="s-slate" offset="0"/><stop class="s-slate-2" offset="1"/></linearGradient>
+  <linearGradient id="grad-brand" x1="0" y1="0" x2="1" y2="1"><stop class="s-indigo" offset="0"/><stop class="s-violet" offset=".55"/><stop class="s-cyan" offset="1"/></linearGradient>
+  <radialGradient id="grad-core" cx=".35" cy=".3" r=".8"><stop class="s-white" offset="0"/><stop class="s-cyan" offset=".35"/><stop class="s-indigo" offset=".75"/><stop class="s-violet" offset="1"/></radialGradient>
+</defs></svg>
+
+<aside class="sidebar">
+  <a class="brand" href="/">{{ ui.orb('brand-orb') }}<span>Apply Desk</span></a>
+  <nav class="nav" aria-label="Sections">
+    <a class="nav-item{{ ' is-active' if page in ('today', 'job') }}" href="/">{{ ui.icon('today') }}<span>Today</span>{% if nav.roles %}<em>{{ nav.roles }}</em>{% endif %}</a>
+    <a class="nav-item{{ ' is-active' if page == 'resume' }}" href="/resume">{{ ui.icon('resume') }}<span>Resume</span>{% if not nav.resume %}<i class="nav-dot" title="Add your resume"></i>{% endif %}</a>
+    <a class="nav-item{{ ' is-active' if page == 'profile' }}" href="/profile">{{ ui.icon('profile') }}<span>Profile</span></a>
+  </nav>
+  <div class="sidebar-fill"></div>
+  <section class="agent" data-agent data-state="web">
+    <div class="agent-row">
+      <span class="agent-beacon" aria-hidden="true"><i></i><i></i><b></b></span>
+      <div class="agent-copy"><b data-agent-title>Background agent</b><small data-agent-detail>Runs from the Apply Desk Mac app</small></div>
+      <button class="switch" type="button" data-native-action="toggleWatcher" role="switch" aria-checked="false" aria-label="Watch Chrome for job listings" hidden><i></i></button>
+    </div>
+    <p class="agent-last" data-agent-last hidden></p>
+    <div class="agent-keys"><kbd>⌃</kbd><kbd>⌥</kbd><kbd>F</kbd><span>fills the application open in Chrome</span></div>
+  </section>
+  <p class="private">{{ ui.icon('lock') }}<span>Private to this Mac</span></p>
+</aside>
+
+<main class="main" id="main">
+  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+  <header class="titlebar"><span>{{ title or 'Apply Desk' }}</span></header>
+  <div class="content">
+    {% block body %}{% endblock %}
+  </div>
+  {% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class="toasts" role="status">{% for category, message in messages %}<div class="toast toast-{{ category }}">{{ ui.icon('check' if category == 'success' else 'bolt') }}<span>{{ message }}</span></div>{% endfor %}</div>{% endif %}{% endwith %}
+</main>
+</body>
+</html>

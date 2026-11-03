@@ -1,0 +1,78 @@
+{% extends 'base.html' %}
+{% import '_ui.html' as ui %}
+{% block body %}
+<section class="page-head">
+  <p class="eyebrow" data-reveal>Source of truth</p>
+  <h1 data-reveal style="--i:1">Your resume</h1>
+  <p class="lede" data-reveal style="--i:2">Apply Desk scores roles and tunes your resume from this document. Every version stays on this Mac.</p>
+</section>
+
+<div class="resume-grid">
+  <section class="doc-column" data-reveal style="--i:3">
+    {% if resume %}
+    <div class="doc-meta">
+      <span class="doc-icon">{{ ui.icon('resume') }}</span>
+      <span class="doc-name"><b>{{ resume.filename }}</b><small>Imported {{ resume.uploaded[:16].replace('T', ' ') }}</small></span>
+      <span class="doc-stats"><span><b data-count="{{ outline.words }}">{{ outline.words }}</b>words</span><span><b data-count="{{ outline.bullets }}">{{ outline.bullets }}</b>bullets</span><span><b data-count="{{ outline.sections|length }}">{{ outline.sections|length }}</b>sections</span></span>
+    </div>
+    <article class="paper is-scanning">
+      <i class="scan-beam" aria-hidden="true"></i>
+      {% if outline.sections %}
+      <header>{% for line in outline.preamble %}<p class="{{ 'paper-name' if loop.first }}">{{ line }}</p>{% endfor %}</header>
+      {% for section in outline.sections %}
+      <section><h3>{{ section.title }}</h3>
+        {% for entry in section.entries %}<div class="paper-entry">
+          {% for line in entry.header %}<p class="paper-head">{{ line }}</p>{% endfor %}
+          {% if entry.bullets %}<ul>{% for bullet in entry.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>{% endif %}
+        </div>{% endfor %}
+      </section>
+      {% endfor %}
+      {% else %}
+      <pre class="paper-raw">{{ resume.text }}</pre>
+      {% endif %}
+    </article>
+    {% if not outline.sections %}<p class="fine">Apply Desk couldn't find standard section headings (Education, Experience, Projects, Skills), so tuning will keep this text as is.</p>{% endif %}
+    {% else %}
+    <div class="panel">{{ ui.empty('No resume yet', 'Drop in your resume. Apply Desk reads it locally to score roles and to build a tuned version for each one.') }}</div>
+    {% endif %}
+  </section>
+
+  <aside class="rail">
+    <form class="dropzone" method="post" action="/resume" enctype="multipart/form-data" data-dropzone data-reveal style="--i:4">
+      <svg class="dropzone-edge" aria-hidden="true"><rect x="1" y="1" rx="17" ry="17"/></svg>
+      <span class="dropzone-icon">{{ ui.icon('upload') }}</span>
+      <b>{{ 'Drop a new version' if resume else 'Drop your resume' }}</b>
+      <small>PDF, DOCX, TXT, or LaTeX — or click to choose</small>
+      <input type="file" name="resume" accept=".pdf,.docx,.txt,.tex" required aria-label="Choose a resume file">
+    </form>
+
+    <section class="panel" data-reveal style="--i:5">
+      <header class="panel-head"><div><p class="eyebrow">Keep in sync</p><h2>Watch a file</h2></div></header>
+      <p class="sub">When this file is saved, Apply Desk imports the new version automatically. Only this one path is checked.</p>
+      <form action="/profile" method="post" class="stack">
+        <input type="hidden" name="next" value="resume">
+        <input name="watch_path" value="{{ profile.get('watch_path', '') }}" placeholder="/Users/you/Documents/resume.tex" aria-label="Resume file to watch">
+        <button class="button">{{ 'Update watched file' if profile.get('watch_path') else 'Watch this file' }}</button>
+      </form>
+    </section>
+
+    {% if versions|length > 1 %}
+    <section class="panel" data-reveal style="--i:6">
+      <header class="panel-head"><div><p class="eyebrow">History</p><h2>Versions</h2></div><span class="count">{{ versions|length }}</span></header>
+      <ol class="versions">{% for v in versions %}<li class="{{ 'is-current' if loop.first }}"><i></i><b>{{ v.filename }}</b><time datetime="{{ v.uploaded }}">{{ v.uploaded[:16].replace('T', ' ') }}</time></li>{% endfor %}</ol>
+    </section>
+    {% endif %}
+
+    <section class="panel guidance" data-reveal style="--i:7">
+      <header class="panel-head"><div><p class="eyebrow">Writing well</p><h2>What tuning can't do for you</h2></div></header>
+      <ul class="ticks">
+        <li>Lead each bullet with an action, then the context and the result.</li>
+        <li>Add numbers only when you can back them up.</li>
+        <li>Use a job's terms only when they truly describe your work.</li>
+        <li>Keep Education and technical work near the top while you're a student.</li>
+      </ul>
+      <a class="link" href="https://capd.mit.edu/resources/make-your-resume-ats-friendly/" target="_blank" rel="noreferrer">MIT's ATS-friendly resume guide {{ ui.icon('external') }}</a>
+    </section>
+  </aside>
+</div>
+{% endblock %}
