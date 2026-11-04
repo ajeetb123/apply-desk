@@ -645,6 +645,62 @@ class ApplyDeskApiTests(unittest.TestCase):
         with sqlite3.connect(application.DB) as conn:
             self.assertEqual(conn.execute("SELECT company FROM jobs").fetchone()[0], "Globex Systems")
 
+    def test_follow_up_answers_come_from_profile_answers(self):
+        import re as regex
+        applying = application.applying
+        answers = {a["key"]: a for a in applying.follow_up_answers({"us_citizen": "Yes", "currently_student": "Yes", "needs_sponsorship": "No"})}
+        def claims(question):
+            return next((key for key, a in answers.items() if regex.search(a["pattern"], question, regex.I)), None)
+        self.assertEqual(claims("If you answered “No” to the above, please provide the country or countries of which you are a citizen"), "citizenship_followup")
+        self.assertEqual(claims("Are you one of the following for U.S. export control laws: a U.S. citizen, a lawful permanent resident"), "export_control")
+        self.assertEqual(claims("If offered a position, will you be able to start within 3 weeks?"), "start_soon")
+        self.assertEqual(answers["start_soon"]["answer"], "No")
+        self.assertEqual(claims("If yes, what type of sponsorship?"), "sponsorship_followup")
+        self.assertEqual(claims("If you selected Other, please specify below:"), "other_followup")
+        self.assertNotIn("export_control", {a["key"] for a in applying.follow_up_answers({})})  # nothing to follow from
+
+    def test_standard_patterns_leave_other_countries_and_side_questions_alone(self):
+        import re as regex
+        patterns = {q["key"]: q["pattern"] for q in application.applying.STANDARD_QUESTIONS}
+        self.assertTrue(regex.search(patterns["authorized_us"], "are you legally authorized to work in the united states?"))
+        self.assertFalse(regex.search(patterns["authorized_us"], "do you have the right to work in the uk without visa sponsorship?"))
+        self.assertFalse(regex.search(patterns["needs_sponsorship"], "will you need sponsorship to work in canada?"))
+        self.assertFalse(regex.search(patterns["current_employer"], "what is the notice period you need to give your current employer?"))
+        self.assertFalse(regex.search(patterns["gpa"], "optional comments on gpa"))
+        self.assertTrue(regex.search(patterns["previously_employed"], "have you previously interned or worked at acme?"))
+        self.assertFalse(regex.search(patterns["previously_employed"], "have you previously interned or worked at acme, or applied before?"))
+        # "Which of our offices would you relocate to?" is a location question, not "willing to relocate".
+        order = [q["key"] for q in application.applying.STANDARD_QUESTIONS]
+        self.assertLess(order.index("location_preference"), order.index("relocate"))
+
+    def test_fill_plan_drafts_availability_and_reads_intern_or_coop(self):
+        self.add_resume(self.JAKE)
+        self.client.post("/profile", data={"class_year": "Freshman", "agree_terms": "Yes"})
+        posting = self.LONG_POSTING + " This internship runs May 24th, 2027 – July 30th, 2027."
+        job_id = self.evaluate(self.WORKDAY, title="Software Engineering Intern", description=posting)
+        plan = self.client.get(f"/api/fill-plan?job_id={job_id}").json
+        drafts = {d["key"]: d["text"] for d in plan["drafts"]}
+        self.assertIn("May 24th, 2027 – July 30th, 2027", drafts["availability"])
+        answers = {a["key"]: a["answer"] for a in plan["answers"]}
+        self.assertEqual(answers["listing_kind"], "Intern")
+        self.assertTrue(answers["listing_term"].startswith("Summer"))  # no term named: the coming summer
+        self.assertEqual(plan["education"][0]["start"]["month"], "08")  # a freshman started this fall
+        self.assertTrue(plan["agree_terms"])
+        import re as regex
+        kind = next(a for a in plan["answers"] if a["key"] == "listing_kind")["pattern"]
+        self.assertFalse(regex.search(kind, "please list the school or university you will be enrolled in during the internship or co-op?"))
+
+    def test_company_comes_from_the_posting_when_workday_gives_none(self):
+        applying = application.applying
+        text = "About us\nAt Globex, we build rockets. Globex hires interns every summer."
+        self.assertEqual(applying.company_from_intro(text), "Globex")
+        self.assertEqual(applying.company_from_intro("Acme Labs's platform team is hiring.\nAcme Labs builds tools. Join Acme Labs."), "Acme Labs")
+        self.assertEqual(applying.company_from_intro("At least 3 years of experience. At this time we hire."), "")
+        title, company = applying.identify_role({"url": "https://gx.wd5.myworkdayjobs.com/ExternalCareerSite/job/X/Intern_R1"}, text)
+        self.assertEqual(company, "Globex")
+        home = self.client.post("/api/evaluate", json={"url": "https://gx.wd5.myworkdayjobs.com/en-US/Careers/userHome", "title": "Candidate Home", "description": self.LONG_POSTING})
+        self.assertEqual(home.status_code, 400)
+
     def test_redoing_an_application_keeps_one_record_with_one_line_per_question(self):
         self.add_resume(self.JAKE)
         job_id = self.evaluate(self.WORKDAY)

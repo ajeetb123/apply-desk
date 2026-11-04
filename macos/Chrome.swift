@@ -173,7 +173,7 @@ enum Chrome {
 enum JobListing {
     static func isLikelyURL(_ value: String) -> Bool {
         let lower = value.lowercased()
-        if ["/apply", "/signin", "/sign-in", "/login"].contains(where: lower.contains) { return false }
+        if ["/apply", "/signin", "/sign-in", "/login", "/userhome", "/candidatehome", "/myaccount"].contains(where: lower.contains) { return false }
         let patterns = ["/jobs/", "/job/", "/careers/", "/position/", "/openings/", "job-detail", "greenhouse.io", "lever.co",
                         "ashbyhq.com", "myworkdayjobs.com", "smartrecruiters.com", "linkedin.com/jobs", "indeed.com/viewjob",
                         "simplify.jobs", "careers.", "jobs.", "workatastartup.com", "wellfound.com"]

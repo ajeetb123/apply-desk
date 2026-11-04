@@ -3,9 +3,10 @@
 // The plan (GET /api/fill-plan) holds only the user's own profile, saved
 // answers, resume entries, and tailored skills. The filler types only into
 // empty fields (job and school entries Workday read from the resume itself
-// get the resume's exact text instead), answers self-identification questions only as the user chose
-// in Profile (or with the form's decline option), never checks consent boxes,
-// and never submits. On multi-step applications (Workday) it fills a page,
+// get the resume's exact text instead), answers self-identification
+// questions only as the user chose in Profile (or with the form's decline
+// option), ticks required terms boxes and signs only when the user turned
+// that on in Profile (never optional sign-ups), and never submits. On multi-step applications (Workday) it fills a page,
 // clicks Save and Continue, and repeats until a page needs the user or the
 // Review step, where it shows a review panel. Work continues after it
 // returns; progress and results are in window.__applyDeskFill.
@@ -30,7 +31,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     try { sessionStorage.setItem('applyDeskRun', JSON.stringify(run)); } catch (error) { /* storage can be blocked */ }
   };
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-  const norm = s => (s || '').toLowerCase().replace(/&/g, ' and ').replace(/[_*:?()\[\]]+/g, ' ').replace(/[-–]/g, ' ').replace(/\s+/g, ' ').trim();
+  // "✱" is Lever's required mark.
+  const norm = s => (s || '').toLowerCase().replace(/&/g, ' and ').replace(/[_*✱:?()\[\]]+/g, ' ').replace(/[-–]/g, ' ').replace(/\s+/g, ' ').trim();
   const textOf = el => el ? (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim() : '';
   const clean = text => String(text || '').replace(/\s+/g, ' ').trim();
   const visible = el => !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
@@ -51,6 +53,42 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const byIds = ids => (ids || '').split(/\s+/).map(id => textOf(document.getElementById(id))).filter(Boolean).join(' ');
   const isDatePart = el => /dateSection/.test(el.getAttribute('data-automation-id') || '');
 
+  // A label's own words, without the options of a dropdown it wraps (Lever:
+  // "Gender Select ... Male Female" is the question "Gender").
+  // Visible text inside `root`, leaving out any element `skip` rejects (and
+  // hidden helper text like Lever's "No location found").
+  function textWithout(root, skip) {
+    const parts = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      let keep = !!node.parentElement && visible(node.parentElement);
+      for (let up = node.parentElement; keep && up && up !== root; up = up.parentElement) if (skip(up)) keep = false;
+      if (keep) parts.push(node.textContent);
+    }
+    return clean(parts.join(' '));
+  }
+  const controlPart = el => el.matches('select, option, textarea, button, [role="listbox"], [role="option"]')
+    || (el.matches('ul, ol') && !!el.querySelector('input, [role="option"]'));
+  function labelText(label) {
+    if (!label || !label.querySelector('select, option, textarea, input, ul, button')) return textOf(label);
+    return textWithout(label, controlPart);
+  }
+
+  // For a Yes/No or pick-several group whose options are labels of their own
+  // (Lever, Greenhouse, Ashby), the question is the text around the whole
+  // group with the options taken out.
+  function groupQuestion(el) {
+    const options = el.name ? [...document.getElementsByName(el.name)] : [el];
+    for (let node = el.parentElement, depth = 0; node && node !== document.body && depth < 7; node = node.parentElement, depth += 1) {
+      if (!options.every(option => node.contains(option))) continue;
+      if (node.querySelectorAll('input:not([type=hidden]), select, textarea').length > options.length + 1) return '';
+      const text = textWithout(node, part => controlPart(part) || part.matches('[role="radio"], [role="checkbox"]')
+        || (part.matches('label') && !!part.querySelector('input')));
+      if (text.length >= 3) return text.slice(0, 300);
+    }
+    return '';
+  }
+
   // The question a control answers, as the user reads it on the page.
   function questionOf(el) {
     const legend = el.closest('fieldset') && el.closest('fieldset').querySelector('legend');
@@ -60,14 +98,17 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if ((el.type === 'radio' || el.type === 'checkbox') && legend && textOf(legend)) return textOf(legend);
     if ((el.type === 'radio') && group && byIds(group.getAttribute('aria-labelledby'))) return byIds(group.getAttribute('aria-labelledby'));
     if (isDatePart(el) && fieldLabel) return fieldLabel;
-    const own = [...(el.labels || [])].map(textOf).filter(Boolean).join(' ');
+    const own = [...(el.labels || [])].map(labelText).filter(Boolean).join(' ');
     if (own && el.type !== 'radio' && el.type !== 'checkbox') return own;
     const labelled = byIds(el.getAttribute('aria-labelledby'));
     if (labelled) return labelled;
     if (fieldLabel) return fieldLabel;
     if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+    const choice = el.type === 'radio' || el.type === 'checkbox';
+    const around = choice ? groupQuestion(el) : '';
+    if (around) return around;
     const wrap = el.closest('label');
-    if (wrap && textOf(wrap)) return textOf(wrap);
+    if (wrap && labelText(wrap)) return labelText(wrap);
     // A wrapper's label counts only when the wrapper holds this one field.
     for (let node = el.parentElement, depth = 0; node && depth < 3; node = node.parentElement, depth += 1) {
       if (node.querySelectorAll('input:not([type=hidden]), select, textarea, button[aria-haspopup]').length > 1) break;
@@ -85,6 +126,11 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const isPrompt = el => el.tagName === 'INPUT' && (el.getAttribute('data-automation-id') === 'searchBox'
     || !!el.closest('[data-automation-id="multiselectInputContainer"]') || (el.getAttribute('role') === 'combobox' && el.getAttribute('aria-autocomplete') === 'list'));
   const isListbox = el => el.tagName === 'BUTTON' && el.getAttribute('aria-haspopup') === 'listbox';
+  // Searchable dropdowns built with react-select (Greenhouse's new forms and
+  // many others): a combobox input inside a "...__control" box.
+  const comboControl = el => el.closest('.select__control, [class*="select__control"], [class*="-control"]');
+  const isCombo = el => el.tagName === 'INPUT' && el.getAttribute('role') === 'combobox' && !isPromptBox(el) && !!comboControl(el);
+  const isPromptBox = el => el.getAttribute('data-automation-id') === 'searchBox' || !!el.closest('[data-automation-id="multiselectInputContainer"]');
   const placeholderText = s => /^(select( one)?|choose( one)?|please select|--.*|)$/.test(norm(s));
 
   // ---------- Acting like a person ----------
@@ -117,6 +163,27 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       for (const name of ['keyCode', 'which']) if (event[name] !== 13) Object.defineProperty(event, name, { get: () => 13 });
       el.dispatchEvent(event);
     }
+  }
+
+  // A place typed into a box with a suggestion list (Lever's location, Google's
+  // place picker) only sticks once a suggestion is chosen: type it, nudge the
+  // search with a key, and pick the suggestion that starts with the city.
+  async function typeAndPick(el, value) {
+    el.focus({ preventScroll: true });
+    try { el.select(); } catch (error) { /* some inputs can't select */ }
+    if (!document.execCommand('insertText', false, value) || el.value !== value) {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    for (const type of ['keydown', 'keyup']) el.dispatchEvent(new KeyboardEvent(type, { key: 'a', bubbles: true }));
+    const city = norm(value.split(',')[0]);
+    const suggestion = await waitFor(() => [...document.querySelectorAll('.dropdown-location, .pac-item, [role="option"]')]
+      .find(option => visible(option) && !option.closest(chosenTag) && norm(textOf(option)).startsWith(city)), 4000);
+    if (suggestion) {
+      press(suggestion);
+      await sleep(300);
+    }
+    return !!el.value.trim();
   }
 
   // Typed with insertText so React, Workday, and other frameworks see real input.
@@ -248,6 +315,13 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return top;
   }
 
+  // "How did you hear about us?": an option that starts with the answer
+  // ("Campus Recruiting"), or a short one naming it, never a specific event
+  // somewhere else ("Singapore HP Campus Week").
+  const heardPick = (options, values, label = optionLabel) => best(options, values, label, 'prefix')
+    || best(options.filter(o => norm(label(o)).split(' ').length <= 3), values, label);
+  const pickFor = (options, want, label = optionLabel) => want.key === 'heard_about' ? heardPick(options, want.values, label) : best(options, want.values, label, want.strict);
+
   let current = null;     // the answer being filled, so the review can say where it came from
   let pageNow = '';
   // One review line per question on a page; a refill or a second press replaces it.
@@ -259,7 +333,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     handled.add(el);
     state.filled.push(norm(question).slice(0, 60));
     const shown = String(value || '').replace(/\s+/g, ' ').trim();
-    record({ page: pageNow, question: String(question).replace(/\*\s*$/, '').trim().slice(0, 160), value: shown.slice(0, 300), flag: flagFor(current, shown) });
+    record({ page: pageNow, question: String(question).replace(/[*✱]\s*$/, '').trim().slice(0, 160), value: shown.slice(0, 300), flag: flagFor(current, shown) });
     glow(el);
   }
 
@@ -283,7 +357,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const before = new Set(openOptions());
     press(button);
     const options = await freshOptions(button, before);
-    let match = options && (best(options, want.values, optionLabel, want.strict) || (options.length > 7 && await scrollFor(options, want.values, want.strict)));
+    let match = options && (pickFor(options, want) || (options.length > 7 && await scrollFor(options, want.values, want.strict)));
     if (match) {
       // A click normally chooses; some lists only take Enter on the option.
       for (const attempt of [() => press(match), () => press(match.querySelector('div, span') || match),
@@ -316,9 +390,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const before = new Set(openOptions());
     const choose = async options => {
       for (let depth = 0; options && depth < 3; depth += 1) {
-        let match = best(options, want.values, optionLabel, want.strict);
-        // Inside a category the user didn't name, any option there is relevant.
-        if (!match && want.browse && depth > 0) match = best(options, ['Other']) || options[0];
+        let match = pickFor(options, want);
+        // Inside a category the user didn't name, only a general option fits.
+        if (!match && want.browse && depth > 0) match = best(options, ['Other', 'General', 'United States', 'Online', 'Virtual'], optionLabel, 'prefix');
         if (!match) return false;
         const count = selectedPills(input).length, label = optionLabel(match), key = options.map(optionLabel).join('|');
         press(match);
@@ -357,9 +431,79 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return false;
   }
 
+  // A react-select dropdown opens from its arrow button (typing alone doesn't
+  // open it); its options are role="option" with ids built from the input's.
+  const comboValue = el => {
+    const control = comboControl(el);
+    const shown = control && control.querySelector('[class*="singleValue"], [class*="single-value"], [class*="multiValue"] [class*="label"], [class*="multi-value__label"]');
+    return shown ? textOf(shown) : '';
+  };
+  async function pickCombo(input, want, question) {
+    if (comboValue(input)) return false;
+    const control = comboControl(input);
+    const shell = control.parentElement && control.parentElement.parentElement || control;
+    // Its options carry its instance id ("react-select-2-option-0" or
+    // "react-select-question_123-option-0"), named in the input's aria links.
+    const links = [input.getAttribute('aria-controls'), input.getAttribute('aria-owns'), input.getAttribute('aria-describedby'), `react-select-${input.id}-listbox`].join(' ');
+    const instance = (links.match(/react-select-(.+?)-(listbox|placeholder|live-region)\b/) || [])[1];
+    const own = () => [...document.querySelectorAll('[role="option"], [class*="__option"]')].filter(o => shown(o) && !o.closest(chosenTag) && !/iti__/.test(o.className)
+      && !o.querySelector('[role="option"], [class*="__option"]') && (instance && o.id.startsWith('react-select-') ? o.id.startsWith(`react-select-${instance}-option`) : shell.contains(o) || !o.id.startsWith('react-select-')));
+    const open = async () => {
+      if (input.getAttribute('aria-expanded') === 'true' && own().length) return true;
+      const toggle = shell.querySelector('button[aria-label*="flyout" i], button[aria-label*="toggle" i], [class*="dropdown-indicator"], [class*="dropdownIndicator"], [class*="indicatorContainer"], [class*="indicator-container"]');
+      if (toggle) press(toggle);
+      if (!(await waitFor(() => input.getAttribute('aria-expanded') === 'true', 700))) {
+        input.focus();
+        press(control);
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true, cancelable: true }));
+      }
+      return !!(await waitFor(() => input.getAttribute('aria-expanded') === 'true' || own().length, 1500));
+    };
+    const settle = async previous => {
+      let last = '', same = 0;
+      return await waitFor(() => {
+        const options = own();
+        const key = options.map(optionLabel).join('|');
+        same = key && key === last && key !== previous ? same + 1 : 0;
+        last = key;
+        return same >= 1 ? options : null;
+      }, 3000);
+    };
+    const take = async options => {
+      const match = options && pickFor(options, want);
+      if (!match) return '';
+      const label = optionLabel(match);
+      press(match);
+      return (await waitFor(() => norm(comboValue(input)).includes(norm(label).slice(0, 20)) || !input.isConnected, 1200)) ? label : '';
+    };
+    if (!(await open())) return false;
+    // Short lists (Yes/No, months): read them as they are. Long ones: search.
+    let options = await settle(null);
+    let picked = await take(options);
+    for (const term of (want.search || want.values).filter(Boolean).slice(0, 3)) {
+      if (picked) break;
+      const before = (options || []).map(optionLabel).join('|');
+      input.focus();
+      if (!document.execCommand('insertText', false, term)) {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, term);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      options = await settle(before);
+      picked = await take(options);
+      if (!picked) {
+        input.select();
+        document.execCommand('delete');
+      }
+    }
+    if (input.getAttribute('aria-expanded') === 'true') escape(input);
+    if (!picked) return false;
+    note(input, question, picked);
+    return true;
+  }
+
   function pickSelect(select, variants, question, strict = false) {
     const options = [...select.options].filter(o => !placeholderText(o.textContent) && o.value !== '');
-    const match = best(options, variants, o => o.textContent, strict);
+    const match = current && current.key === 'heard_about' ? heardPick(options, variants, o => o.textContent) : best(options, variants, o => o.textContent, strict);
     if (!match) return false;
     select.value = match.value;
     select.dispatchEvent(new Event('input', { bubbles: true }));
@@ -385,8 +529,25 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   }
 
   // `fix` also corrects parts that hold a different date (Workday's resume reader).
-  function fillDate(el, formats, question, fix = false) {
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  async function fillDate(el, formats, question, fix = false) {
     if (!formats || !formats.year) return false;
+    // One part of a date ("Start date month", "End date year"), as the field asks for it.
+    const q = norm(String(question).replace(/^(work experience|education) \d+ /i, ''));
+    const part = /\bmonth$/.test(q) ? 'month' : /\byear$/.test(q) ? 'year' : /\bday$/.test(q) ? 'day' : '';
+    if (el.tagName === 'SELECT' || isCombo(el) || isListbox(el)) {
+      const month = MONTHS[Number(formats.month) - 1] || '';
+      const values = part === 'month' ? [month, month.slice(0, 3), formats.month, String(Number(formats.month))]
+        : part === 'year' ? [formats.year] : part === 'day' ? [formats.day, String(Number(formats.day))]
+        : [formats.mm_dd_yyyy, formats.mm_yyyy, formats.year];
+      return fillControl(el, question, { values, strict: true });
+    }
+    if (part && isText(el) && !el.value.trim()) {
+      const value = part === 'month' ? formats.month : part === 'year' ? formats.year : formats.day;
+      typeInto(el, value);
+      note(el, question, value);
+      return true;
+    }
     if (isDatePart(el)) {
       const parts = datePartsNear(el);
       let any = false;
@@ -400,10 +561,12 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       return any;
     }
     const type = (el.type || '').toLowerCase();
-    const shape = norm(el.placeholder || el.getAttribute('aria-label') || '');
+    // A format the question spells out ("Please answer in MM/YYYY format") wins.
+    const asked = (String(question).match(/\b(mm\/dd\/yyyy|mm\/yyyy|mm-yyyy|mm yyyy|month and year|month\/year)\b/i) || [])[1] || '';
+    const shape = norm(asked || el.placeholder || el.getAttribute('aria-label') || '');
     const value = type === 'date' ? formats.iso : type === 'month' ? formats.iso_month
       : /mm dd yyyy|mm\/dd\/yyyy|dd/.test(shape) ? formats.mm_dd_yyyy
-      : /mm yyyy|mm\/yyyy/.test(shape) ? formats.mm_yyyy
+      : /mm yyyy|mm\/yyyy|month and year|month\/year/.test(shape) ? formats.mm_yyyy
       : /^yyyy$|year/.test(shape) ? formats.year : formats.mm_dd_yyyy;
     if (type === 'date' || type === 'month') {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value);
@@ -431,26 +594,36 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     // Any other link field gets the personal site, or GitHub without one.
     ['website', /website|portfolio|personal (site|url|page)|^url$/, [url(p.website), url(p.github)]], ['first', /first name|given name|preferred name|^first$/, [parts[0]]],
     ['last', /last name|family name|surname|^last$/, [parts.length > 1 ? parts.slice(1).join(' ') : '']],
-    ['name', /full name|your name|legal name|^name$/, [p.name]], ['address', /address line 1|street address|address 1|^address$/, [p.address]],
+    ['name', /full name|your name|legal name|^name$/, [p.name]],
+    ['address', /address line 1|street address|address 1|^address$|^(mailing|home|current|permanent|residential) address( line 1)?$/, [p.address]],
+    // "Current location": city and state together.
+    ['location', /^(current )?location$|where are you (currently )?(located|based)|^city,? state$/, [[p.city, p.state].filter(Boolean).join(', ')]],
     ['city', /(^| )city( |$)|town/, [p.city]], ['state', /(^| )state( |$)|province|region/, p.state_options || [p.state], { strict: true }],
-    ['postal', /zip|postal code|postcode/, [p.postal_code]],
+    ['postal', /zip|postal code|postcode|^postal$/, [p.postal_code]],
     ['school', /school|university|college|institution/, schoolNames, { strict: true, search: schoolSearch(schoolNames) }],
-    ['field', /field of study|area of study|(^| )major( |$)|academic discipline/, school.field_options || [], { strict: true, search: [school.field] }],
-    ['degree', /degree/, [p.degree, ...(((plan.education || [])[0] || {}).degree_options || [])]],
+    ['field', /field of study|area of study|\bmajors?\b|academic discipline/, school.field_options || [], { strict: true, search: [school.field] }],
+    // The degree itself, not any question that mentions one ("credit hours toward your degree").
+    ['degree', /^(highest |type of |current )?degree( type| level| earned| obtained| pursuing| sought)?$|(what|which) degree|degree (type|level)|type of degree/, [p.degree, ...(((plan.education || [])[0] || {}).degree_options || [])]],
   ];
   // Other people's details, and second contacts ("Alternate Phone Number") the user has none of.
-  const otherPeople = /reference|emergency|supervisor|manager|guardian|parent|spouse|high school|extension|referr(al|er|ed) (name|email|by)|\b(alternate|alternative|secondary|additional|backup) (phone|email|contact|number)/;
+  const otherPeople = /reference|emergency|supervisor|manager|guardian|parent|spouse|high school|extension|\breferr(al|er|ed) (name|email|by)|\b(alternate|alternative|secondary|additional|backup) (phone|email|contact|number)/;
   // A start date at a past job ("Government Civilian Start Date") is not the user's to invent.
   const pastJob = /government|military|civilian|clearance|served|service|former|previous|prior/;
   const startDate = /(start|availability|available) date|when can you (start|begin)|earliest (start|date)|proposed start|date (you are )?available/;
   const graduationDate = /when (will|do) you (expect to )?graduate|graduation date|(expected|anticipated|projected) graduation|graduation (month|year|term)|date of graduation|completion date/;
-  const consent = /agree|certif|acknowledg|consent|terms|attest|privacy|i understand|authori[sz]e (us|the company|.* to contact)/;
+  const consent = /agree|certif|acknowledg|consent|terms|attest|privacy|i understand|authori[sz]e (us|the company|.* to contact)|process (my |your )?personal (information|data)|data processing/;
+  // Optional sign-ups that are never ticked, even with "agree to terms" on.
+  const marketing = /newsletter|marketing|promotion|sms|text message|texts|job alerts?|updates|subscribe|talent (community|network|pool)|future (opportunities|roles|openings)|other (roles|positions|opportunities)|contact me about/;
   const todayDate = /^(today'?s )?date$|^date signed$|^signature date$/;
   // Self-identification: the user's Profile answer, or the form's decline option.
   function disclosureFor(text) {
     const q = norm(text);
     const found = (plan.disclosures || []).find(d => new RegExp(d.pattern, 'i').test(q));
-    return found ? { values: found.options, source: 'disclosure', strict: 'prefix', declined: !!found.declined } : null;
+    if (!found) return null;
+    // "Ethnicity" is sometimes only "Hispanic or Latino / Not Hispanic or Latino".
+    const hispanic = found.key === 'eeo_race' ? (plan.disclosures || []).find(d => d.key === 'eeo_hispanic') : null;
+    const values = found.options.concat(hispanic && !hispanic.declined ? hispanic.options.filter(o => /hispanic/i.test(o)) : []);
+    return { values, source: 'disclosure', strict: 'prefix', declined: !!found.declined };
   }
   // Why a value deserves a second look in the review, if it does.
   function flagFor(want, value) {
@@ -459,6 +632,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (want.source === 'disclosure') return want.declined ? 'Chose the decline option for you' : 'Your self-identification answer from Profile';
     if (want.source === 'learned') return 'From an answer you gave on an earlier application';
     if (want.source === 'draft') return 'Draft by Apply Desk. Edit it in your own words';
+    if (want.source === 'terms') return 'Ticked for you. Read what you agreed to before you submit';
+    if (want.source === 'signature') return 'Signed with your name for you. Read what it certifies before you submit';
     if (want.source === 'neutral') return `No saved answer, so Apply Desk picked "${value}". Check it`;
     if (want.browse && value && norm(value) !== norm(want.values[0])) return `Closest option to your answer: ${want.values[0]}`;
     if (want.date && want.date === plan.start && /today/i.test(plan.start.source || '')) return "Today's date: the posting gives no start date";
@@ -473,12 +648,29 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return same / Math.max(x.size, y.size);
   };
 
+  // "Are you graduating between December 2027 and June 2028?" → "Yes"/"No"
+  // from the user's own graduation date.
+  function graduatingBetween(q) {
+    const grad = p.graduation_dates || {};
+    const found = q.match(/graduat\w* (?:between|from) ([a-z]+) (\d{4}) (?:and|to|through) ([a-z]+) (\d{4})/);
+    if (!found || !grad.year) return '';
+    const month = name => MONTHS.findIndex(m => m.toLowerCase().startsWith(name.slice(0, 3))) + 1;
+    const at = (y, m) => Number(y) * 12 + m;
+    const when = at(grad.year, Number(grad.month || 1));
+    if (!month(found[1]) || !month(found[3])) return '';
+    return when >= at(found[2], month(found[1])) && when <= at(found[4], month(found[3])) ? 'Yes' : 'No';
+  }
+
   // Returns {values, date} for a field, or null to leave it alone.
   function wanted(el, question) {
     const q = norm(question);
     if (!q) return null;
     const disclosure = disclosureFor(q);
     if (disclosure) return disclosure;
+    // A signature box, signed with the user's name only when they turned that on.
+    if (plan.agree_terms && p.name && isText(el) && /\b(e.?)?signature\b|sign (here|your (full )?name)|type your (full )?name/.test(q) && !/date/.test(q)) {
+      return { values: [p.name], source: 'signature' };
+    }
     if (never.test(q)) return null;
     if (el.tagName !== 'TEXTAREA' && startDate.test(q) && !pastJob.test(q)) return { date: plan.start, source: 'date' };
     if (el.tagName !== 'TEXTAREA' && todayDate.test(q) && plan.today) return { date: plan.today, source: 'date' };
@@ -486,6 +678,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const dated = p.graduation_dates || {};
       return el.tagName === 'SELECT' || isListbox(el) ? { values: [dated.year, p.graduation], source: 'date' } : { date: dated, source: 'date' };
     }
+    const window_ = graduatingBetween(q);
+    if (window_) return { values: [window_], source: 'answer' };
     // A standard question owns its question; when its answer is blank, only
     // something the user answered on an earlier form can fill it.
     let claimed = false;
@@ -506,10 +700,10 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     }
     if (otherPeople.test(q) || /\bwhy\b|describe|statement|cover letter|tell us|explain/.test(q)) return null;
     const hints = el.closest ? hintsOf(el) : q;
-    for (const [, pattern, values, how] of contact) {
+    for (const [field, pattern, values, how] of contact) {
       if (pattern.test(q) || pattern.test(hints)) {
         const usable = values.filter(Boolean);
-        return usable.length ? { ...how, values: usable, source: 'profile' } : null;
+        return usable.length ? { ...how, field, values: usable, source: 'profile' } : null;
       }
     }
     return null;
@@ -524,8 +718,14 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (!values.length) return false;
       if (el.tagName === 'SELECT') return pickSelect(el, values, question, want.strict);
       if (isListbox(el)) return await pickListbox(el, { ...want, values }, question);
+      if (isCombo(el)) return await pickCombo(el, { ...want, values }, question);
       if (isPrompt(el)) return selectedPills(el).length ? false : await pickPrompt(el, { ...want, values }, question);
       // Self-identification answers are picked from the form's options, never typed.
+      if (want.field === 'location' && isText(el) && !el.value.trim()) {
+        if (!(await typeAndPick(el, values[0]))) return false;
+        note(el, question, el.value);
+        return true;
+      }
       if ((isText(el) || (el.tagName === 'TEXTAREA' && want.source === 'draft')) && (!el.value.trim() || want.replace) && want.source !== 'disclosure') {
         typeInto(el, values[0]);
         note(el, question, values[0]);
@@ -538,8 +738,15 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   }
 
   // ---------- Work experience and education blocks ----------
+  // Hidden traps for bots ("honeypot", "leave this blank", a box moved off
+  // screen): filling one marks the application as spam, so they're never touched.
+  const isTrap = el => isText(el) && el.getAttribute('role') !== 'combobox' && (/honeypot|hp[-_]?field|bot[-_]?(trap|check)|leave (this|it) (field )?(blank|empty)|do not (fill|enter)/i
+    .test([el.name, el.id, el.className, el.getAttribute('aria-label'), el.placeholder, ...[...(el.labels || [])].map(textOf)].join(' '))
+    || (rect => rect.right + scrollX <= 0 || rect.bottom + scrollY <= 0 || rect.left + scrollX >= document.documentElement.scrollWidth + 500
+      || (rect.width <= 2 && rect.height <= 2))(el.getBoundingClientRect())
+    || el.getAttribute('tabindex') === '-1' && el.getAttribute('aria-hidden') === 'true');
   const controlsIn = root => [...root.querySelectorAll('input:not([type=hidden]):not([type=file]), select, textarea, button[aria-haspopup="listbox"]')]
-    .filter(el => visible(el) && !el.disabled && !el.readOnly);
+    .filter(el => visible(el) && !el.disabled && !el.readOnly && !isTrap(el));
 
   function sectionFor(pattern) {
     const heads = [...document.querySelectorAll('h1, h2, h3, h4, h5, legend, [role="heading"], [data-automation-id$="Header"]')]
@@ -555,13 +762,21 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   function blocksIn(section, firstField, secondField) {
     const blocks = [];
     for (const el of controlsIn(section)) {
-      if (!firstField.test(norm(questionOf(el)))) continue;
+      // An entry starts at a field you type or pick in, never at a Yes/No
+      // question that mentions a university ("...GPA at your university?").
+      if (el.type === 'radio' || el.type === 'checkbox' || !firstField.test(norm(questionOf(el)))) continue;
       let block = el.parentElement;
       while (block && block !== section && !controlsIn(block).some(other => other !== el && secondField.test(norm(questionOf(other))))) block = block.parentElement;
       if (block && !blocks.includes(block)) blocks.push(block);
     }
     return blocks;
   }
+
+  // Without a section heading, only a small group of entry fields with short
+  // labels ("School", "Degree", "Discipline") counts, never a long question
+  // that mentions a school ("Which school will you attend during the internship?").
+  const entryBlocks = (root, firstField, secondField) => blocksIn(root, firstField, secondField)
+    .filter(block => controlsIn(block).length <= 12 && controlsIn(block).some(el => firstField.test(norm(questionOf(el))) && norm(questionOf(el)).length <= 40));
 
   const addButton = section => [...section.querySelectorAll('button, [role="button"]')]
     .filter(visible).find(b => /^(\+\s*)?add( another)?\b/i.test(textOf(b) || b.getAttribute('aria-label') || ''));
@@ -570,23 +785,27 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (!entries || !entries.length) return;
     const first = kind === 'experience' ? /job title|position title|^title$|role title/ : /school|university|college|institution/;
     const second = kind === 'experience' ? /company|employer|organization/ : /degree|field of study|major/;
-    const section = sectionFor(kind === 'experience' ? /^(work )?experience|^employment( history)?|^work history/ : /^education/);
+    // Greenhouse shows its school fields with no "Education" heading: the page
+    // itself is the section when a school field sits beside a degree field.
+    const section = sectionFor(kind === 'experience' ? /^(work )?experience|^employment( history)?|^work history/ : /^education/)
+      || (kind === 'education' && entryBlocks(document.body, first, second).length ? document.body : null);
     if (!section) return;
-    let blocks = blocksIn(section, first, second);
+    const find = section === document.body ? entryBlocks : blocksIn;
+    let blocks = find(section, first, second);
     for (let guard = 0; blocks.length < entries.length && guard <= entries.length; guard += 1) {
       const add = addButton(section);
       if (!add) break;
       const before = blocks.length;
       press(add);
-      await waitFor(() => blocksIn(section, first, second).length > before, 3000);
-      blocks = blocksIn(section, first, second);
+      await waitFor(() => find(section, first, second).length > before, 3000);
+      blocks = find(section, first, second);
     }
     for (let i = 0; i < Math.min(blocks.length, entries.length); i += 1) {
       const entry = entries[i];
       for (const el of controlsIn(blocks[i])) {
         if (handled.has(el)) continue;
         const q = norm(questionOf(el));
-        const label = `${kind === 'experience' ? 'Work experience' : 'Education'} ${i + 1}: ${questionOf(el).replace(/\*\s*$/, '')}`;
+        const label = `${kind === 'experience' ? 'Work experience' : 'Education'} ${i + 1}: ${questionOf(el).replace(/[*✱]\s*$/, '')}`;
         let want = null;
         if (kind === 'experience') {
           if (el.type === 'checkbox') {
@@ -601,14 +820,19 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
             : /^to\b|^to$|end/.test(q) ? (entry.current ? null : { date: entry.end })
             : el.tagName === 'TEXTAREA' || /description|responsibilit|summary|duties/.test(q) ? { values: [entry.description] } : null;
         } else {
+          // Choices (Yes/No, "What degree are you pursuing?") go to the answers below.
+          if (el.type === 'radio' || el.type === 'checkbox') continue;
           const names = entry.school_options && entry.school_options.length ? entry.school_options : [entry.school];
-          want = /school|university|college|institution/.test(q) ? { values: names, strict: true, search: schoolSearch(names) }
+          // Dates first: "When did you begin your current degree program?" is a date, not a degree.
+          want = /when did you (begin|start)|(start|begin)(ning)? (date|month|year)|^from\b|^start/.test(q) ? { date: entry.start }
+            : /when (do|will) you (expect to )?(complete|graduate|finish)|^to\b|^end|graduat|expected|complet/.test(q) ? { date: entry.end }
+            : /school|university|college|institution/.test(q) ? { values: names, strict: true, search: schoolSearch(names) }
             : /degree/.test(q) ? { values: entry.degree_options.length ? entry.degree_options : [entry.degree] }
             : /field of study|major|discipline/.test(q) ? { values: entry.field_options && entry.field_options.length ? entry.field_options : [entry.field], strict: true, search: [entry.field] }
-            : /gpa|grade|overall result/.test(q) ? { values: [entry.gpa] }
-            : /^from|start/.test(q) ? { date: entry.start }
-            : /^to\b|^to$|end|graduat|expected/.test(q) ? { date: entry.end } : null;
+            : /gpa|grade|overall result/.test(q) ? { values: [entry.gpa] } : null;
         }
+        // Not one of the entry's own fields ("If you selected Other, please specify"): answered like any other question.
+        if (!want) continue;
         handled.add(el);
         if (want && (want.date ? want.date && want.date.year : want.values.some(Boolean))) {
           const isEmpty = el.tagName === 'SELECT' ? el.selectedIndex <= 0 : isListbox(el) ? placeholderText(textOf(el)) : !el.value;
@@ -620,7 +844,6 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
           if ((typed && clean(el.value) === clean(want.values[0])) || (want.date && isDatePart(el))) run.wrote[label] = true;
         }
       }
-      for (const el of controlsIn(blocks[i])) handled.add(el);
       state.blocks += 1;
     }
     // The reader also adds entries the resume doesn't list as jobs or schools (projects, awards).
@@ -629,9 +852,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const value = named ? answeredValue(named) : '';
       const question = `${kind === 'experience' ? 'Work experience' : 'Education'} ${i + 1}`;
       if (value) record({ page: pageNow, question, value, flag: "Not on your resume as a job or school. Delete it if Workday added it" });
-      for (const el of controlsIn(blocks[i])) handled.add(el);
+      // Its fields are an entry's, never something to fill from the profile.
+      for (const el of controlsIn(blocks[i])) if (el.type !== 'radio' && el.type !== 'checkbox') handled.add(el);
     }
-    for (const el of controlsIn(section)) handled.add(el);
   }
 
   // ---------- Skills ----------
@@ -729,6 +952,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   function answeredValue(el) {
     if (el.tagName === 'SELECT') return el.selectedIndex > 0 ? el.options[el.selectedIndex].textContent.trim() : '';
     if (isListbox(el)) return placeholderText(textOf(el)) ? '' : textOf(el);
+    if (isCombo(el)) return comboValue(el);
     if (isPrompt(el)) return selectedPills(el).join('; ');
     if (isText(el) && el.tagName !== 'TEXTAREA') return el.value;
     return '';
@@ -787,15 +1011,21 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     state.attached = true;
   }
 
+  // Required terms and certification boxes, when the user turned on "agree
+  // to required terms" in Profile. Optional sign-ups are never ticked.
+  function agreeTo(group, question) {
+    for (const box of group) {
+      const text = norm(`${question} ${choiceLabel(box)}`);
+      if (box.checked || marketing.test(text) || !(isRequired(box, question) || isRequired(box, choiceLabel(box)))) continue;
+      current = { source: 'terms' };
+      press(box);
+      note(box, question, choiceLabel(box) || 'Agreed');
+      current = null;
+    }
+  }
+
   // ---------- One page ----------
-  async function fillPage() {
-    handled.clear();
-    attachResume();
-    await fillBlocks('experience', plan.experience);
-    await fillBlocks('education', plan.education);
-    await fillSkills();
-    await addWebsite();
-    const all = controlsIn(document);
+  async function fillControls(all) {
     const radios = {};
     const boxes = {};
     for (const el of all) {
@@ -824,7 +1054,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     }
     for (const [question, group] of Object.entries(boxes)) {
       // A lone box is usually consent ("I agree…"); only groups are preferences.
-      if (group.length < 2 || consent.test(norm(question)) || group.some(box => consent.test(norm(choiceLabel(box))))) continue;
+      const isConsent = consent.test(norm(question)) || group.some(box => consent.test(norm(choiceLabel(box))));
+      if (isConsent && plan.agree_terms) agreeTo(group, question);
+      if (group.length < 2 || isConsent) continue;
       const checked = group.filter(box => box.checked);
       if (checked.length) { remember(question, checked.map(choiceLabel).join('; ')); continue; }
       // Self-identification boxes (disability forms) are often known only by their options.
@@ -850,6 +1082,61 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       }
       current = null;
     }
+  }
+
+  // Choices drawn as buttons (Ashby's Yes/No: <button aria-pressed>) or as
+  // custom radios that aren't inputs (role="radio"). The question is the text
+  // around the group with the choices taken out.
+  const choiceGroups = new Set();
+  async function fillButtonChoices() {
+    const groups = new Map();
+    for (const choice of document.querySelectorAll('button[aria-pressed], [role="radio"]:not(input)')) {
+      if (!visible(choice) || choice.disabled) continue;
+      const box = choice.closest('[role="radiogroup"]') || choice.parentElement;
+      groups.set(box, [...(groups.get(box) || []), choice]);
+    }
+    for (const [box, choices] of groups) {
+      if (choices.length < 2 || choiceGroups.has(box)) continue;
+      choiceGroups.add(box);
+      const chosen = choices.find(c => c.getAttribute('aria-pressed') === 'true' || c.getAttribute('aria-checked') === 'true');
+      let question = byIds(box.getAttribute('aria-labelledby'));
+      for (let node = box, depth = 0; !question && node && node !== document.body && depth < 5; node = node.parentElement, depth += 1) {
+        const text = textWithout(node, part => choices.includes(part));
+        if (text.length >= 3) question = text.slice(0, 300);
+      }
+      if (!question) continue;
+      if (chosen) { remember(question, textOf(chosen)); continue; }
+      const want = wanted({ tagName: 'BUTTON' }, question);
+      if (!want || !want.values) continue;
+      current = want;
+      const match = best(choices, want.values, textOf, want.strict);
+      if (match) {
+        press(match);
+        await sleep(150);
+        note(match, question, textOf(match));
+      }
+      current = null;
+    }
+  }
+
+  async function fillPage() {
+    handled.clear();
+    attachResume();
+    await fillBlocks('experience', plan.experience);
+    await fillBlocks('education', plan.education);
+    await fillSkills();
+    await addWebsite();
+    // Answers can reveal more questions (a disability answer shows its Name
+    // and Date), so look again after each pass.
+    const seen = new Set();
+    for (let pass = 0; pass < 3; pass += 1) {
+      const all = controlsIn(document).filter(el => !handled.has(el) && !seen.has(el));
+      if (!all.length) break;
+      all.forEach(el => seen.add(el));
+      await fillControls(all);
+      await fillButtonChoices();
+    }
+    await fillButtonChoices();
     try {
       for (const [question, answer] of Object.entries(JSON.parse(sessionStorage.getItem('applyDeskSeen') || '{}'))) remember(question, answer);
     } catch (error) { /* storage can be blocked */ }
@@ -876,10 +1163,18 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return [...known, ...clickable()].find(b => visible(b) && !b.disabled && stepButton.test(buttonText(b)) && !finalButton.test(buttonText(b))) || null;
   }
   const applyManuallyButton = () => clickable().find(b => b.getAttribute('data-automation-id') === 'applyManually' || /^apply manually$/i.test(buttonText(b))) || null;
+  // A job listing's own "Apply" (BambooHR, Rippling, Lever, Ashby): pressed only
+  // on the first step, on a page with no form that reads like a posting, so it
+  // can never be a final "Apply" that submits.
+  const openApplicationButton = () => {
+    if (!/responsibilit|qualification|requirements|about (the|this) (role|job|position)|what you('|’)ll do/i.test(textOf(document.body).slice(0, 20000))) return null;
+    return [...clickable(), ...document.querySelectorAll('a[href]')].filter(visible)
+      .find(b => /^(apply( now| for this (job|position|role))?|apply to (this )?(job|position|role)|i'?m interested|start (my |your )?application)$/i.test(buttonText(b))) || null;
+  };
   const signInPage = () => [...document.querySelectorAll('input[type=password]')].some(visible);
   const onReview = () => /^review\b/i.test(pageTitle());
   const loading = () => [...document.querySelectorAll('[data-automation-id="loadingSpinner"], [aria-busy="true"], [role="progressbar"]')].some(visible);
-  const isRequired = (el, question) => el.required || el.getAttribute('aria-required') === 'true' || /\*\s*$/.test(question || '');
+  const isRequired = (el, question) => el.required || el.getAttribute('aria-required') === 'true' || /[*✱]\s*$/.test(question || '');
 
   // An end date in a job marked "I currently work here" isn't needed.
   function currentJob(el) {
@@ -908,7 +1203,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       }
       if (empty) {
         seen.add(question);
-        needs.push({ question: question.replace(/\*\s*$/, '').trim().slice(0, 160), el });
+        needs.push({ question: question.replace(/[*✱]\s*$/, '').trim().slice(0, 160), el });
       }
     }
     return needs;
@@ -1153,7 +1448,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         if (onReview()) { showReview(); state.stop = 'review'; break; }
         if (step >= 20) { state.stop = 'limit'; break; }
         // Workday's start page: choose to fill it in here rather than upload-and-parse.
-        const manual = controlsIn(document).length < 2 && !continueButton() && applyManuallyButton();
+        const manual = controlsIn(document).length < 2 && !continueButton() && (applyManuallyButton() || (step === 0 && !run.pages.length && openApplicationButton()));
         if (manual) {
           const key = pageKey();
           press(manual);

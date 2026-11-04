@@ -40,6 +40,13 @@
         </div>
       </section>
 
+      <section class="panel" id="terms" data-reveal style="--i:7">
+        <header class="panel-head"><div><h2>Terms and signatures</h2><p class="sub">Most applications won't continue until you tick their terms or certification box. With this on, Apply Desk ticks the required ones and types your name where a form asks for a signature, then marks each in the review so you read it before you submit. It never ticks optional boxes like texts, newsletters, or job alerts.</p></div></header>
+        <div class="fields">
+          <label class="wide"><span>Agree to required terms and sign with my name</span><select name="agree_terms"><option value="">No, I'll tick them myself</option><option{{ ' selected' if profile.get('agree_terms') == 'Yes' }} value="Yes">Yes, and I'll review them before I submit</option></select></label>
+        </div>
+      </section>
+
       <section class="panel" id="self-id" data-reveal style="--i:7">
         <header class="panel-head"><div><h2>Voluntary self-identification</h2><p class="sub">Race, gender, veteran, and disability questions. Apply Desk picks the form's "I don't wish to answer" option unless you choose an answer here. On disability forms it also fills your name and today's date.</p></div></header>
         <div class="fields">

@@ -25,9 +25,9 @@ STANDARD_QUESTIONS = [
     {"key": "us_citizen", "label": "U.S. citizen", "default": "",
      "pattern": r"are you (a |an )?(u\.? ?s\.?|united states) citizen|citizenship status|^(u\.? ?s\.? |united states )?citizen(ship)?$"},
     {"key": "authorized_us", "label": "Authorized to work in the U.S.", "default": "",
-     "pattern": r"authori[sz]ed to work|eligib\w* (to work|for employment)|right to work|legally (able|permitted|eligible) to work|work authori[sz]ation"},
+     "pattern": r"^(?!.*\b(uk|u\.k\.|united kingdom|britain|england|canada|canadian|europe|european|eu|eea|india|australia|germany|france|ireland|singapore|japan|china|mexico|netherlands|israel|switzerland|poland|spain|italy|brazil|korea)\b).*(?:authori[sz]ed to work|eligib\w* (to work|for employment)|right to work|legally (able|permitted|eligible) to work|work authori[sz]ation)"},
     {"key": "needs_sponsorship", "label": "Will need visa sponsorship", "default": "",
-     "pattern": r"sponsor"},
+     "pattern": r"^(?!.*\b(uk|u\.k\.|united kingdom|britain|england|canada|canadian|europe|european|eu|eea|india|australia|germany|france|ireland|singapore|japan|china|mexico|netherlands|israel|switzerland|poland|spain|italy|brazil|korea)\b).*sponsor"},
     # Having taken one, not being willing to ("willing to undergo a polygraph" is left for the user).
     {"key": "polygraph", "label": "Ever taken a polygraph", "default": "",
      "pattern": r"(have you|had|taken|passed|completed|current|active|hold|possess)[^.]{0,40}polygraph|polygraph (status|type|level|completed|date|history)"},
@@ -44,11 +44,11 @@ STANDARD_QUESTIONS = [
     {"key": "heard_about", "label": "How you heard about roles", "default": "",
      "pattern": r"how did you (hear|learn|find)|hear about (us|this)|where did you (hear|find|learn)|referral source|^source$|candidate source"},
     {"key": "previously_employed", "label": "Previously worked for the employer", "default": "",
-     "pattern": r"(previously|ever|formerly) (worked|been employed|employed)|former employee|worked (for|at) (this|our|the) (organization|company)|current or former (employee|intern)|(currently|presently) (employed|working) (by|for|at|with)"},
+     "pattern": r"^(?!.*\bapplied\b).*((previously|ever|formerly) (worked|interned|been employed|employed)|former employee)|worked (for|at) (this|our|the) (organization|company)|current or former (employee|intern)|(currently|presently) (employed|working) (by|for|at|with)"},
     {"key": "currently_employed", "label": "Currently employed", "default": "",
      "pattern": r"^(are you )?(currently|presently) (employed|working)$|^(current )?employment status$"},
     {"key": "current_employer", "label": "Current employer", "default": "",
-     "pattern": r"current (employer|company)( name)?|who is your (current )?employer|where do you (currently )?work"},
+     "pattern": r"^(?!.*(notice|reason|leav|permission|contact|aware|know)).*(current (employer|company)( name)?|who is your (current )?employer|where do you (currently )?work)"},
     {"key": "current_title", "label": "Current job title", "default": "", "pattern": r"current (job )?title|current (position|role)( title)?$"},
     {"key": "other_employment", "label": "Other or outside employment", "default": "",
      "pattern": r"(other|outside|additional|secondary) (employment|jobs?|work|business)|second job|moonlight|conflicts? of interest"},
@@ -62,12 +62,12 @@ STANDARD_QUESTIONS = [
      "pattern": r"currently (working towards?|pursuing|enrolled|attending|a student)|are you (a )?(current )?(college |university )?student"},
     {"key": "degree_recent", "label": "Earned a degree in the last 2 years", "default": "",
      "pattern": r"(obtain|obtained|earn|earned|receive|received|complete|completed|graduate|graduated)( this| your| a)?( degree)? (with)?in the (last|past) \d+ (months|years)|recent graduate"},
-    {"key": "gpa", "label": "GPA", "default": "", "pattern": r"\bgpa\b|grade point|overall result"},
+    {"key": "gpa", "label": "GPA", "default": "", "pattern": r"^(?!.*comment).*(\bgpa\b|grade point|overall result)"},
     {"key": "over_18", "label": "18 or older", "default": "", "pattern": r"(18|eighteen) (years|or older)|at least 18|over (the age of )?18"},
     {"key": "relatives", "label": "Relatives employed there", "default": "", "pattern": r"relative|family members? (currently )?employed"},
-    {"key": "relocate", "label": "Willing to relocate", "default": "", "pattern": r"relocat"},
     {"key": "location_preference", "label": "Work locations you'd take", "default": "",
      "pattern": r"location preference|preferred (work )?locations?|(which|what) (of (our|these|the following) )?(locations?|offices?|sites?)|where would you (like|prefer|want) to (work|be located|be based)|indicate your location|desired (work )?locations?"},
+    {"key": "relocate", "label": "Willing to relocate", "default": "", "pattern": r"relocat"},
     {"key": "work_onsite", "label": "Can work on-site or hybrid", "default": "",
      "pattern": r"(able|willing|comfortable) to (work|commute|report|be)[^.]{0,40}(on.?site|in.?person|in the office|hybrid|office)|work (on.?site|in.?person|hybrid)( schedule| basis)?\b"},
 ]
@@ -79,7 +79,8 @@ STANDARD_KEYS = [q["key"] for q in STANDARD_QUESTIONS]
 DECLINE = ["I do not wish to answer", "I don't wish to answer", "I do not want to answer", "I don't want to answer",
            "I do not wish to self-identify", "I don't wish to self-identify", "Decline to self-identify", "Decline to self identify",
            "Decline to answer", "Decline to state", "I choose not to self-identify", "I choose not to disclose", "Prefer not to say",
-           "Prefer not to answer", "Prefer not to disclose", "Not declared", "Not specified", "Decline"]
+           "Prefer not to answer", "Prefer not to disclose", "Not declared", "Not specified", "I decline to self-identify",
+           "I decline to answer", "I decline", "Decline"]
 DISCLOSURE_QUESTIONS = [
     {"key": "eeo_hispanic", "label": "Hispanic or Latino", "choices": ["Yes", "No"], "pattern": r"hispanic|latin[oax]"},
     {"key": "eeo_race", "label": "Race or ethnicity",
@@ -200,6 +201,34 @@ def standard_answers(profile: dict) -> list[dict]:
     return out
 
 
+# Questions whose answer follows from another Profile answer, so there's
+# nothing more to ask: a U.S. citizen is a "U.S. person" under export rules
+# and enters "N/A" where only non-citizens list their countries; a student
+# in school now can't start a job within a few weeks. They come before the
+# standard questions so they own their questions.
+FOLLOW_UPS = [
+    # Apply Desk never picks "Other" for these, so its "please specify" is N/A.
+    ("other_followup", r"^if (you )?(selected|answered|chose|checked|picked)? ?.{0,12}\bother\b.{0,60}(specify|explain|describe|list)", "", "", "N/A", ["N/A", "Not applicable"]),
+    ("citizenship_followup", r"if you (answered|selected|chose|checked) .{0,40}(no|yes|other|protected individual).{0,160}(countr|citizen|national|status|specify|explain)",
+     "us_citizen", "Yes", "N/A", ["N/A", "Not applicable"]),
+    ("sponsorship_followup", r"^if (yes|so)\b.{0,60}sponsor|type of (visa )?sponsorship", "needs_sponsorship", "No", "N/A", ["N/A", "Not applicable", "None"]),
+    ("export_control", r"export control|\bu\.? ?s\.? person\b|\bitar\b|\bear\b.{0,20}regulat|lawful permanent resident|protected individual",
+     "us_citizen", "Yes", "Yes", ["Yes", "A citizen of the U.S.", "U.S. Citizen", "US Citizen", "Citizen", "U.S. person"]),
+    ("citizenship_country", r"countr(y|ies) of (current )?citizenship|citizenship countr|(which|what) countr(y|ies) .{0,30}(citizen|national)",
+     "us_citizen", "Yes", "United States of America", ["United States of America", "United States", "USA", "US"]),
+    ("start_soon", r"start within \d+ ?(days?|weeks?)|(able|available) to start (immediately|right away|now|asap)|immediate(ly)? (start|availab)",
+     "currently_student", "Yes", "No", ["No"]),
+]
+
+
+def follow_up_answers(profile: dict) -> list[dict]:
+    out = []
+    for key, pattern, source, when, answer, options in FOLLOW_UPS:
+        if not source or (profile.get(source) or "").strip().lower() == when.lower():
+            out.append({"key": key, "pattern": pattern, "answer": answer, "options": options})
+    return out
+
+
 def normalize_question(text: str) -> str:
     text = re.sub(r"[*:?()\[\]]", " ", (text or "").lower())
     text = re.sub(r"\b(required|optional|select one)\b", " ", text)
@@ -258,6 +287,24 @@ ENTITY_LABEL = r"^corp\b|corporate office|headquarters|\bhq\b|business unit|\bdi
 SITE_WORDS = r"\b(external|internal|career|careers|campus|site|jobs?|university|students?|early|global|us|usa|en)\b"
 
 
+INTRO_SKIP = {"at least", "at the", "at this", "at our", "at that", "at times", "at all", "at any", "at a", "at an", "at minimum", "at home", "at work", "at scale"}
+
+
+def company_from_intro(text: str) -> str:
+    """The company a posting names when it introduces itself: "At RTX, we...",
+    "At HP IQ, our team..." (Workday listings often have no company field)."""
+    for found in re.finditer(r"(?:^|[\n.!?]\s*)At ([A-Z][A-Za-z0-9&.'-]*(?: [A-Z][A-Za-z0-9&.'-]*){0,3}),\s", (text or "")[:4000]):
+        name = found.group(1).strip(" .")
+        if f"at {name.split()[0].lower()}" not in INTRO_SKIP and len(re.findall(re.escape(name), text)) >= 2:
+            return name
+    # "HP IQ's AI Machine Learning team is building...", opening a paragraph.
+    for found in re.finditer(r"(?:^|\n)\s*([A-Z][A-Za-z0-9&.-]*(?: [A-Z][A-Za-z0-9&.-]*){0,3})['’]s ", (text or "")[:4000]):
+        name = found.group(1).strip(" .")
+        if name.split()[0].lower() not in {"the", "our", "this", "your", "we", "it", "that", "today"} and len(re.findall(re.escape(name), text)) >= 3:
+            return name
+    return ""
+
+
 def company_name(raw: str, url: str, text: str) -> str:
     """The name people know a company by. Workday reads it from a legal
     entity: "00100 LEIDOS, INC." → "Leidos", "1000 KLA Corporation" → "KLA",
@@ -279,7 +326,7 @@ def company_name(raw: str, url: str, text: str) -> str:
             letters = re.sub(r"[^a-z0-9]", "", slug)
             if len(letters) >= 3 and re.search(r"[\s\-.&']?".join(map(re.escape, letters)), text or "", re.I):
                 return proper_name(slug, text)
-        return " ".join(word.capitalize() for word in re.split(r"[\s_-]+", site) if word) or name or raw
+        return company_from_intro(text) or name
     # "LEIDOS" as the posting writes it: "Leidos".
     if name.isupper() and len(name) > 4:
         found = re.search(re.escape(name), text or "", re.I)
@@ -308,8 +355,13 @@ def identify_role(data: dict, description: str) -> tuple[str, str]:
     if not company and signals["site_name"] and not re.search(r"greenhouse|lever|workday|ashby|linkedin|indeed", signals["site_name"], re.I):
         company = signals["site_name"]
     if not company:
+        company = company_from_intro(text)
+    if not company:
         company = proper_name(company_from_host(url), text)
     company = company_name(company, url, text)
+    # A careers-site slug ("Externalcareersite", "Globalhr") the posting never uses isn't a name.
+    if company and "myworkdayjobs.com" in url and company.lower() not in text.lower():
+        company = company_from_intro(text) or company
 
     title = ""
     workday = re.search(r"^\s*(.{3,120}?) page is loaded\s*$", text, re.MULTILINE)
@@ -442,6 +494,12 @@ def education_entries(sections, profile: dict) -> list[dict]:
             out[0]["end"] = out[0]["end"] or graduation
         else:
             out.append({"school": profile.get("school", ""), "location": "", "degree": profile.get("degree", ""), "start": {}, "end": graduation})
+    # No start date on the resume: the fall they started, from their year in
+    # school (a first-year student in November 2026 started in August 2026).
+    years_in = {"freshman": 0, "sophomore": 1, "junior": 2, "senior": 3}.get((profile.get("class_year") or "").strip().lower())
+    if out and not out[0]["start"] and years_in is not None:
+        today = date.today()
+        out[0]["start"] = date_formats(((today.year if today.month >= 8 else today.year - 1) - years_in, 8, None))
     for item in out:
         item["school_options"] = school_options(item["school"])
         item["degree_options"] = degree_options(item["degree"])
@@ -538,8 +596,9 @@ def state_options(state: str) -> list[str]:
 # Readable names for tailoring.THEMES, in the same order.
 THEME_NAMES = ["data", "AI", "automation", "web interfaces", "backend systems", "cloud infrastructure", "embedded systems", "mobile apps"]
 DRAFT_QUESTIONS = [
+    ("availability", r"dates? of (internship |co.?op )?availability|availability dates|(start|end) dates? .{0,30}availab|availab\w* .{0,40}(start|end) dates?|when (are|will) you (be )?available"),
     ("plans", r"plans? (after|following|post) ?graduat|after (you )?graduat|career (goals|plans|aspirations)|where do you see yourself|long.term goals|what are your (career )?goals"),
-    ("why", r"\bwhy\b.{0,60}(interest|want|work|join|apply|choose|chose|role|position|internship|company)|what (interests|excites|draws) you|why are you interested"),
+    ("why", r"\bwhy\b.{0,60}(interest|want|work|join|apply|choose|chose|role|position|internship|company)|(what|that|which) (interests|interested|excites|excited|draws|drew|attracts|attracted|motivates|motivated) you|why are you interested"),
 ]
 
 
@@ -560,7 +619,19 @@ def drafts(profile: dict, education: list[dict], experience: list[dict], skills:
     plans = (f"After I graduate{f' from {school}' if school else ''}{f' in {graduation}' if graduation else ''} with a degree in {field}, "
              f"I plan to work full time as a software engineer{f', focusing on {_join(focus)}' if focus else ''}. "
              "Until then, I want to keep building real software through internships like this one.")
-    out = [{"key": "plans", "pattern": DRAFT_QUESTIONS[0][1], "text": plans}]
+    patterns = dict(DRAFT_QUESTIONS)
+    out = [{"key": "plans", "pattern": patterns["plans"], "text": plans}]
+    # Availability: the posting's own program dates, or the usual summer
+    # break when it only names a summer term.
+    dates = re.search(r"([A-Z][a-z]{2,8}\.? \d{1,2}(?:st|nd|rd|th)?,? 20\d{2})\s*(?:-|–|—|to|through)\s*([A-Z][a-z]{2,8}\.? \d{1,2}(?:st|nd|rd|th)?,? 20\d{2})", posting or "")
+    term = listing_facts("", posting or "", "")["term"]
+    if dates:
+        out.append({"key": "availability", "pattern": patterns["availability"],
+                    "text": f"I'm available for the full program, {dates.group(1)} – {dates.group(2)}."})
+    elif term.startswith("Summer"):
+        year = term.split()[1]
+        out.append({"key": "availability", "pattern": patterns["availability"],
+                    "text": f"I'm available from mid-May {year} through mid-August {year}, after my spring semester ends."})
     if role and role.get("company"):
         title, company = role.get("title") or "this", role["company"]
         why = (f"I'm a {field} student{f' at {school}' if school else ''}, and the {title} role at {company} stands out to me"
@@ -569,7 +640,7 @@ def drafts(profile: dict, education: list[dict], experience: list[dict], skills:
         if job and job.get("title") and job.get("company"):
             doing = f"I'm currently a {job['title']} at {job['company']}" if job.get("current") else f"I've worked as a {job['title']} at {job['company']}"
             why += f" {doing}{f', working with {_join(skills[:3])}' if skills else ''}, and I'd like to bring that experience to {company}."
-        out.append({"key": "why", "pattern": DRAFT_QUESTIONS[1][1], "text": why})
+        out.append({"key": "why", "pattern": patterns["why"], "text": why})
     return out
 
 
@@ -581,6 +652,8 @@ LISTING_QUESTIONS = [
     ("listing_position", r"(which|what) (position|job|role|opening)s? (are you )?(applying|interested)|position (title )?(you are |you're )?applying for|(job|position) (title )?applied for", "title"),
     ("listing_job_id", r"(job|requisition|req|posting) (id|number|#|no)|requisition", "job_id"),
     ("listing_term", r"(which|what) (term|season|semester|session)|(internship|co.?op) (term|session|period|season)|term (are you )?(applying|available|interested)", "term"),
+    # "Are you interested in an Intern position or a Co-op position?", not "...during the internship or co-op?"
+    ("listing_kind", r"(interested in|prefer|applying (for|to)|looking for|seeking|which|what type of).{0,30}\b(intern|co.?op)\w*.{0,50}\bor\b.{0,20}\b(co.?op|intern|full.?time|part.?time)", "kind"),
 ]
 
 
@@ -598,7 +671,12 @@ def listing_facts(title: str, description: str, url: str) -> dict:
             locations.append(place)
     if re.search(r"\bremote\b", text, re.I):
         locations.append("Remote")
-    return {"title": title or "", "term": f"{term.group(1).title()} {term.group(2)}" if term else "",
+    kind = "Co-op" if re.search(r"\bco.?op\b", title or "", re.I) else "Intern" if re.search(r"\bintern", title or "", re.I) else ""
+    if not term and kind == "Intern":
+        # An internship that names no term is a summer one: the coming summer.
+        today = date.today()
+        term = re.match(r"(summer)\s*(\d{4})", f"summer {today.year + (1 if today.month >= 6 else 0)}", re.I)
+    return {"title": title or "", "kind": kind, "term": f"{term.group(1).title()} {term.group(2)}" if term else "",
             "job_id": job_id.group(1) if job_id else "", "locations": locations[:4]}
 
 
