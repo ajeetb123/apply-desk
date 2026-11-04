@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -132,6 +133,7 @@ def init_db():
         suffix = f", {city}, {state}" if city and state else ""
         if suffix and address.lower().endswith(suffix.lower()):
             conn.execute("UPDATE profile SET value=? WHERE key='address'", (address[:-len(suffix)].strip(),))
+    merge_duplicates()
 
 
 def refresh_pdf_resume():
@@ -955,6 +957,78 @@ def safe_http_url(value: str) -> str:
     return ""
 
 
+# A fill run's record and a resume saved as a PDF are different kinds of
+# record; each role keeps the latest of each.
+FILL_RECORD = "(run != '' OR attached = 1 OR filled != '')"
+
+
+def find_role(conn, role: dict):
+    """The saved role (id, url) for this posting, if it was saved before."""
+    for row in conn.execute("SELECT id, url, title, company, description FROM jobs ORDER BY saved DESC, id DESC"):
+        if applying.same_posting(role, dict(row)):
+            return row
+    return None
+
+
+def unique_review(items: list[dict]) -> list[dict]:
+    """One line per question on a page, the latest answer winning: a second
+    press refills the page, and a redo adds to what the first run filled."""
+    latest = {}
+    for item in items:
+        latest[(item.get("page"), item.get("question"))] = item
+    return list(latest.values())
+
+
+def fields_filled(review: list[dict]) -> str:
+    return f"{len(review)} field{'s' if len(review) != 1 else ''}"
+
+
+def merge_duplicates():
+    """Earlier versions saved a posting again when its URL was written another
+    way, and every redo of an application as a new record. Merge them into one
+    role (the latest scan) and one record of each kind per role, keeping a copy
+    of the data from before the first merge."""
+    with db() as conn:
+        jobs = [dict(row) for row in conn.execute("SELECT id, url, title, company, description FROM jobs ORDER BY saved DESC, id DESC")]
+        kept, moves = [], []
+        for job in jobs:
+            same = next((other for other in kept if applying.same_posting(job, other)), None)
+            if same:
+                moves.append((job["id"], same["id"]))
+                same["url"] = applying.better_url(same["url"], job["url"])
+            else:
+                kept.append(job)
+        records = conn.execute(f"SELECT id, job_id, {FILL_RECORD} AS fill, review FROM applications ORDER BY id DESC").fetchall()
+        target = dict(moves)
+        latest, stale, reviews, repeated = {}, [], {}, False
+        for record in records:
+            key = (target.get(record["job_id"], record["job_id"]), record["fill"])
+            review = json.loads(record["review"] or "[]")
+            if key in latest:
+                stale.append(record["id"])
+                reviews[latest[key]] = review + reviews[latest[key]]  # older runs' answers first
+            else:
+                latest[key] = record["id"]
+                reviews[record["id"]] = review
+            repeated = repeated or len(unique_review(review)) != len(review)
+    if not moves and not stale and not repeated:
+        return
+    backup = INSTANCE / "resume_tailor.before-merge.sqlite3"
+    if not backup.exists():
+        shutil.copy2(DB, backup)
+    with db() as conn:
+        for old, new in moves:
+            conn.execute("UPDATE applications SET job_id=? WHERE job_id=?", (new, old))
+            conn.execute("DELETE FROM jobs WHERE id=?", (old,))
+        for job in kept:
+            conn.execute("UPDATE jobs SET url=? WHERE id=? AND url!=?", (job["url"], job["id"], job["url"]))
+        conn.executemany("DELETE FROM applications WHERE id=?", [(record_id,) for record_id in stale])
+        for record_id, review in reviews.items():
+            if review and record_id not in stale:
+                merged = unique_review(review)
+                conn.execute("UPDATE applications SET review=?, filled=? WHERE id=?", (json.dumps(merged), fields_filled(merged), record_id))
+
+
 def campaign_options(p=None):
     return [x.strip() for x in re.split(r"[,;\n]", (p or profile()).get("role_campaigns", "")) if x.strip()]
 
@@ -1016,9 +1090,17 @@ def home():
             wave = request.form.get("wave", "").strip()[:80]
             sector = request.form.get("sector", "").strip()[:80]
             funding_stage = request.form.get("funding_stage", "").strip()[:80]
+            url = safe_http_url(request.form.get("url", ""))
+            values = (company, title, url, description, datetime.now().isoformat(timespec="minutes"), wave, sector, funding_stage)
             with db() as conn:
-                cursor = conn.execute("INSERT INTO jobs(company,title,url,description,saved,wave,sector,funding_stage) VALUES(?,?,?,?,?,?,?,?)", (company, title, safe_http_url(request.form.get("url", "")), description, datetime.now().isoformat(timespec="minutes"), wave, sector, funding_stage))
-                job_id = cursor.lastrowid
+                # A posting saved before is updated, not added again.
+                same = find_role(conn, {"url": url, "title": title, "description": description})
+                if same:
+                    job_id = same["id"]
+                    conn.execute("UPDATE jobs SET company=?,title=?,url=?,description=?,saved=?,wave=?,sector=?,funding_stage=? WHERE id=?",
+                                 (company, title, applying.better_url(same["url"], url), *values[3:], job_id))
+                else:
+                    job_id = conn.execute("INSERT INTO jobs(company,title,url,description,saved,wave,sector,funding_stage) VALUES(?,?,?,?,?,?,?,?)", values).lastrowid
             log_activity("Role saved", f"Added {title or 'role'} at {company or 'company not set'}")
             return redirect(url_for("job", job_id=job_id))
     p = profile()
@@ -1184,10 +1266,12 @@ def api_evaluate():
     funding_stage = str(data.get("funding_stage", ""))[:80].strip()
     saved = datetime.now().isoformat(timespec="minutes")
     with db() as conn:
-        existing = conn.execute("SELECT id FROM jobs WHERE url=? AND url!=''", (url,)).fetchone() if url else None
+        # The same posting under another URL (Workday writes one several ways) is the same role.
+        existing = find_role(conn, {"url": url, "title": title, "description": description})
         if existing:
             saved_job_id = existing["id"]
-            conn.execute("UPDATE jobs SET company=?,title=?,description=?,saved=?,wave=?,sector=?,funding_stage=? WHERE id=?", (company, title, description, saved, wave, sector, funding_stage, saved_job_id))
+            conn.execute("UPDATE jobs SET company=?,title=?,url=?,description=?,saved=?,wave=?,sector=?,funding_stage=? WHERE id=?",
+                         (company, title, applying.better_url(existing["url"], url), description, saved, wave, sector, funding_stage, saved_job_id))
         else:
             cursor = conn.execute("INSERT INTO jobs(company,title,url,description,saved,wave,sector,funding_stage) VALUES(?,?,?,?,?,?,?,?)", (company, title, url, description, saved, wave, sector, funding_stage))
             saved_job_id = cursor.lastrowid
@@ -1286,9 +1370,9 @@ def api_save_application():
     tuned = tune_resume(resume["text"], row["description"], row["title"] or "")
     attached = bool(data.get("attached"))
     run = str(data.get("run") or "")[:40]
-    review = [{key: str(item.get(key) or "")[:300] for key in ("page", "question", "value", "flag")}
-              for item in (data.get("review") if isinstance(data.get("review"), list) else [])[:200] if isinstance(item, dict)]
-    filled = f"{len(review)} field{'s' if len(review) != 1 else ''}" if review else ", ".join(str(field) for field in (data.get("fields") or [])[:30])
+    review = unique_review([{key: str(item.get(key) or "")[:300] for key in ("page", "question", "value", "flag")}
+                            for item in (data.get("review") if isinstance(data.get("review"), list) else [])[:200] if isinstance(item, dict)])
+    filled = fields_filled(review) if review else ", ".join(str(field) for field in (data.get("fields") or [])[:30])
     try:
         pages = max(1, min(int(data.get("pages") or 1), 9))
     except (TypeError, ValueError):
@@ -1300,6 +1384,18 @@ def api_save_application():
             conn.execute("UPDATE applications SET attached=?, filled=?, review=?, url=? WHERE id=?",
                          (int(attached or existing["attached"]), filled, json.dumps(review), safe_http_url(data.get("url", "")), existing["id"]))
             return {"id": existing["id"], "filename": resume_pdf_name(), "company": row["company"] or "", "title": row["title"] or ""}
+        # Redoing an application (or saving the PDF again) replaces the role's
+        # earlier record of the same kind instead of adding another.
+        kind = FILL_RECORD if run or attached or filled else f"NOT {FILL_RECORD}"
+        earlier = conn.execute(f"SELECT id, review FROM applications WHERE job_id=? AND {kind} ORDER BY id DESC", (job_id,)).fetchone()
+        if earlier:
+            if review:
+                review = unique_review(json.loads(earlier["review"] or "[]") + review)
+                filled = fields_filled(review)
+            conn.execute("UPDATE applications SET created=?, url=?, attached=?, filled=?, source=?, extension=?, pdf=?, pages=?, changes=?, run=?, review=? WHERE id=?",
+                         (datetime.now().isoformat(timespec="minutes"), safe_http_url(data.get("url", "")), int(attached), filled,
+                          tuned["text"], tuned["extension"], pdf, pages, json.dumps(tuned["changes"]), run, json.dumps(review), earlier["id"]))
+            return {"id": earlier["id"], "filename": resume_pdf_name(), "company": row["company"] or "", "title": row["title"] or ""}
         cursor = conn.execute("INSERT INTO applications(job_id,created,url,attached,filled,source,extension,pdf,pages,changes,run,review) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                               (job_id, datetime.now().isoformat(timespec="minutes"), safe_http_url(data.get("url", "")), int(attached), filled,
                                tuned["text"], tuned["extension"], pdf, pages, json.dumps(tuned["changes"]), run, json.dumps(review)))
@@ -1325,10 +1421,18 @@ def download_application(job_id, application_id, ext):
 
 @app.get("/api/role-for-url")
 def api_role_for_url():
-    """The saved role an application page belongs to, judged by its URL."""
+    """The saved role an application page belongs to: a role the user just
+    looked at (`hints`, best first) when the page can belong to it, otherwise
+    the role whose URL matches."""
     url = safe_http_url(request.args.get("url", ""))
     if not url:
         return {"job_id": None}
+    hints = [int(part) for part in request.args.get("hints", "").split(",") if part.strip().isdigit()]
+    with db() as conn:
+        for hint in hints:
+            row = conn.execute("SELECT id, url, title, company FROM jobs WHERE id=?", (hint,)).fetchone()
+            if row and applying.page_belongs(dict(row), url):
+                return {"job_id": row["id"], "title": row["title"]}
     target = urlparse(url)
     target_tokens = set(re.findall(r"[A-Za-z0-9_-]{5,}", target.path + " " + target.query))
     best = (0, "", None)
@@ -1339,7 +1443,7 @@ def api_role_for_url():
         if listing.netloc.lower() != target.netloc.lower():
             continue
         path = listing.path.rstrip("/")
-        if url == row["url"] or (len(path) > 1 and target.path.startswith(path)):
+        if url == row["url"] or applying.posting_key(url) == applying.posting_key(row["url"]) or (len(path) > 1 and target.path.startswith(path)):
             score = 3
         elif {t for t in re.findall(r"[A-Za-z0-9_-]{5,}", listing.path + " " + listing.query) if any(c.isdigit() for c in t)} & target_tokens:
             score = 2

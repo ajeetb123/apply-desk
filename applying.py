@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, unquote, urlparse
 
 import tailoring
 
@@ -92,6 +92,8 @@ DISCLOSURE_QUESTIONS = [
 ]
 DISCLOSURE_KEYS = [q["key"] for q in DISCLOSURE_QUESTIONS]
 DISCLOSURE_VARIANTS = {
+    # Only the Hispanic or Latino question has Yes/No answers.
+    "No": ["No", "Not Hispanic or Latino", "No, not Hispanic or Latino"], "Yes": ["Yes", "Hispanic or Latino", "Yes, Hispanic or Latino"],
     "Male": ["Male", "Man"], "Female": ["Female", "Woman"], "Non-binary": ["Non-binary", "Nonbinary", "Non binary", "Genderqueer"],
     "I am not a protected veteran": ["I am not a protected veteran", "I am not a veteran", "Not a protected veteran", "Not a veteran", "No"],
     "I identify as a protected veteran": ["I identify as one or more of the classifications of protected veteran", "I identify as a protected veteran",
@@ -562,6 +564,75 @@ def listing_facts(title: str, description: str, url: str) -> dict:
         locations.append("Remote")
     return {"title": title or "", "term": f"{term.group(1).title()} {term.group(2)}" if term else "",
             "job_id": job_id.group(1) if job_id else "", "locations": locations[:4]}
+
+
+# ---------- One role per posting ----------
+APPLY_STEPS = r"/(apply|application|applymanually|usemylastapplication|autofillwithresume)(/.*)?$"
+ID_PARAMS = {"gh_jid", "jobid", "job_id", "jid", "pid", "id", "req", "reqid", "requisitionid", "postingid"}
+JOB_BOARDS = r"linkedin\.|indeed\.|handshake\.|glassdoor\.|ziprecruiter\.|simplify\.jobs|wellfound\.|builtin\.|github\.|dice\.|levels\.fyi|workatastartup\.|google\."
+COMPANY_FILLER = {"inc", "llc", "ltd", "corp", "corporation", "corporate", "company", "office", "the", "group", "holdings",
+                  "limited", "partnership", "technologies", "technology", "labs", "systems", "international", "global"}
+
+
+def posting_key(url: str) -> str:
+    """The same key for every way a posting's URL is written: Workday adds a
+    locale (/en-US/), writes "Arlington, VA" as "Arlington%2C-VA" or
+    "Arlington-VA", and puts the application steps under the listing."""
+    parts = urlparse(url or "")
+    host = parts.netloc.lower().removeprefix("www.")
+    if not host:
+        return ""
+    path = re.sub(r"^/[a-z]{2}-[a-z]{2}(?=/)", "", unquote(parts.path).lower().rstrip("/"))
+    path = re.sub(APPLY_STEPS, "", path)
+    workday = re.search(r"/job/(?:.*/)?[^/]*_([a-z]*-?\d[\w-]*)$", path)
+    if "myworkdayjobs.com" in host and workday:
+        return f"{host}|{workday.group(1)}"  # the requisition: ..._R-00195980
+    ids = sorted(f"{key.lower()}={value}" for key, value in parse_qsl(parts.query) if key.lower() in ID_PARAMS)
+    return f"{host}|{re.sub(r'[^a-z0-9/]', '', path)}|{'&'.join(ids)}"
+
+
+def same_posting(a: dict, b: dict) -> bool:
+    """Two saved roles are one posting: the same URL however written, or the
+    same title and text found on two sites (a job board and the company's
+    page). Two openings on one site with their own URLs stay apart."""
+    key_a, key_b = posting_key(a.get("url", "")), posting_key(b.get("url", ""))
+    if key_a and key_a == key_b:
+        return True
+    if key_a and key_b and key_a.split("|")[0] == key_b.split("|")[0]:
+        return False
+    if re.sub(r"\W+", " ", (a.get("title") or "").lower()).strip() != re.sub(r"\W+", " ", (b.get("title") or "").lower()).strip():
+        return False
+    ids = [listing_facts("", item.get("description", ""), item.get("url", ""))["job_id"].upper() for item in (a, b)]
+    if all(ids) and ids[0] != ids[1]:
+        return False
+    words = [set(re.findall(r"[a-z]{4,}", (item.get("description") or "").lower())) for item in (a, b)]
+    return min(map(len, words)) >= 40 and len(words[0] & words[1]) >= 0.9 * min(map(len, words))
+
+
+def better_url(saved: str, new: str) -> str:
+    """The URL a role keeps: the company's own posting over a job board's."""
+    board = lambda url: bool(re.search(JOB_BOARDS, urlparse(url or "").netloc.lower()))
+    return new if new and (not saved or (board(saved) and not board(new))) else saved
+
+
+def company_word(company: str) -> str:
+    """The distinctive word of a company name: "00100 ACME, INC." → "acme"."""
+    return next((word for word in re.findall(r"[a-z][a-z0-9]{2,}", (company or "").lower()) if word not in COMPANY_FILLER), "")
+
+
+def page_belongs(role: dict, page_url: str) -> bool:
+    """Whether an application page can belong to a saved role: the same site,
+    a listing found on a job board, or the company's own site. A different
+    company's form (another site after a Workday listing)
+    never gets that role's resume."""
+    host = urlparse(page_url or "").netloc.lower()
+    role_host = urlparse(role.get("url") or "").netloc.lower()
+    if not host:
+        return False
+    if role_host and (role_host == host or re.search(JOB_BOARDS, role_host)):
+        return True
+    word = company_word(role.get("company", ""))
+    return bool(word) and word in host
 
 
 def listing_answers(facts: dict) -> list[dict]:

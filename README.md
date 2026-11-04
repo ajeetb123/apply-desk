@@ -29,7 +29,7 @@ Apply Desk opens at login by default and lives in the menu bar. Closing the wind
 
   Search boxes (school, skills, how you heard) are searched the way you would: type the name, press Enter. Schools are searched by their everyday name first ("Virginia Tech"), then the official one.
 
-  **The review panel** lists, page by page, everything Apply Desk filled, and puts first what deserves a second look: drafts it wrote, neutral picks, decline answers it chose for you, closest-option picks (like "How did you hear"), today's date used as a start date, answers reused from earlier applications, and any value that isn't shown beside its label on the review page (a pick that didn't take). Click a line to jump to it. The same review is saved with the role under **What you sent**, one entry per application.
+  **The review panel** lists, page by page, everything Apply Desk filled, and puts first what deserves a second look: drafts it wrote, neutral picks, decline answers it chose for you, closest-option picks (like "How did you hear"), today's date used as a start date, answers reused from earlier applications, and any value that isn't shown beside its label on the review page (a pick that didn't take). Click a line to jump to it. Each question appears once, even if you press ` again. The same review is saved with the role under **What you sent**: one entry per role, so redoing an application updates it and keeps the answers from both runs.
 
   Each pop-up list is checked after picking: Apply Desk closes leftover lists first, reads only the list that opened for that field, and confirms the choice took. It never answers salary questions, never checks consent or terms boxes, never writes essays, and never submits. Answers you type or pick yourself are remembered the next time you press ` (see **Remembered answers** in Profile, where you can forget any of them). The key only fills while a job board, careers site, or application page is in front in Chrome; everywhere else it types a backtick as usual. Apply Desk knows the role from the tab you scanned the listing in, the application's URL, or the role you viewed last. Forms embedded in another site (for example a Greenhouse iframe) need to be opened on their own page first.
 - **Honest odds.** Each role page shows your rough odds of an offer from that one application, for your year in school (Profile → Application answers → Year in school), with the blunt reasons: class-year language in the posting, big tech and quant caps, clearance or GPA requirements, citizenship, location, your internship, and skill match. It's an estimate from the posting and typical internship hiring, not employer data, and separate from the fit score.
@@ -42,7 +42,7 @@ Apply Desk opens at login by default and lives in the menu bar. Closing the wind
   - adds up to four skills to the matching Technical Skills line, only when you listed them in your Profile and the posting asks for them.
 
   Every edit appears under **What changed** with the old and new wording. The preview is the exact page that gets sent.
-- **Keeps what you sent.** The tuned resume renders in Jake's layout (Letter, 0.5in margins) as a one-page PDF with selectable text. **Save PDF** puts it in Downloads, and the ` key attaches it. Either way, the exact copy is kept with the role under **What you sent**, as PDF, `.tex` (for LaTeX resumes), and `.txt`, even if your resume changes later.
+- **Keeps what you sent.** The tuned resume renders in Jake's layout (Letter, 0.5in margins) as a one-page PDF with selectable text. **Save PDF** puts it in Downloads, and the ` key attaches it. Either way, the exact copy is kept with the role under **What you sent**, as PDF, `.tex` (for LaTeX resumes), and `.txt`, even if your resume changes later. Saving again replaces that role's earlier copy.
 - **Explains every score.** Fit weights resume skill overlap (40%), target-role alignment (25%), career-goal terms (15%), campaign alignment (10%), and graduation-window evidence (10%). It is a triage aid, not an ATS score or hiring probability.
 
 ### First-time Chrome setup
@@ -58,7 +58,8 @@ Watching stays on while either is missing; the sidebar and menu bar say what's l
 
 1. Open **Resume** and drop in your resume (PDF, DOCX, TXT, or LaTeX). Optionally set a file to watch so saved edits import automatically.
 2. Open **Profile** and fill in your contact details, education, links, target roles, skills, goals, and search campaigns. The autofill preview shows exactly what the ` key will type.
-3. Browse jobs in Chrome. Review roles on **Today**, where each saved role orbits you — closer means a better fit.
+3. Browse jobs in Chrome. Review roles on **Today**, where each saved role orbits you — closer means a better fit. A posting is saved once: the same Workday listing under another URL (`/en-US/`, `Arlington%2C-VA`), its application pages, or the same posting on a job board all count as one role.
+   The ` key uses the role you last looked at only when the application is on that role's site, the company's own site, or comes from a job board listing, so another company's form never gets that role's resume.
 
 ## How it's built
 
