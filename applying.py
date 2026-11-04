@@ -253,6 +253,41 @@ def proper_name(slug: str, text: str) -> str:
     return " ".join(word.capitalize() for word in re.split(r"[-_]+", slug) if word)
 
 
+LEGAL_SUFFIX = r"(inc|incorporated|llc|l\.l\.c|ltd|limited|limited partnership|lp|l\.p|llp|corp|corporation|co|plc|gmbh|n\.a|s\.a)\.?$"
+ENTITY_LABEL = r"^corp\b|corporate office|headquarters|\bhq\b|business unit|\bdivision\b"
+SITE_WORDS = r"\b(external|internal|career|careers|campus|site|jobs?|university|students?|early|global|us|usa|en)\b"
+
+
+def company_name(raw: str, url: str, text: str) -> str:
+    """The name people know a company by. Workday reads it from a legal
+    entity: "00100 LEIDOS, INC." → "Leidos", "1000 KLA Corporation" → "KLA",
+    and "0090 CORP-Corporate Office" names no company at all, so the careers
+    site's own name ("northrop_grumman_external_site") stands in for it."""
+    raw = (raw or "").strip()
+    name = re.sub(r"^\d{2,}\s*[-–]?\s*", "", raw)
+    coded = name != raw
+    # ", Inc." and ", Limited Partnership" go; "Example Corp" stays unless Workday's code came with it.
+    suffix = (r",?\s+" if coded else r",\s*") + LEGAL_SUFFIX
+    for _ in range(2):
+        shorter = re.sub(suffix, "", name, flags=re.I).strip(" ,")
+        name = shorter if len(shorter) >= 2 else name
+    if not name or (coded and re.search(ENTITY_LABEL, name, re.I)):
+        parts = urlparse(url or "")
+        path = [p for p in parts.path.split("/") if p and not re.fullmatch(r"[a-z]{2}-[A-Z]{2}", p)]
+        site = re.sub(SITE_WORDS, " ", re.sub(r"[_-]+", " ", path[0].lower())).strip() if "myworkdayjobs.com" in parts.netloc and path else ""
+        for slug in (site, company_from_host(url)):
+            letters = re.sub(r"[^a-z0-9]", "", slug)
+            if len(letters) >= 3 and re.search(r"[\s\-.&']?".join(map(re.escape, letters)), text or "", re.I):
+                return proper_name(slug, text)
+        return " ".join(word.capitalize() for word in re.split(r"[\s_-]+", site) if word) or name or raw
+    # "LEIDOS" as the posting writes it: "Leidos".
+    if name.isupper() and len(name) > 4:
+        found = re.search(re.escape(name), text or "", re.I)
+        if found and not found.group(0).isupper():
+            name = found.group(0)
+    return name
+
+
 def identify_role(data: dict, description: str) -> tuple[str, str]:
     """Best title and company for a posting from everything the page offered."""
     url = str(data.get("url", ""))
@@ -274,6 +309,7 @@ def identify_role(data: dict, description: str) -> tuple[str, str]:
         company = signals["site_name"]
     if not company:
         company = proper_name(company_from_host(url), text)
+    company = company_name(company, url, text)
 
     title = ""
     workday = re.search(r"^\s*(.{3,120}?) page is loaded\s*$", text, re.MULTILINE)

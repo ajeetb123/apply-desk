@@ -625,6 +625,26 @@ class ApplyDeskApiTests(unittest.TestCase):
         apply = self.client.get("/api/role-for-url", query_string={"url": self.WORKDAY.replace("External/", "en-US/External/") + "/apply/applyManually"}).json
         self.assertEqual(apply["job_id"], first)
 
+    def test_workday_legal_entities_become_company_names(self):
+        text = "Globex Systems is a space pioneer. At ACME Robotics we build arms. Initech makes software."
+        cases = [("00100 ACME ROBOTICS, INC.", "https://acme.wd5.myworkdayjobs.com/External/job/X/Intern_R-1", "ACME Robotics"),
+                 ("1000 Initech Corporation", "", "Initech"),
+                 ("Arrow Capital, Limited Partnership", "", "Arrow Capital"),
+                 ("0090 CORP-Corporate Office", "https://gx.wd1.myworkdayjobs.com/en-US/globex_systems_external_site/job/X/Intern_R10", "Globex Systems"),
+                 ("Corporate Office Properties Trust", "", "Corporate Office Properties Trust")]
+        for raw, url, name in cases:
+            self.assertEqual(application.applying.company_name(raw, url, text), name)
+            self.assertEqual(application.applying.company_name(name, url, text), name)  # already clean stays put
+        self.assertEqual(application.applying.company_name("00100 LEIDOS, INC.", "", "At Leidos, we build."), "Leidos")
+        # Roles saved by earlier versions are renamed at startup.
+        import sqlite3
+        with sqlite3.connect(application.DB) as conn:
+            conn.execute("INSERT INTO jobs(company,title,url,description,saved) VALUES('0090 CORP-Corporate Office','Intern',?,?,'2026-11-03')",
+                         (cases[3][1], text))
+        application.init_db()
+        with sqlite3.connect(application.DB) as conn:
+            self.assertEqual(conn.execute("SELECT company FROM jobs").fetchone()[0], "Globex Systems")
+
     def test_redoing_an_application_keeps_one_record_with_one_line_per_question(self):
         self.add_resume(self.JAKE)
         job_id = self.evaluate(self.WORKDAY)

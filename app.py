@@ -119,6 +119,11 @@ def init_db():
             title, company = applying.identify_role({"url": row[3], "title": row[1], "company": row[2]}, row[4] or "")
             if (title, company) != (row[1], row[2]):
                 conn.execute("UPDATE jobs SET title=?, company=? WHERE id=?", (title or row[1], company or row[2], row[0]))
+        # Workday's legal entity names ("00100 LEIDOS, INC.") become company names.
+        for row in conn.execute("SELECT id, company, url, description FROM jobs WHERE company != ''").fetchall():
+            name = applying.company_name(row[1], row[2] or "", row[3] or "")
+            if name and name != row[1]:
+                conn.execute("UPDATE jobs SET company=? WHERE id=?", (name, row[0]))
         # Split legacy "City, ST" profile entries so a browser form helper
         # won't put the whole string in a city-only field.
         values = {row["key"]: row["value"] for row in conn.execute("SELECT * FROM profile")}
