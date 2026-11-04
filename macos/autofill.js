@@ -2,7 +2,8 @@
 //   applyDeskFill(planBase64, resumePdfBase64, resumeNameBase64)
 // The plan (GET /api/fill-plan) holds only the user's own profile, saved
 // answers, resume entries, and tailored skills. The filler types only into
-// empty fields, answers self-identification questions only as the user chose
+// empty fields (job and school entries Workday read from the resume itself
+// get the resume's exact text instead), answers self-identification questions only as the user chose
 // in Profile (or with the form's decline option), never checks consent boxes,
 // and never submits. On multi-step applications (Workday) it fills a page,
 // clicks Save and Continue, and repeats until a page needs the user or the
@@ -21,6 +22,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   if (!run || run.role !== roleId || Date.now() - (run.updated || 0) > 3 * 3600e3) {
     run = { id: String(Date.now()), role: roleId, items: [], pages: [], learn: [], attached: false };
   }
+  run.wrote = run.wrote || {};  // entry fields this run typed: what's there now is ours or the user's edit
   Object.assign(state, { run: run.id, items: run.items, pages: run.pages, learn: run.learn, attached: run.attached });
   const saveRun = () => {
     run.attached = state.attached;
@@ -30,6 +32,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const norm = s => (s || '').toLowerCase().replace(/&/g, ' and ').replace(/[_*:?()\[\]]+/g, ' ').replace(/[-–]/g, ' ').replace(/\s+/g, ' ').trim();
   const textOf = el => el ? (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  const clean = text => String(text || '').replace(/\s+/g, ' ').trim();
   const visible = el => !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
   const never = new RegExp(plan.never || 'race|ethnic|gender|veteran|disab|password', 'i');
   const handled = new Set();
@@ -147,7 +150,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const optionSelector = '[role="option"], [data-automation-id="promptOption"], [data-automation-id="menuItem"]';
   const shown = el => visible(el) && !el.closest('[aria-hidden="true"]') && el.getBoundingClientRect().width > 0;
   // The innermost element of each option, which is the one that takes clicks.
-  const openOptions = (root = document) => [...root.querySelectorAll(optionSelector)].filter(o => shown(o) && !o.querySelector(optionSelector));
+  // Chosen values show as tags (Workday's "selectedItem") built like options; they never are.
+  const chosenTag = '[data-automation-id="selectedItemList"], [data-automation-id="selectedItem"], .selected-pill';
+  const openOptions = (root = document) => [...root.querySelectorAll(optionSelector)].filter(o => shown(o) && !o.querySelector(optionSelector) && !o.closest(chosenTag));
   const optionLabel = o => o.getAttribute('data-automation-label') || textOf(o);
   const escape = el => el && el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
 
@@ -374,13 +379,17 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return { month: part('Month'), day: part('Day'), year: part('Year') };
   }
 
-  function fillDate(el, formats, question) {
+  // `fix` also corrects parts that hold a different date (Workday's resume reader).
+  function fillDate(el, formats, question, fix = false) {
     if (!formats || !formats.year) return false;
     if (isDatePart(el)) {
       const parts = datePartsNear(el);
       let any = false;
       for (const [name, value] of [['month', formats.month], ['day', formats.day], ['year', formats.year]]) {
-        if (parts[name] && !parts[name].value && value) { typeInto(parts[name], value); handled.add(parts[name]); any = true; }
+        const part = parts[name];
+        if (!part || !value || (part.value && (!fix || Number(part.value) === Number(value)))) continue;
+        if (part.value) current = { ...current, replace: true };
+        typeInto(part, value); handled.add(part); any = true;
       }
       if (any) note(el, question, ['month', 'day', 'year'].filter(name => parts[name]).map(name => formats[name]).join('/'));
       return any;
@@ -409,11 +418,13 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const schoolNames = school.school_options && school.school_options.length ? school.school_options : [p.school];
   // Search the way a person would: the everyday name, the start of the
   // official name, then the whole official name.
+  const url = link => link && !/^https?:\/\//i.test(link) ? `https://${link}` : link;
   const schoolSearch = names => [...new Set([names[names.length - 1], (names[0] || '').split(' ').slice(0, 3).join(' '), names[0]])].filter(Boolean);
   const contact = [
     ['email', /e ?mail/, [p.email]], ['phone', /phone number|^phone$|mobile|cell(ular)? number|telephone/, [p.phone]],
-    ['linkedin', /linkedin/, [p.linkedin]], ['github', /github/, [p.github]],
-    ['website', /website|portfolio|personal (site|url|page)/, [p.website]], ['first', /first name|given name|preferred name|^first$/, [parts[0]]],
+    ['linkedin', /linkedin/, [url(p.linkedin)]], ['github', /github/, [url(p.github)]],
+    // Any other link field gets the personal site, or GitHub without one.
+    ['website', /website|portfolio|personal (site|url|page)|^url$/, [url(p.website), url(p.github)]], ['first', /first name|given name|preferred name|^first$/, [parts[0]]],
     ['last', /last name|family name|surname|^last$/, [parts.length > 1 ? parts.slice(1).join(' ') : '']],
     ['name', /full name|your name|legal name|^name$/, [p.name]], ['address', /address line 1|street address|address 1|^address$/, [p.address]],
     ['city', /(^| )city( |$)|town/, [p.city]], ['state', /(^| )state( |$)|province|region/, p.state_options || [p.state], { strict: true }],
@@ -423,6 +434,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     ['degree', /degree/, [p.degree, ...(((plan.education || [])[0] || {}).degree_options || [])]],
   ];
   const otherPeople = /reference|emergency|supervisor|manager|guardian|parent|spouse|high school|extension|referr(al|er|ed) (name|email|by)/;
+  // A start date at a past job ("Government Civilian Start Date") is not the user's to invent.
+  const pastJob = /government|military|civilian|clearance|served|service|former|previous|prior/;
   const startDate = /(start|availability|available) date|when can you (start|begin)|earliest (start|date)|proposed start|date (you are )?available/;
   const graduationDate = /when (will|do) you (expect to )?graduate|graduation date|(expected|anticipated|projected) graduation|graduation (month|year|term)|date of graduation|completion date/;
   const consent = /agree|certif|acknowledg|consent|terms|attest|privacy|i understand|authori[sz]e (us|the company|.* to contact)/;
@@ -436,6 +449,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Why a value deserves a second look in the review, if it does.
   function flagFor(want, value) {
     if (!want) return '';
+    if (want.replace) return "Replaced the text Workday read from your resume with your resume's own";
     if (want.source === 'disclosure') return want.declined ? 'Chose the decline option for you' : 'Your self-identification answer from Profile';
     if (want.source === 'learned') return 'From an answer you gave on an earlier application';
     if (want.source === 'draft') return 'Draft by Apply Desk. Edit it in your own words';
@@ -460,7 +474,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const disclosure = disclosureFor(q);
     if (disclosure) return disclosure;
     if (never.test(q)) return null;
-    if (el.tagName !== 'TEXTAREA' && startDate.test(q)) return { date: plan.start, source: 'date' };
+    if (el.tagName !== 'TEXTAREA' && startDate.test(q) && !pastJob.test(q)) return { date: plan.start, source: 'date' };
     if (el.tagName !== 'TEXTAREA' && todayDate.test(q) && plan.today) return { date: plan.today, source: 'date' };
     if (el.tagName !== 'TEXTAREA' && graduationDate.test(q)) {
       const dated = p.graduation_dates || {};
@@ -499,14 +513,14 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (!want) return false;
     current = want;
     try {
-      if (want.date) return fillDate(el, want.date, question);
+      if (want.date) return fillDate(el, want.date, question, want.fix);
       const values = want.values.filter(Boolean);
       if (!values.length) return false;
       if (el.tagName === 'SELECT') return pickSelect(el, values, question, want.strict);
       if (isListbox(el)) return await pickListbox(el, { ...want, values }, question);
       if (isPrompt(el)) return selectedPills(el).length ? false : await pickPrompt(el, { ...want, values }, question);
       // Self-identification answers are picked from the form's options, never typed.
-      if ((isText(el) || (el.tagName === 'TEXTAREA' && want.source === 'draft')) && !el.value.trim() && want.source !== 'disclosure') {
+      if ((isText(el) || (el.tagName === 'TEXTAREA' && want.source === 'draft')) && (!el.value.trim() || want.replace) && want.source !== 'disclosure') {
         typeInto(el, values[0]);
         note(el, question, values[0]);
         return true;
@@ -592,11 +606,26 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         handled.add(el);
         if (want && (want.date ? want.date && want.date.year : want.values.some(Boolean))) {
           const isEmpty = el.tagName === 'SELECT' ? el.selectedIndex <= 0 : isListbox(el) ? placeholderText(textOf(el)) : !el.value;
-          if (isEmpty || isDatePart(el)) await fillControl(el, label, want);
+          // Workday's own resume reader runs words together ("returnsJSON");
+          // the resume's text replaces it, unless this run typed the field already.
+          const typed = !want.date && isText(el) && !isDatePart(el);
+          const stale = typed && !isEmpty && !run.wrote[label] && clean(el.value) !== clean(want.values[0]);
+          if (isEmpty || isDatePart(el) || stale) await fillControl(el, label, stale ? { ...want, replace: true } : { ...want, fix: !run.wrote[label] });
+          if ((typed && clean(el.value) === clean(want.values[0])) || (want.date && isDatePart(el))) run.wrote[label] = true;
         }
       }
       for (const el of controlsIn(blocks[i])) handled.add(el);
       state.blocks += 1;
+    }
+    // The reader also adds entries the resume doesn't list as jobs or schools (projects, awards).
+    for (let i = entries.length; i < blocks.length; i += 1) {
+      const named = controlsIn(blocks[i]).find(el => first.test(norm(questionOf(el))));
+      const value = named ? answeredValue(named) : '';
+      const question = `${kind === 'experience' ? 'Work experience' : 'Education'} ${i + 1}`;
+      if (value && !state.items.some(item => item.question === question)) {
+        state.items.push({ page: pageNow, question, value, flag: "Not on your resume as a job or school. Delete it if Workday added it" });
+      }
+      for (const el of controlsIn(blocks[i])) handled.add(el);
     }
     for (const el of controlsIn(section)) handled.add(el);
   }
@@ -605,7 +634,18 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Adds the posting's most relevant skills (the plan lists them best first),
   // up to any limit the form states. Workday redraws the box after each pick,
   // so it's found again every time, and skills already added are skipped
-  // (picking one again would remove it).
+  // (picking one again would remove it). A skill the list doesn't have is
+  // skipped, never swapped for a different one.
+  // "Python (Programming Language)" is Python; "Python IDLE" and "IronPython" aren't.
+  const skillKey = name => String(name || '').toLowerCase().replace(/\([^)]*\)/g, ' ')
+    .replace(/\b(programming|language|framework|library|package|software)\b/g, ' ')
+    .replace(/[^a-z0-9+#]/g, '').replace(/^(.{2,})js$/, '$1').replace(/^postgres$/, 'postgresql');
+  const skillOption = (options, skill) => options.find(o => norm(optionLabel(o)) === norm(skill)) || options.find(o => {
+    const label = optionLabel(o);
+    const named = [label, ...(label.match(/\(([^)]*)\)/g) || []).map(part => part.slice(1, -1))];  // "Structured Query Language (SQL)"
+    return named.some(name => skillKey(name) === skillKey(skill));
+  }) || null;
+  const ticked = o => !!((o.closest('[role="option"], [data-automation-id="menuItem"]') || o).querySelector('input[type=checkbox]:checked'));
   async function fillSkills() {
     const findInput = () => controlsIn(document).find(el => isPrompt(el) && /skill/.test(norm(questionOf(el))));
     let input = findInput();
@@ -616,7 +656,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       return [...field.querySelectorAll('[data-automation-id="selectedItem"], [data-automation-id="selectedItemList"] [role="option"], .selected-pill')].map(textOf).filter(Boolean);
     };
     const stated = textOf(fieldOf(input)).match(/(?:up to|max(?:imum)?(?: of)?|no more than|at most|limit of)\s*(\d{1,2})/i);
-    const limit = Math.min(10, stated ? Number(stated[1]) : 10);
+    const limit = stated ? Number(stated[1]) : plan.skills.length;
     const has = name => pills().some(pill => norm(pill) === norm(name) || norm(pill).startsWith(norm(name) + ' '));
     await closeLists();
     const before = new Set(openOptions());
@@ -631,12 +671,14 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       search(input, skill);
       const options = await freshOptions(input, before, previous, 2500);
       previous = options ? options.map(optionLabel).join('|') : previous;
-      const match = options && best(options, [skill]);
-      if (match && norm(optionLabel(match)).startsWith(norm(skill).slice(0, 3)) && !has(optionLabel(match))) {
+      const match = options && skillOption(options, skill);
+      if (match && !ticked(match) && !has(optionLabel(match))) {
         const count = pills().length;
         press(match);
         if (await waitFor(() => pills().length > count, 2000)) names.push(optionLabel(match));
       }
+      // Workday keeps this list open; close it so the next search starts clean.
+      await closeLists();
       input = findInput() || input;
       if (input.isConnected && input.value) search(input, '');
     }
@@ -647,6 +689,19 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       state.items.push({ page: pageNow, question: 'Skills', value: names.join(', '), flag: '' });
       glow(input);
     }
+  }
+
+  // ---------- Links ----------
+  // Workday's "Websites" section starts empty: add one entry so the personal
+  // site (or GitHub) has a field. The field itself is filled like any other.
+  async function addWebsite() {
+    if (!url(p.website || p.github)) return;
+    const section = sectionFor(/^websites?$/);
+    if (!section || controlsIn(section).some(isText)) return;
+    const add = addButton(section);
+    if (!add) return;
+    press(add);
+    await waitFor(() => controlsIn(section).some(isText), 3000);
   }
 
   // ---------- Remembering what the user typed ----------
@@ -734,6 +789,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     await fillBlocks('experience', plan.experience);
     await fillBlocks('education', plan.education);
     await fillSkills();
+    await addWebsite();
     const all = controlsIn(document);
     const radios = {};
     const boxes = {};

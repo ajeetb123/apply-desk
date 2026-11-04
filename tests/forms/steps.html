@@ -8,7 +8,11 @@
   [role=listbox] { border: 1px solid #888; background: #fff; list-style: none; margin: 0; padding: 0; width: 330px; position: absolute; max-height: 180px; overflow: auto; z-index: 5; }
   [role=option] { padding: 4px 8px; cursor: pointer; }
   .gone, .step[hidden] { display: none; }
+  [data-automation-id="selectedItemList"] { list-style: none; margin: 0 0 4px; padding: 0; }
+  [data-automation-id="selectedItemList"] li { display: inline-block; }
   [data-automation-id="selectedItem"] { display: inline-block; background: #eef; padding: 2px 6px; margin: 2px; }
+  [data-automation-id="selectedItem"] p { display: inline; margin: 0; }
+  [data-automation-id="DELETE_charm"]::after { content: ' ×'; cursor: pointer; }
   .date input { width: 40px; }
   section { border-top: 2px solid #ccc; margin-top: 18px; padding-top: 6px; }
   ol[data-automation-id=progressBar] { display: flex; gap: 12px; list-style: none; padding: 0; font-size: 12px; color: #888; }
@@ -53,9 +57,10 @@
 <div class="step" data-title="My Experience" hidden>
 <section data-automation-id="workExperienceSection"><h3>Work Experience</h3><div class="blocks"></div><button type="button" data-automation-id="Add" data-kind="work">Add</button></section>
 <section data-automation-id="educationSection"><h3>Education</h3><div class="blocks"></div><button type="button" data-automation-id="Add" data-kind="edu">Add</button></section>
+<section data-automation-id="websiteSection"><h3>Websites</h3><div class="blocks"></div><button type="button" data-automation-id="Add" data-kind="web">Add</button></section>
 <section data-automation-id="skillsSection"><h3>Skills</h3>
   <div data-automation-id="formField-skills"><label id="l-skills">Type to Add Skills</label><p>You can add up to 6 skills.</p>
-  <div data-automation-id="multiselectInputContainer" data-source="Python|SQL|Power BI|Git|Java|JavaScript|React|Node.js|Flask|Pandas"><input data-automation-id="searchBox" aria-labelledby="l-skills" type="text"></div></div></section>
+  <div data-automation-id="multiselectInputContainer" data-multi="1" data-source="Python IDLE|IronPython|Python (Programming Language)|Microsoft SQL Server|PL/SQL|MySQL|SQL (Programming Language)|TypeScript|JavaScript Frameworks|JavaScript (Programming Language)|Java (Programming Language)|React Native|React.js|Node.js|PostgreSQL|Pandas (Python Package)|GitHub|Git|FastAPI|Express.js|Supabase|Power BI|Flask"><input data-automation-id="searchBox" aria-labelledby="l-skills" type="text"></div></div></section>
 <div data-automation-id="formField-resume"><label for="resume">Resume/CV*</label><input type="file" id="resume" accept=".pdf"></div>
 </div>
 
@@ -71,6 +76,7 @@
   <div><input type="checkbox" id="lp1"><label for="lp1">Reston, VA</label></div><div><input type="checkbox" id="lp2"><label for="lp2">Huntsville, AL</label></div><div><input type="checkbox" id="lp3"><label for="lp3">No Preference</label></div></fieldset>
 <div data-automation-id="formField-onsite"><label id="q10">Are you able to work on-site in Reston, VA?*</label><button aria-haspopup="listbox" aria-labelledby="q10" data-options="Yes|No">Select One</button></div>
 <div data-automation-id="formField-term"><label id="q11">Which internship term are you applying for?*</label><button aria-haspopup="listbox" aria-labelledby="q11" data-options="Spring 2027|Summer 2027|Fall 2027">Select One</button></div>
+<div data-automation-id="formField-govStart"><label for="gstart">Government Civilian Start Date</label><input id="gstart" type="text"></div>
 <div data-automation-id="formField-req"><label for="req">Requisition Number</label><input id="req" type="text"></div>
 <div data-automation-id="formField-start"><label for="start">Proposed start date*</label><input id="start" type="text" placeholder="MM/DD/YYYY"></div>
 </div>
@@ -121,7 +127,7 @@ function labelOf(el) {
   return label ? label.textContent.trim() : '';
 }
 function valueOf(field) {
-  const pills = [...field.querySelectorAll('[data-automation-id=selectedItem]')].map(p => p.textContent);
+  const pills = [...field.querySelectorAll('[data-automation-id=selectedItem]')].map(p => p.innerText.replace(/\s+/g, ' ').trim());
   if (pills.length) return pills.join(', ');
   const button = field.querySelector('button[aria-haspopup]');
   if (button) return button.textContent === 'Select One' ? '' : button.textContent;
@@ -138,6 +144,8 @@ function missing() {
   const out = [];
   for (const field of steps[stepIndex].querySelectorAll('[data-automation-id^="formField"]')) {
     const label = labelOf(field);
+    const urlField = field.dataset.automationId === 'formField-url';
+    if (urlField && valueOf(field) && !/^https?:\/\//.test(valueOf(field))) { out.push('URL: enter a valid URL'); continue; }
     if (!label.endsWith('*') || valueOf(field)) continue;
     out.push(label.replace(/\*$/, ''));
     field.querySelectorAll('input, textarea, button').forEach(c => c.setAttribute('aria-invalid', 'true'));
@@ -174,7 +182,7 @@ document.querySelector('[data-automation-id=applyManually]').addEventListener('c
 drawProgress();
 
 // Lists that linger after closing, nested prompt categories, delayed search results.
-const closeLists = () => document.querySelectorAll('[role=listbox]:not([data-closing])').forEach(list => {
+const closeLists = () => document.querySelectorAll('[role=listbox]:not([data-closing]):not([data-automation-id=selectedItemList])').forEach(list => {
   list.setAttribute('data-closing', '1');
   setTimeout(() => { list.setAttribute('aria-hidden', 'true'); list.classList.add('gone'); }, 350);
 });
@@ -212,12 +220,16 @@ document.addEventListener('click', e => {
 function prompt(input, term) {
   const box = input.parentElement;
   const pick = item => {
-    const pills = box.querySelectorAll('[data-automation-id=selectedItem]');
+    const pills = [...box.querySelectorAll('[data-automation-id=selectedItem]')];
+    const nameOf = p => p.querySelector('[data-automation-id=promptOption]').textContent;
     if (box.dataset.multi && pills.length >= 6) return;
-    if ([...pills].some(p => p.textContent === item)) { [...pills].find(p => p.textContent === item).remove(); return; }  // picking again removes it
-    const pill = document.createElement('div'); pill.setAttribute('data-automation-id', 'selectedItem'); pill.textContent = item;
+    if (pills.some(p => nameOf(p) === item)) { pills.find(p => nameOf(p) === item).closest('li').remove(); return; }  // picking again removes it
+    let chosen = box.querySelector('[data-automation-id=selectedItemList]');
+    if (!chosen) { chosen = document.createElement('ul'); chosen.setAttribute('data-automation-id', 'selectedItemList'); chosen.setAttribute('role', 'listbox'); box.prepend(chosen); }
+    const li = document.createElement('li');
+    li.innerHTML = `<div data-automation-id="selectedItem" role="option" aria-selected="false"><p data-automation-id="promptOption" data-automation-label="${item}">${item}</p><span data-automation-id="DELETE_charm" role="button" aria-label="Delete ${item}"></span></div>`;
+    chosen.appendChild(li);
     const current = box.querySelector('[data-automation-id=searchBox]');
-    box.insertBefore(pill, current);
     // Like Workday, the search box is redrawn after a pick.
     const fresh = current.cloneNode(); fresh.value = ''; current.replaceWith(fresh);
   };
@@ -228,7 +240,8 @@ function prompt(input, term) {
     return showOptions(input, leaves.filter(l => l.toLowerCase().includes(term.toLowerCase())), pick, 450);
   }
   const words = term.toLowerCase().split(/\s+/).filter(Boolean);
-  showOptions(input, box.dataset.source.split('|').filter(s => words.every(w => s.toLowerCase().includes(w))), pick, 450);
+  // Skills search the server like Workday's: results take over a second.
+  showOptions(input, box.dataset.source.split('|').filter(s => words.every(w => s.toLowerCase().includes(w))), pick, box.dataset.multi ? 1600 : 450);
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { closeLists(); document.querySelectorAll('[aria-expanded=true]').forEach(b => b.setAttribute('aria-expanded', 'false')); }
@@ -254,6 +267,10 @@ function dateField(label, month) {
 document.querySelectorAll('button[data-automation-id=Add]').forEach(add => add.addEventListener('click', () => {
   const blocks = add.parentElement.querySelector('.blocks'); const n = blocks.children.length + 1; uid += 1;
   const block = document.createElement('div'); block.setAttribute('role', 'group');
+  if (add.dataset.kind === 'web') {
+    block.innerHTML = `<h4>Websites ${n}</h4><div data-automation-id="formField-url"><label for="url${uid}">URL*</label><input id="url${uid}" type="text"></div>`;
+    return setTimeout(() => blocks.appendChild(block), 200);
+  }
   block.innerHTML = add.dataset.kind === 'work'
     ? `<h4>Work Experience ${n}</h4><div data-automation-id="formField-jobTitle"><label for="jt${uid}">Job Title*</label><input id="jt${uid}" type="text"></div>
        <div data-automation-id="formField-company"><label for="co${uid}">Company*</label><input id="co${uid}" type="text"></div>
@@ -269,5 +286,19 @@ document.querySelectorAll('button[data-automation-id=Add]').forEach(add => add.a
        <div data-automation-id="formField-gpa"><label for="gpa${uid}">Overall Result (GPA)</label><input id="gpa${uid}" type="text"></div>`;
   setTimeout(() => blocks.appendChild(block), 200);
 }));
+if (location.hash === '#parsed') {
+  const parsed = [
+    ['Software Engineer Intern Remote', 'Acme Corp', '• Built a REST API that returnsJSON to downstream services\n• Wrote unit tests forthe billing module'],
+    ['Research Assistant', 'State University', '• Ran regression testson market data'],
+    ['Hackathon Project', 'TypeScript, React', '• Team of 4 built a web app'],
+  ];
+  const work = document.querySelector('button[data-kind=work]');
+  parsed.forEach(() => work.click());
+  setTimeout(() => document.querySelectorAll('[data-automation-id=workExperienceSection] [role=group]').forEach((block, i) => {
+    const [title, company, text] = parsed[i];
+    block.querySelector('[id^=jt]').value = title; block.querySelector('[id^=co]').value = company; block.querySelector('textarea').value = text;
+    block.querySelector('[data-automation-id=dateSectionMonth-input]').value = '01'; block.querySelector('[data-automation-id=dateSectionYear-input]').value = '2026';
+  }), 300);
+}
 </script>
 </body></html>
