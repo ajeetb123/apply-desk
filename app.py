@@ -47,7 +47,7 @@ LINK_FIELDS = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("website", "Port
 # Values the Mac app may type into clearly labeled, empty application fields.
 AUTOFILL_FIELDS = [key for key, _ in CONTACT_FIELDS + EDUCATION_FIELDS + LINK_FIELDS]
 PROFILE_FIELDS = AUTOFILL_FIELDS + ["target_roles", "skills", "career_goals", "role_campaigns", "larp"] + [
-    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS] + applying.DISCLOSURE_KEYS
+    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS] + applying.DISCLOSURE_KEYS + ["agree_terms"]
 
 
 @app.before_request
@@ -119,9 +119,14 @@ def init_db():
             title, company = applying.identify_role({"url": row[3], "title": row[1], "company": row[2]}, row[4] or "")
             if (title, company) != (row[1], row[2]):
                 conn.execute("UPDATE jobs SET title=?, company=? WHERE id=?", (title or row[1], company or row[2], row[0]))
-        # Workday's legal entity names ("00100 LEIDOS, INC.") become company names.
+        # A signed-in Workday home page was once saved as a role; it isn't one.
+        conn.execute("DELETE FROM jobs WHERE (lower(url) LIKE '%/userhome%' OR title='Candidate Home') AND id NOT IN (SELECT job_id FROM applications)")
+        # Workday's legal entity names ("00100 LEIDOS, INC.") and careers-site
+        # slugs ("Externalcareersite") become the company's own name.
         for row in conn.execute("SELECT id, company, url, description FROM jobs WHERE company != ''").fetchall():
             name = applying.company_name(row[1], row[2] or "", row[3] or "")
+            if "myworkdayjobs.com" in (row[2] or "") and name.lower() not in (row[3] or "").lower():
+                name = applying.company_from_intro(row[3] or "") or name
             if name and name != row[1]:
                 conn.execute("UPDATE jobs SET company=? WHERE id=?", (name, row[0]))
         # Split legacy "City, ST" profile entries so a browser form helper
@@ -1254,6 +1259,8 @@ def api_evaluate():
     description = str(data.get("description", ""))[:50000].strip()
     if len(description) < 80:
         return {"error": "The job description is too short to evaluate. Select or paste more of the posting."}, 400
+    if re.search(r"/(userhome|candidatehome|myaccount|myapplications)\b", str(data.get("url", "")), re.I) or str(data.get("title", "")).strip() == "Candidate Home":
+        return {"error": "This page is your account home, not a job posting."}, 400
     report = analyze(description)
     resume = resume_row()
     relevant = []
@@ -1523,16 +1530,24 @@ def api_fill_plan():
     skills = tailored_skills(sections, posting, declared, limit=20)
     # The listing answers some questions itself, and gives "open to all" its places.
     facts = applying.listing_facts(row["title"], row["description"], row["url"]) if row else {"locations": []}
-    answers = applying.standard_answers(hints) + (applying.listing_answers(facts) if row else [])
+    answers = applying.follow_up_answers(hints) + applying.standard_answers(hints) + (applying.listing_answers(facts) if row else [])
+    open_to_all = False
     for answer in answers:
         if answer["key"] == "location_preference" and answer["answer"]:
-            answer["open"] = answer["options"][0] == "No preference"
+            answer["open"] = open_to_all = answer["options"][0] == "No preference"
             if answer["open"]:  # with no "no preference" option, the listing's own places
                 answer["options"] = answer["options"] + facts["locations"] + applying.state_options(p.get("state", ""))[:1]
+    for answer in answers:
+        # Open to every location: "Yes- Either Somerville or Devens" over one office.
+        if answer["key"] == "work_onsite" and open_to_all and answer["answer"].lower() == "yes":
+            answer["options"] = ["Yes either", "Yes any", "Yes all", "Yes, any", "Yes, all"] + answer["options"]
     return {"profile": contact, "answers": answers, "learned": learned,
             "disclosures": applying.disclosure_answers(p), "today": applying.date_formats((today.year, today.month, today.day)),
             "experience": experience, "education": education, "skills": skills, "start": {**start, "source": start_source},
             "drafts": applying.drafts(p, education, experience, skills, role, posting),
+            # The user's choice in Profile: tick required terms boxes and sign
+            # with their name, for them to read before they submit.
+            "agree_terms": p.get("agree_terms") == "Yes",
             "never": applying.NEVER, "role": role}
 
 
