@@ -58,7 +58,7 @@ Watching stays on while either is missing; the sidebar and menu bar say what's l
 
 1. Open **Resume** and drop in your resume (PDF, DOCX, TXT, or LaTeX). Optionally set a file to watch so saved edits import automatically.
 2. Open **Profile** and fill in your contact details, education, links, target roles, skills, goals, and search campaigns. The autofill preview shows exactly what the ` key will type.
-3. Browse jobs in Chrome. Review roles on **Today**, where each saved role orbits you — closer means a better fit. A posting is saved once: the same Workday listing under another URL (`/en-US/`, `Arlington%2C-VA`), its application pages, or the same posting on a job board all count as one role.
+3. Browse jobs in Chrome. Review roles on **Today**, where each saved role orbits you — closer means a better fit. Companies show by the name people know them by, not Workday's legal entity ("00100 ACME, INC." → "Acme"). A posting is saved once: the same Workday listing under another URL (`/en-US/`, `Arlington%2C-VA`), its application pages, or the same posting on a job board all count as one role.
    The ` key uses the role you last looked at only when the application is on that role's site, the company's own site, or comes from a job board listing, so another company's form never gets that role's resume.
 
 ## How it's built
