@@ -420,11 +420,12 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertTrue(disclosures["eeo_gender"]["declined"])
         self.assertIn("I do not wish to answer", disclosures["eeo_gender"]["options"])
         self.assertEqual(len(plan["today"]["year"]), 4)
-        self.client.post("/profile", data={"eeo_gender": "Male", "eeo_race": "Asian", "eeo_veteran": "I am not a protected veteran"})
+        self.client.post("/profile", data={"eeo_gender": "Male", "eeo_race": "Asian", "eeo_hispanic": "No", "eeo_veteran": "I am not a protected veteran"})
         disclosures = {d["key"]: d for d in self.client.get("/api/fill-plan").json["disclosures"]}
         self.assertEqual(disclosures["eeo_gender"]["options"][:2], ["Male", "Man"])
         self.assertFalse(disclosures["eeo_gender"]["declined"])
         self.assertIn("Asian (Not Hispanic or Latino)", disclosures["eeo_race"]["options"])
+        self.assertIn("Not Hispanic or Latino", disclosures["eeo_hispanic"]["options"])
         self.assertTrue(disclosures["eeo_disability"]["declined"])
         self.assertIn(b"Voluntary self-identification", self.client.get("/profile").data)
         # Self-identification answers are never learned from forms.
@@ -601,6 +602,67 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertGreater(len(skills), 10)
         self.assertIn("Swift", skills)
         self.assertEqual(skills[0], "Python")
+
+    LONG_POSTING = ("Our platform team builds reliable services for millions of customers across banking, retail, shipping, "
+                    "healthcare, logistics, education, energy, travel, insurance, media, gaming, telecom, and manufacturing. "
+                    "Interns design features, write tests, review pull requests, monitor dashboards, improve latency, document "
+                    "systems, present demos, collaborate with mentors, and learn production practices like deployment, rollback, "
+                    "observability, security reviews, capacity planning, and incident response during a twelve week summer program.")
+    WORKDAY = "https://acme.wd5.myworkdayjobs.com/External/job/Austin-TX/Software-Engineering-Intern_R-00012345"
+
+    def evaluate(self, url, title="Software Engineering Intern", description=None):
+        return self.client.post("/api/evaluate", json={"title": title, "company": "Acme", "url": url,
+                                                        "description": description or self.LONG_POSTING}).json["saved_job_id"]
+
+    def test_one_posting_written_several_ways_is_one_role(self):
+        first = self.evaluate(self.WORKDAY)
+        again = self.evaluate("https://acme.wd5.myworkdayjobs.com/en-US/External/job/Austin%2C-TX/Software-Engineering-Intern_R-00012345")
+        board = self.evaluate("https://www.linkedin.com/jobs/view/4100000001")  # the same text on a job board
+        self.assertEqual({first, again, board}, {first})
+        other = self.evaluate("https://acme.wd5.myworkdayjobs.com/External/job/Boston-MA/Software-Engineering-Intern_R-00099999")
+        self.assertNotEqual(other, first)  # another opening on the same site stays its own role
+        self.assertEqual(len(application.scored_jobs()), 2)
+        apply = self.client.get("/api/role-for-url", query_string={"url": self.WORKDAY.replace("External/", "en-US/External/") + "/apply/applyManually"}).json
+        self.assertEqual(apply["job_id"], first)
+
+    def test_redoing_an_application_keeps_one_record_with_one_line_per_question(self):
+        self.add_resume(self.JAKE)
+        job_id = self.evaluate(self.WORKDAY)
+        line = {"page": "My Information", "question": "Phone Number", "value": "555", "flag": ""}
+        skills = {"page": "My Experience", "question": "Skills", "value": "Python", "flag": ""}
+        self.client.post("/api/applications", json={"job_id": job_id, "attached": True, "run": "1", "review": [line, line]})
+        # The redo only filled what was still blank; the record keeps both runs' answers.
+        self.client.post("/api/applications", json={"job_id": job_id, "attached": True, "run": "2", "review": [skills]})
+        self.client.post("/api/applications", json={"job_id": job_id, "attached": False})  # saved as a PDF
+        self.client.post("/api/applications", json={"job_id": job_id, "attached": False})
+        import sqlite3
+        with sqlite3.connect(application.DB) as conn:
+            rows = conn.execute("SELECT run, attached, review FROM applications WHERE job_id=?", (job_id,)).fetchall()
+        self.assertEqual(sorted(row[0] for row in rows), ["", "2"])
+        review = application.json.loads(next(row[2] for row in rows if row[0] == "2"))
+        self.assertEqual([item["question"] for item in review], ["Phone Number", "Skills"])
+
+    def test_startup_merges_duplicates_saved_by_earlier_versions(self):
+        import sqlite3
+        with sqlite3.connect(application.DB) as conn:
+            for url, saved in ((self.WORKDAY, "2026-11-03T02:15"), (self.WORKDAY.replace("Austin-TX", "en-US/Austin%2C-TX"), "2026-11-03T19:30")):
+                conn.execute("INSERT INTO jobs(company,title,url,description,saved) VALUES('Acme','Software Engineering Intern',?,?,?)", (url, self.LONG_POSTING, saved))
+            for job_id, run in ((1, ""), (1, ""), (2, "9")):
+                conn.execute("INSERT INTO applications(job_id,created,attached,filled,source,extension,run) VALUES(?,?,1,'1 field','x','txt',?)", (job_id, "2026-11-03", run))
+        application.init_db()
+        with sqlite3.connect(application.DB) as conn:
+            self.assertEqual(conn.execute("SELECT id FROM jobs").fetchall(), [(2,)])
+            self.assertEqual(conn.execute("SELECT job_id, run FROM applications").fetchall(), [(2, "9")])
+        self.assertTrue((application.INSTANCE / "resume_tailor.before-merge.sqlite3").exists())
+
+    def test_application_page_gets_a_hinted_role_only_when_it_can_belong_to_it(self):
+        listing = self.evaluate(self.WORKDAY)
+        page = "https://apply.careers.example.com/careers/apply?pid=1970393557044764"
+        self.assertIsNone(self.client.get("/api/role-for-url", query_string={"url": page, "hints": str(listing)}).json["job_id"])
+        own_site = self.WORKDAY + "/apply"
+        self.assertEqual(self.client.get("/api/role-for-url", query_string={"url": own_site, "hints": str(listing)}).json["job_id"], listing)
+        board = self.evaluate("https://www.linkedin.com/jobs/view/1", title="Data Intern", description=self.LONG_POSTING.replace("platform", "data"))
+        self.assertEqual(self.client.get("/api/role-for-url", query_string={"url": page, "hints": f"{board},{listing}"}).json["job_id"], board)
 
     def test_learned_answers_are_reused_but_never_sensitive_or_essays(self):
         answers = [{"question": "Have you previously worked for this organization?", "answer": "No"},

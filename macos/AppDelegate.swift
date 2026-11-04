@@ -648,14 +648,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Which saved role this application belongs to: the role last scanned in
-    /// the same tab, then a URL match, then the role the user viewed last.
+    /// the same tab, or the role the user viewed last, when this page can
+    /// belong to it (same site, a job board's listing, or the company's own
+    /// site); otherwise a URL match. Another company's form never gets that
+    /// role's resume.
     private func roleForApplication(_ tab: Chrome.Tab, completion: @escaping (Int?) -> Void) {
-        if let role = tabLastRole[tab.id] { return completion(role) }
+        var hints = [tabLastRole[tab.id]].compactMap { $0 }
+        if let current = current, Date().timeIntervalSince(current.seen) < 2 * 3600 { hints.append(current.id) }
         let query = tab.url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=+?#"))) ?? ""
-        backend.send("api/role-for-url?url=\(query)") { [weak self] result in
-            if let role = result?["job_id"] as? Int { return completion(role) }
-            if let current = self?.current, Date().timeIntervalSince(current.seen) < 2 * 3600 { return completion(current.id) }
-            completion(nil)
+        let hinted = hints.map(String.init).joined(separator: ",")
+        backend.send("api/role-for-url?url=\(query)&hints=\(hinted)") { result in
+            completion(result?["job_id"] as? Int)
         }
     }
 

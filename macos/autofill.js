@@ -250,11 +250,16 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
 
   let current = null;     // the answer being filled, so the review can say where it came from
   let pageNow = '';
+  // One review line per question on a page; a refill or a second press replaces it.
+  function record(item) {
+    const at = state.items.findIndex(old => old.page === item.page && old.question === item.question);
+    if (at >= 0) state.items[at] = item; else state.items.push(item);
+  }
   function note(el, question, value = '') {
     handled.add(el);
     state.filled.push(norm(question).slice(0, 60));
     const shown = String(value || '').replace(/\s+/g, ' ').trim();
-    state.items.push({ page: pageNow, question: String(question).replace(/\*\s*$/, '').trim().slice(0, 160), value: shown.slice(0, 300), flag: flagFor(current, shown) });
+    record({ page: pageNow, question: String(question).replace(/\*\s*$/, '').trim().slice(0, 160), value: shown.slice(0, 300), flag: flagFor(current, shown) });
     glow(el);
   }
 
@@ -433,7 +438,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     ['field', /field of study|area of study|(^| )major( |$)|academic discipline/, school.field_options || [], { strict: true, search: [school.field] }],
     ['degree', /degree/, [p.degree, ...(((plan.education || [])[0] || {}).degree_options || [])]],
   ];
-  const otherPeople = /reference|emergency|supervisor|manager|guardian|parent|spouse|high school|extension|referr(al|er|ed) (name|email|by)/;
+  // Other people's details, and second contacts ("Alternate Phone Number") the user has none of.
+  const otherPeople = /reference|emergency|supervisor|manager|guardian|parent|spouse|high school|extension|referr(al|er|ed) (name|email|by)|\b(alternate|alternative|secondary|additional|backup) (phone|email|contact|number)/;
   // A start date at a past job ("Government Civilian Start Date") is not the user's to invent.
   const pastJob = /government|military|civilian|clearance|served|service|former|previous|prior/;
   const startDate = /(start|availability|available) date|when can you (start|begin)|earliest (start|date)|proposed start|date (you are )?available/;
@@ -622,9 +628,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const named = controlsIn(blocks[i]).find(el => first.test(norm(questionOf(el))));
       const value = named ? answeredValue(named) : '';
       const question = `${kind === 'experience' ? 'Work experience' : 'Education'} ${i + 1}`;
-      if (value && !state.items.some(item => item.question === question)) {
-        state.items.push({ page: pageNow, question, value, flag: "Not on your resume as a job or school. Delete it if Workday added it" });
-      }
+      if (value) record({ page: pageNow, question, value, flag: "Not on your resume as a job or school. Delete it if Workday added it" });
       for (const el of controlsIn(blocks[i])) handled.add(el);
     }
     for (const el of controlsIn(section)) handled.add(el);
@@ -686,7 +690,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     await closeLists(input);
     if (names.length) {
       state.filled.push(`skills (${names.length})`);
-      state.items.push({ page: pageNow, question: 'Skills', value: names.join(', '), flag: '' });
+      // Everything in the field now, so a second press doesn't shrink the review line.
+      record({ page: pageNow, question: 'Skills', value: (pills().length ? pills() : names).join(', '), flag: '' });
       glow(input);
     }
   }
