@@ -1410,7 +1410,8 @@ def api_fill_plan():
             derived["previously_employed"] = "Yes"  # applying where they already work
     hints = {**p, **{key: value for key, value in derived.items() if not p.get(key) or key == "previously_employed" or key == "degree"}}
     today = date.today()
-    skills = tailored_skills(sections, posting, declared)
+    # All of them, best first: the form adds them in order up to any limit it states.
+    skills = tailored_skills(sections, posting, declared, limit=20)
     # The listing answers some questions itself, and gives "open to all" its places.
     facts = applying.listing_facts(row["title"], row["description"], row["url"]) if row else {"locations": []}
     answers = applying.standard_answers(hints) + (applying.listing_answers(facts) if row else [])

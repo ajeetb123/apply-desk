@@ -590,6 +590,18 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(plan["education"][0]["field"], "Computer Science")
         self.assertIn("gender", plan["never"])
 
+    def test_fill_plan_lists_every_skill_best_first(self):
+        # The form adds them in order up to its own limit, so a skill Workday
+        # doesn't list is replaced by the next one rather than lost.
+        self.add_resume(self.JAKE)
+        many = "Kubernetes, Rust, Go, Docker, AWS, Linux, Bash, Terraform, Redis, Kafka, GraphQL, Swift"
+        self.client.post("/profile", data={"skills": many})
+        job_id = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "description": self.POSTING}).json["saved_job_id"]
+        skills = self.client.get(f"/api/fill-plan?job_id={job_id}").json["skills"]
+        self.assertGreater(len(skills), 10)
+        self.assertIn("Swift", skills)
+        self.assertEqual(skills[0], "Python")
+
     def test_learned_answers_are_reused_but_never_sensitive_or_essays(self):
         answers = [{"question": "Have you previously worked for this organization?", "answer": "No"},
                    {"question": "Which of our teams interests you most?", "answer": "Texas; Utah"},
