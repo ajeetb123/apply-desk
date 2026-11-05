@@ -26,7 +26,7 @@ STANDARD_QUESTIONS = [
     {"key": "us_citizen", "label": "U.S. citizen", "default": "",
      "pattern": r"are you (a |an )?(u\.? ?s\.?|united states) citizen|citizenship status|^(u\.? ?s\.? |united states )?citizen(ship)?$"},
     {"key": "authorized_us", "label": "Authorized to work in the U.S.", "default": "",
-     "pattern": r"^(?!.*\b(uk|u\.k\.|united kingdom|britain|england|canada|canadian|europe|european|eu|eea|india|australia|germany|france|ireland|singapore|japan|china|mexico|netherlands|israel|switzerland|poland|spain|italy|brazil|korea)\b).*(?:authori[sz]ed to work|eligib\w* (to work|for employment)|right to work|legally (able|permitted|eligible) to work|work authori[sz]ation)"},
+     "pattern": r"^(?!.*\b(uk|u\.k\.|united kingdom|britain|england|canada|canadian|europe|european|eu|eea|india|australia|germany|france|ireland|singapore|japan|china|mexico|netherlands|israel|switzerland|poland|spain|italy|brazil|korea)\b)(?!.{0,90}\b(require|requires|need|needs)\b.{0,40}sponsor).*(?:authori[sz]ed to work|eligib\w* (to work|for employment)|right to work|legally (able|permitted|eligible|entitled) to work|entitled to work|work authori[sz]ation)"},
     {"key": "needs_sponsorship", "label": "Will need visa sponsorship", "default": "",
      "pattern": r"^(?!.*\b(uk|u\.k\.|united kingdom|britain|england|canada|canadian|europe|european|eu|eea|india|australia|germany|france|ireland|singapore|japan|china|mexico|netherlands|israel|switzerland|poland|spain|italy|brazil|korea)\b).*sponsor"},
     # Having taken one, not being willing to ("willing to undergo a polygraph" is left for the user).
@@ -43,9 +43,9 @@ STANDARD_QUESTIONS = [
     {"key": "government_employee", "label": "Ever employed by the U.S. government", "default": "",
      "pattern": r"post.?government|(employed|worked) (by|for|with) (the |a )?(u\.? ?s\.? |united states |federal )?government|government employ|federal (government )?(employ|service)|civil servant"},
     {"key": "heard_about", "label": "How you heard about roles", "default": "",
-     "pattern": r"how did you (hear|learn|find)|hear about (us|this)|where did you (hear|find|learn)|referral source|^source$|candidate source"},
+     "pattern": r"how did you (hear|learn|find)|how you (heard|learned|found)|hear about (us|this)|where did you (hear|find|learn)|referral source|^source$|candidate source"},
     {"key": "previously_employed", "label": "Previously worked for the employer", "default": "",
-     "pattern": r"^(?!.*\bapplied\b).*((previously|ever|formerly) (worked|interned|been employed|employed)|former employee)|worked (for|at) (this|our|the) (organization|company)|current or former (employee|intern)|(currently|presently) (employed|working) (by|for|at|with)"},
+     "pattern": r"former .{0,40}(employee|contractor|intern)\b|(held|had|completed) (a |an |any )?(prior|previous|past) internship|^(?!.*\bapplied\b).*((previously|ever|formerly) (worked|interned|been employed|employed)|former employee)|worked (for|at) (this|our|the) (organization|company)|current or former (employee|intern)|(currently|presently) (employed|working) (by|for|at|with)"},
     {"key": "currently_employed", "label": "Currently employed", "default": "",
      "pattern": r"^(are you )?(currently|presently) (employed|working)$|^(current )?employment status$"},
     {"key": "current_employer", "label": "Current employer", "default": "",
@@ -57,21 +57,26 @@ STANDARD_QUESTIONS = [
     {"key": "country", "label": "Country", "default": "United States of America", "pattern": r"^country( or region|/region)?$|country of residence"},
     {"key": "country_code", "label": "Country phone code", "default": "United States of America (+1)", "pattern": r"country (phone )?code|phone country"},
     {"key": "enrollment_status", "label": "Enrollment status", "default": "", "pattern": r"enrollment status|(degree|level) (are you )?(currently )?(pursuing|working towards?)|student status"},
+    {"key": "born_in_us", "label": "Born in the U.S.", "default": "", "pattern": r"born in (the )?(u\.? ?s\b|united states|america)"},
+    {"key": "agreements_note", "label": "If a form asks you to describe an NDA or noncompete", "default": "",
+     "pattern": r"^(if (yes|so)\b|please (describe|explain|list|provide|specify)|describe|explain|list|provide)\b.{0,120}(non ?disclosure|\bnda\b|non ?compete|restrictive covenant|confidentiality agreement)"},
+    {"key": "high_school", "label": "High school", "default": "", "pattern": r"^(name of (your )?)?high school( name| attended)?$|(which|what) high school|high school (did|do) you"},
+    {"key": "high_school_year", "label": "Year you finished high school", "default": "", "pattern": r"(year|date) of high school graduation|high school graduation (year|date)|(when|what year) did you graduate (from )?high school"},
     # Before class_year and currently_student: "If you are currently enrolled..., what is your GPA?" is about GPA.
     {"key": "gpa", "label": "GPA", "default": "", "pattern": r"^(?!.*comment).*(\bgpa\b|grade point|overall result)"},
     {"key": "class_year", "label": "Year in school", "default": "",
      "pattern": r"year in (school|college|university)|class (standing|year|level)|academic (year|standing|classification)|current year of (study|school)|what year are you|year of study|grade level"},
     {"key": "currently_student", "label": "Currently a student", "default": "",
-     "pattern": r"currently (working towards?|pursuing|enrolled|attending|a student)|are you (a )?(current )?(college |university )?student"},
+     "pattern": r"^(?!.*(which|what) (university|school|college|institution)).*(currently (working towards?|pursuing|enrolled|attending|a student)|are you (a )?(current )?(college |university )?student)"},
     {"key": "degree_recent", "label": "Earned a degree in the last 2 years", "default": "",
      "pattern": r"(obtain|obtained|earn|earned|receive|received|complete|completed|graduate|graduated)( this| your| a)?( degree)? (with)?in the (last|past) \d+ (months|years)|recent graduate"},
     {"key": "over_18", "label": "18 or older", "default": "", "pattern": r"(18|eighteen) (years|or older)|at least 18|over (the age of )?18"},
-    {"key": "relatives", "label": "Relatives employed there", "default": "", "pattern": r"relative|family members? (currently )?employed"},
+    {"key": "relatives", "label": "Relatives employed there", "default": "", "pattern": r"relative|family members?|close personal relationship"},
     {"key": "location_preference", "label": "Work locations you'd take", "default": "",
      "pattern": r"location preference|preferred (work )?locations?|(which|what) (of (our|these|the following) )?(locations?|offices?|sites?)|where would you (like|prefer|want) to (work|be located|be based)|indicate your location|desired (work )?locations?"},
     {"key": "relocate", "label": "Willing to relocate", "default": "", "pattern": r"relocat"},
     {"key": "work_onsite", "label": "Can work on-site or hybrid", "default": "",
-     "pattern": r"(able|willing|comfortable) to (work|commute|report|be)[^.]{0,40}(on.?site|in.?person|in the office|hybrid|office)|work (on.?site|in.?person|hybrid)( schedule| basis)?\b"},
+     "pattern": r"(hybrid|on.?site|in the office).{0,120}(are you|can you|able|willing)|(able|willing|comfortable) to (work|commute|report|be)[^.]{0,40}(on.?site|in.?person|in the office|hybrid|office)|work (on.?site|in.?person|hybrid)( schedule| basis)?\b"},
 ]
 STANDARD_KEYS = [q["key"] for q in STANDARD_QUESTIONS]
 
@@ -86,9 +91,9 @@ DECLINE = ["I do not wish to answer", "I don't wish to answer", "I do not want t
 DISCLOSURE_QUESTIONS = [
     {"key": "eeo_hispanic", "label": "Hispanic or Latino", "choices": ["Yes", "No"], "pattern": r"hispanic|latin[oax]"},
     {"key": "eeo_race", "label": "Race or ethnicity",
-     "choices": ["American Indian or Alaska Native", "Asian", "Black or African American", "Native Hawaiian or Other Pacific Islander", "White", "Two or More Races"],
+     "choices": ["American Indian or Alaska Native", "Asian", "Asian Indian", "Black or African American", "Native Hawaiian or Other Pacific Islander", "White", "Two or More Races"],
      "pattern": r"\brace\b|ethnic"},
-    {"key": "eeo_pronouns", "label": "Pronouns", "choices": ["He/Him", "She/Her", "They/Them"], "pattern": r"pronoun"},
+    {"key": "eeo_pronouns", "label": "Pronouns", "choices": ["He/Him", "She/Her", "They/Them"], "pattern": r"\bpronouns?\b"},
     {"key": "eeo_gender", "label": "Gender", "choices": ["Male", "Female", "Non-binary"], "pattern": r"\bgender\b|^sex$|what is your sex"},
     {"key": "eeo_veteran", "label": "Veteran status", "choices": ["I am not a protected veteran", "I identify as a protected veteran"],
      "pattern": r"veteran|military status"},
@@ -98,6 +103,8 @@ DISCLOSURE_KEYS = [q["key"] for q in DISCLOSURE_QUESTIONS]
 DISCLOSURE_VARIANTS = {
     # Only the Hispanic or Latino question has Yes/No answers.
     "No": ["No", "Not Hispanic or Latino", "No, not Hispanic or Latino"], "Yes": ["Yes", "Hispanic or Latino", "Yes, Hispanic or Latino"],
+    # The most specific race option a form has, else the broader one.
+    "Asian Indian": ["Asian Indian", "Indian", "Asian"],
     "He/Him": ["He/Him", "He / Him", "He, Him", "He Him", "He"], "She/Her": ["She/Her", "She / Her", "She, Her", "She Her", "She"],
     "They/Them": ["They/Them", "They / Them", "They, Them", "They Them", "They"],
     "Male": ["Male", "Man"], "Female": ["Female", "Woman"], "Non-binary": ["Non-binary", "Nonbinary", "Non binary", "Genderqueer"],
@@ -126,7 +133,7 @@ def disclosure_answers(profile: dict) -> list[dict]:
 
 
 # Labels that never get a saved answer and are never learned.
-NEVER = r"race|ethnic|hispanic|latin[oax]|gender|sex\b|pronoun|disab|veteran|military status|social security|\bssn\b|date of birth|birth ?date|password|salary|compensation|pay expectation|signature|captcha"
+NEVER = r"race|ethnic|hispanic|latin[oax]|gender|sex\b|\bpronouns?\b|pronounc|pronunciation|disab|veteran|military status|social security|\bssn\b|date of birth|birth ?date|password|verification code|security code|one.?time (code|pass)|salary|compensation|pay expectation|signature|captcha"
 
 ORG_WORDS = r"\b(university|college|institute|school|inc|llc|ltd|corp|corporation|company|co\.|labs?|laboratory|technologies|systems|group|foundation|department|library|center|centre|agency|bank|hospital)\b"
 TITLE_WORDS = r"\b(intern|engineer|developer|assistant|analyst|researcher|technician|lead|manager|associate|fellow|consultant|scientist|designer|tutor|instructor|specialist|coordinator|officer|president|founder|volunteer|representative|cashier|counselor)\b"
@@ -228,6 +235,7 @@ FOLLOW_UPS = [
      "us_citizen", "Yes", "Yes", ["Yes", "A citizen of the U.S.", "U.S. Citizen", "US Citizen", "Citizen", "U.S. person"]),
     ("citizenship_country", r"countr(y|ies) of (current )?citizenship|citizenship countr|(which|what) countr(y|ies) .{0,30}(citizen|national)",
      "us_citizen", "Yes", "United States of America", ["United States of America", "United States", "USA", "US"]),
+    ("refugee_status", r"refugee|asylee|asylum", "us_citizen", "Yes", "No", ["No", "N/A", "Not applicable"]),
     ("start_soon", r"start within \d+ ?(days?|weeks?)|(able|available) to start (immediately|right away|now|asap)|immediate(ly)? (start|availab)",
      "currently_student", "Yes", "No", ["No"]),
 ]
@@ -250,20 +258,30 @@ YES, NO = ["Yes"], ["No"]
 PRESUMED = [
     # (key, question pattern, answer, option labels, assumed, profile condition)
     ("criminal", r"convicted|felony|misdemeanor|criminal (record|history|offen[cs]e|charge)|plead(ed)? guilty|no contest", "No", NO, True, None),
-    ("noncompete", r"non ?compete|non ?solicit|restrictive covenant|(agreement|contract|obligation)s? .{0,80}(restrict|prevent|limit|prohibit|conflict)|bound by (any|an) ", "No", NO + ["N/A"], True, None),
+    # The user won't disclose an employer's confidential information and isn't held back by any agreement.
+    ("confidentiality_promise", r"^(?=.*(confidential|proprietary|trade secret|(former|previous|prior|past) employer)).*\bnot\b.{0,60}(disclose|use|bring|share|reveal|retain)|(willing|agree|able) to (sign|execute|enter).{0,60}(non ?disclosure|\bnda\b|confidentiality)",
+     "Yes", ["Yes", "I agree", "Agree", "I accept", "Accept", "I acknowledge", "Acknowledge", "I understand", "True"], False, None),
+    ("noncompete", r"^(?!.*(willing|able) to sign).*(non ?compete|non ?solicit|non ?disclosure|\bnda\b|confidentiality (agreement|obligation)|restrictive covenant|(agreement|contract|obligation)s? .{0,80}(restrict|prevent|limit|prohibit|conflict)|bound by (any|an) )", "No", NO + ["N/A", "None"], False, None),
     ("terminated", r"(terminated|discharged|fired|dismissed|asked to resign|involuntarily (separated|terminated))", "No", NO, True, None),
     ("discipline", r"disciplinary action|academic (misconduct|probation|dishonesty)|been (suspended|expelled)", "No", NO, True, None),
     ("debarred", r"debarred|excluded .{0,40}(federal|government) (program|contract)", "No", NO, True, None),
-    ("military_service", r"(have you|did you) (ever )?serve|served in the|armed forces status|military service|currently serving|member of the (armed forces|military|national guard|reserves?)",
+    ("military_service", r"(have you|did you) (ever )?serve|served in the|armed forces status|military service|currently serving|member of the (u\.? ?s\.? )?(armed forces|military|national guard|reserves?)",
      "No", ["No", "I have not served", "Never served", "None", "Not applicable", "N/A"], True, None),
     ("military_spouse", r"military spouse|spouse of .{0,40}(service member|veteran|military)", "No", NO, True, None),
     ("unable_contribute", r"reasons? (why )?you (would|could|may|might) not be able to|unable to (fully )?(contribute|support|perform)|anything that would prevent you", "No", NO, True, None),
-    ("other_citizenship", r"dual citizen|citizen(ship)? (of|in) any other|other citizenships?|hold citizenship (in|of) (any|another)|citizen of (any )?(another|other) countr",
-     "No", NO + ["None", "N/A"], True, ("us_citizen", "yes")),
+    ("other_citizenship", r"dual (citizen|national)|(second|additional|multiple) (citizenship|nationalit)|citizen(ship)? (of|in) any other|other (citizenship|nationalit)|hold citizenship (in|of) (any|another)|citizen of (any )?(another|other) countr|(citizenship|permanent residen\w+) (in|of) (another|any other) countr",
+     "No", NO + ["None", "N/A"], False, ("us_citizen", "yes")),
+    ("birth_country", r"(country|place) of birth|birth ?country|country of origin|where were you born|(which|what) country were you born",
+     "United States of America", ["United States of America", "United States", "USA", "US", "U.S."], False, ("born_in_us", "yes")),
+    ("naturalized", r"naturali[sz]ed", "No", NO, False, ("born_in_us", "yes")),
+    ("citizen_how", r"(how|basis).{0,40}(citizenship|citizen)|citizen(ship)? (by|through)", "By birth", ["By birth", "Birth", "Born in the U.S.", "Born in the United States", "Native born", "Natural born"], False, ("born_in_us", "yes")),
     ("visa_status", r"are you (currently )?(on|in|under|a holder of|holding) (a |an )?.{0,30}(visa|f 1|opt|cpt|h 1b)|(visa|immigration) (status|type)|what (type of )?visa",
      "U.S. Citizen", ["U.S. Citizen", "US Citizen", "Citizen", "Not applicable", "N/A", "None", "No"], False, ("us_citizen", "yes")),
     ("other_country_work", r"(right|authori[sz]\w+|eligib\w+|permit\w*|legally (able|allowed)) to work in (the )?(uk|u\.k\.|united kingdom|canada|europe|eu|european union|india|australia|germany|france|ireland|singapore|japan|china|mexico|netherlands)",
-     "No", NO, True, ("us_citizen", "yes")),
+     "No", NO, False, ("us_citizen", "yes")),
+    ("verify_identity", r"(provide|show|present|submit).{0,40}(verification|proof|documentation).{0,40}(identity|eligibility)|verification of (your )?identity", "Yes", YES, True, None),
+    ("offer_deadline", r"offer deadlines?|competing offers?", "No", NO + ["None"], True, None),
+    ("final_internship", r"(final|last) internship", "No", NO, False, ("class_year", "freshman")),
     ("background_check", r"background (check|investigation|screen)|drug (test|screen)|pre employment (screen|check)", "Yes", YES, True, None),
     ("essential_functions", r"essential (job )?functions|perform the (essential )?(duties|functions)", "Yes", YES, True, None),
     ("return_to_school", r"return(ing)? to (school|university|college|your (degree|studies|program|campus))|continu(e|ing) your (education|studies|degree)|still be (enrolled|a student)|enrolled .{0,60}(after|following|upon completion of) (the|your|this) (internship|program|co op)",
@@ -278,8 +296,10 @@ PRESUMED = [
     ("meets_requirements", r"meet (the |all |all of the )?(minimum|basic|required) (qualifications|requirements)|read (and (understood|understand) )?the (job|position) description", "Yes", YES, True, None),
     ("under_18", r"under (the age of )?18|are you a minor", "No", NO, False, ("over_18", "yes")),
     ("english", r"fluent in english|english (proficiency|fluency|language)|proficien\w+ in english|speak(ing)? english|read,? write,? and speak english",
-     "Yes", ["Yes", "Fluent", "Native", "Native or bilingual", "Native / Bilingual", "Advanced", "Full professional"], True, None),
-    ("languages", r"(what|which) languages? (do you|are you|can you)|languages? (spoken|you speak|fluent|proficiency)|^languages?$", "English", ["English"], True, None),
+     "Yes", ["Yes", "Fluent", "Native", "Native or bilingual", "Native / Bilingual", "Advanced", "Full professional"], False, None),
+    # English is the only language the user speaks.
+    ("other_languages", r"languages? other than english|(other|additional|second|foreign|another) languages?|bilingual|multilingual", "No", NO + ["None", "N/A"], False, None),
+    ("languages", r"(what|which) languages? (do you|are you|can you)|languages? (spoken|you speak|fluent|proficiency)|language skills?|^languages?$", "English", ["English"], False, None),
     ("notice", r"notice period|how much notice", "N/A", ["N/A", "None", "Not applicable", "Immediately", "No notice", "2 weeks", "Two weeks"], True, None),
     ("hours_per_week", r"how many hours (per|a|each) week|hours per week (are you|can you|you can)", "40", ["40", "40 hours", "Full time", "35 40", "40+"], True, None),
     ("degrees_completed", r"degrees? (have you|you have|you've) (already )?(completed|earned|obtained)|completed (any )?degrees?|already completed",
@@ -304,6 +324,9 @@ def experience_months(experience: list[dict]) -> int:
 
 def presumed_answers(profile: dict, education: list[dict], experience: list[dict], applied_before: bool = False) -> list[dict]:
     out = []
+    if (profile.get("agreements_note") or "").strip():
+        out.append({"key": "nda_signed", "pattern": r"(have|did) you (ever )?(signed|executed|entered|been party).{0,60}(non ?disclosure|\bnda\b|confidentiality)",
+                    "answer": "Yes", "options": YES, "assumed": False})
     for key, pattern, answer, options, assumed, condition in PRESUMED:
         if condition and (profile.get(condition[0]) or "").strip().lower() != condition[1]:
             continue
@@ -515,8 +538,8 @@ def date_formats(parsed, default_day: int = 1) -> dict:
             "mm_dd_yyyy": f"{month:02d}/{day:02d}/{year}", "iso": f"{year}-{month:02d}-{day:02d}", "iso_month": f"{year}-{month:02d}"}
 
 
-def program_start(description: str) -> tuple[dict, str]:
-    """When the internship or role starts, from the posting; today otherwise."""
+def program_start(description: str, term: str = "") -> tuple[dict, str]:
+    """When the internship or role starts, from the posting or its term ("Summer 2027"); today otherwise."""
     text = description or ""
     range_match = re.search(r"([A-Z][a-z]{2,8}\.? \d{1,2}(?:st|nd|rd|th)?,? 20\d{2})\s*(?:-|–|—|to|through)\s*[A-Z][a-z]{2,8}\.? \d{1,2}", text)
     if range_match:
@@ -524,6 +547,10 @@ def program_start(description: str) -> tuple[dict, str]:
     start_match = re.search(r"(?:start(?:s|ing)?(?: date)?|begins?|beginning)\s*(?:on|:|in)?\s*([A-Z][a-z]{2,8}\.? (?:\d{1,2}(?:st|nd|rd|th)?,? )?20\d{2})", text)
     if start_match:
         return date_formats(parse_month_year(start_match.group(1))), "the start date in the posting"
+    season = re.search(r"\b(spring|summer|fall|autumn|winter)\s+(20\d{2})\b", term or "", re.I)
+    if season:
+        month = {"spring": 1, "summer": 6, "fall": 9, "autumn": 9, "winter": 1}[season.group(1).lower()]
+        return date_formats((int(season.group(2)), month, 1)), f"the {season.group(1).lower()} {season.group(2)} term in the posting"
     today = date.today()
     return date_formats((today.year, today.month, today.day)), "today's date (the posting gives no start date)"
 
@@ -593,7 +620,7 @@ def education_entries(sections, profile: dict) -> list[dict]:
             # Keep the resume's degree when the profile's names no degree type.
             if profile.get("degree") and (degree_options(profile["degree"]) != [profile["degree"]] or not out[0]["degree"]):
                 out[0]["degree"] = profile["degree"]
-            out[0]["end"] = out[0]["end"] or graduation
+            out[0]["end"] = graduation or out[0]["end"]
         else:
             out.append({"school": profile.get("school", ""), "location": "", "degree": profile.get("degree", ""), "start": {}, "end": graduation})
     # No start date on the resume: the fall they started, from their year in
@@ -790,7 +817,8 @@ def drafts(profile: dict, education: list[dict], experience: list[dict], skills:
     stories, honors = stories or [], honors or []
     school = (profile.get("school") or (education[0]["school"] if education else "")).strip()
     field = ((education[0].get("field") if education else "") or "computer science").lower()
-    graduation = (profile.get("graduation") or "").strip()
+    # Sentences say "May 2029", even when Profile has the exact day.
+    graduation = re.sub(r"\b([A-Za-z]{3,9})\.? \d{1,2}(?:st|nd|rd|th)?,? (\d{4})\b", r"\1 \2", (profile.get("graduation") or "").strip())
     year = YEAR_WORDS.get((profile.get("class_year") or "").strip().lower(), "")
     me = f"I'm a {year + ' ' if year else ''}{field} student{f' at {school}' if school else ''}"
     goals = [g.strip() for g in re.split(r"[,;\n]", profile.get("career_goals", "")) if g.strip()][:2]

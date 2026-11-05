@@ -48,8 +48,10 @@ enum Autofill {
     /// Also wakes the filler's waits that are due: Chrome slows a background
     /// tab's own timers, so each check keeps a fill in another tab moving.
     static let statusScript = "window.__applyDeskPump && window.__applyDeskPump(); JSON.stringify(window.__applyDeskFill || null)"
-    /// Asks a running fill to stop after the page it's on.
-    static let stopScript = "window.__applyDeskStop = true; 'stopping'"
+    /// Stops a running fill where it is. Its next wait or field ends the run; the pump wakes the waits now.
+    static let stopScript = "window.__applyDeskStop = true; window.__applyDeskPump && window.__applyDeskPump(); 'stopping'"
+    /// What the user has changed by hand since the last check, taken out of the tab so it's sent once.
+    static let correctionsScript = "(() => { try { const seen = sessionStorage.getItem('applyDeskSeen'); if (seen) sessionStorage.removeItem('applyDeskSeen'); return seen || ''; } catch (error) { return ''; } })()"
 
     /// The filler plus the call that starts it. `plan` is GET /api/fill-plan.
     static func script(plan: Data, resume: (name: String, pdf: Data)? = nil, source: String? = nil) -> String? {
@@ -66,7 +68,9 @@ enum Autofill {
         let embedded = (object["embedded"] as? String).flatMap { $0.isEmpty ? nil : URL(string: $0) }
         let learned = (object["learn"] as? [[String: Any]] ?? []).compactMap { item -> [String: String]? in
             guard let question = item["question"] as? String, let answer = item["answer"] as? String else { return nil }
-            return ["question": question, "answer": answer]
+            var entry = ["question": question, "answer": answer]
+            if let corrected = item["corrected"] as? String { entry["corrected"] = corrected }
+            return entry
         }
         let items = (object["items"] as? [[String: Any]] ?? []).map { $0.compactMapValues { $0 as? String } }
         return Result(done: object["done"] as? Bool ?? false, fields: object["filled"] as? [String] ?? [],
