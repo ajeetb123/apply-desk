@@ -1,7 +1,7 @@
 import Foundation
 
-/// Runs the form filler (autofill.js, bundled with the app) in Chrome's front
-/// tab. The filler fills only empty fields from the user's own profile, saved
+/// Runs the form filler (autofill.js, bundled with the app) in a Chrome tab
+/// (several tabs can each run one). The filler fills only empty fields from the user's own profile, saved
 /// answers, resume, and tailored skills; it never submits. On multi-step
 /// applications it fills each page, presses Save and Continue, and stops at a
 /// page that needs the user or at Review, where it shows its review panel. It
@@ -31,7 +31,9 @@ enum Autofill {
         let beat: Int
     }
 
-    static let statusScript = "JSON.stringify(window.__applyDeskFill || null)"
+    /// Also wakes the filler's waits that are due: Chrome slows a background
+    /// tab's own timers, so each check keeps a fill in another tab moving.
+    static let statusScript = "window.__applyDeskPump && window.__applyDeskPump(); JSON.stringify(window.__applyDeskFill || null)"
     /// Asks a running fill to stop after the page it's on.
     static let stopScript = "window.__applyDeskStop = true; 'stopping'"
 

@@ -38,7 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchedAtLogin = false
     private var showingHelp = false
     private var remindedAboutResume = false
-    private var fillStarted: Date?                     // a fill run in progress; pressing ` again stops it after the page
+    private var fills: [String: Date] = [:]            // tab id → when its fill started; pressing ` in that tab stops it after the page
+    private var resumeMakers: [String: ResumePDF] = [:] // tab id → the resume being rendered for its fill
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let event = NSAppleEventManager.shared().currentAppleEvent
@@ -623,27 +624,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fixChromeAccess()
             return
         }
-        if let started = fillStarted, Date().timeIntervalSince(started) < 30 * 60 {
-            _ = Chrome.runJavaScript(Autofill.stopScript)
+        // Each tab runs its own fill, so several applications can go at once.
+        // Pressing ` in a tab that's being filled stops that one after its page.
+        if let started = fills[tab.id], Date().timeIntervalSince(started) < 30 * 60 {
+            _ = Chrome.runJavaScript(Autofill.stopScript, tabID: tab.id)
             return toasts.show(Toast(title: "Stopping after this page…", detail: "Press ` again later to pick up where it stopped.", symbol: "pause.circle"))
         }
-        fillStarted = Date()
-        roleForApplication(tab) { [weak self] role in
+        fills[tab.id] = Date()
+        roleForFill(tab) { [weak self] role in
             guard let self = self else { return }
             self.backend.send("api/fill-plan?job_id=\(role ?? 0)") { [weak self] plan in
                 guard let self = self else { return }
                 guard let plan = plan, let profile = plan["profile"] as? [String: Any],
                       profile.values.contains(where: { ($0 as? String).map { !$0.isEmpty } ?? false }) else {
-                    self.fillStarted = nil
+                    self.fills[tab.id] = nil
                     return self.toasts.show(Toast(title: "Add your details first", detail: "Apply Desk fills applications from your profile.",
                                                   symbol: "person.text.rectangle", actionTitle: "Open Profile", action: { [weak self] in self?.workspace.show(path: "profile") }))
                 }
                 let name = (profile["name"] as? String).flatMap { $0.isEmpty ? nil : "\($0) Resume.pdf" } ?? "Resume.pdf"
-                guard let role = role else { return self.runFill(plan: plan, tab: tab, role: nil, resume: nil, name: name) }
-                self.resumePDF.make(jobID: role) { output in
+                // A resume always goes with the application: tuned for the role
+                // when Apply Desk knows the posting, otherwise the resume as it is.
+                let maker = ResumePDF(backend: self.backend)
+                self.resumeMakers[tab.id] = maker
+                maker.make(jobID: role) { [weak self] output in
+                    guard let self = self else { return }
+                    self.resumeMakers[tab.id] = nil
                     self.runFill(plan: plan, tab: tab, role: role, resume: output, name: name)
                 }
             }
+        }
+    }
+
+    /// The saved role for the application in `tab`. When none matches, the
+    /// posting is read on the spot (from this page, or from the listing the
+    /// application belongs to) and saved, so the resume is still tuned for it.
+    private func roleForFill(_ tab: Chrome.Tab, completion: @escaping (Int?) -> Void) {
+        roleForApplication(tab) { [weak self] role in
+            guard let self = self, role == nil else { return completion(role) }
+            if let page = Chrome.readPage(tabID: tab.id), page.ready, page.description.count >= 300, JobListing.looksLikePosting(page.description) {
+                var payload: [String: Any] = page.signals.mapValues { String($0.prefix(300)) }
+                payload["url"] = tab.url
+                payload["description"] = String(page.description.prefix(50_000))
+                return self.saveRole(payload, tab: tab, completion: completion)
+            }
+            guard Chrome.runJavaScript(JobListing.findPostingScript, tabID: tab.id) != nil else { return completion(nil) }
+            self.waitForPosting(tab, attempts: 20, completion: completion)
+        }
+    }
+
+    private func waitForPosting(_ tab: Chrome.Tab, attempts: Int, completion: @escaping (Int?) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self = self else { return }
+            let value = Chrome.runJavaScript("window.__applyDeskPosting || ''", tabID: tab.id) ?? ""
+            if value.isEmpty {
+                return attempts > 0 ? self.waitForPosting(tab, attempts: attempts - 1, completion: completion) : completion(nil)
+            }
+            guard let data = value.data(using: .utf8), let found = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+                  let description = found["description"], description.count >= 300 else { return completion(nil) }
+            self.saveRole(["url": found["url"] ?? tab.url, "title": found["title"] ?? "", "company": found["company"] ?? "",
+                           "description": String(description.prefix(50_000))], tab: tab, completion: completion)
+        }
+    }
+
+    private func saveRole(_ payload: [String: Any], tab: Chrome.Tab, completion: @escaping (Int?) -> Void) {
+        backend.send("api/evaluate", json: payload) { [weak self] result in
+            let role = result?["saved_job_id"] as? Int
+            if let role = role { self?.tabLastRole[tab.id] = role }
+            completion(role)
         }
     }
 
@@ -664,22 +711,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func runFill(plan: [String: Any], tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?, name: String) {
         guard let planData = try? JSONSerialization.data(withJSONObject: plan),
-              let script = Autofill.script(plan: planData, resume: resume.map { (name, $0.pdf) }) else { fillStarted = nil; return }
-        guard Chrome.runJavaScript(script) != nil else {
-            fillStarted = nil
+              let script = Autofill.script(plan: planData, resume: resume.map { (name, $0.pdf) }) else { fills[tab.id] = nil; return }
+        guard Chrome.runJavaScript(script, tabID: tab.id) != nil else {
+            fills[tab.id] = nil
             if Chrome.lastFailure != nil { noteChromeFailure(); fixChromeAccess() }
             else { toasts.show(Toast(title: "Couldn't read this form", detail: "This page may block autofill. Enter the remaining details yourself.", symbol: "exclamationmark.triangle")) }
             return
         }
-        toasts.show(Toast(title: "Filling this application…", detail: "Apply Desk goes page by page and stops at Review. Keep this tab in front; press ` to stop.", symbol: "wand.and.stars"), for: 60)
-        waitForFill(FillWatch(script: script)) { [weak self] result in
-            self?.finishFill(result, tab: tab, role: role, resume: resume)
+        // Toasts name the application, since several can be running.
+        let info = plan["role"] as? [String: Any]
+        let label = [info?["company"] as? String, info?["title"] as? String].compactMap { $0 }.first { !$0.isEmpty } ?? "This application"
+        toasts.show(Toast(title: "Filling \(label)…", detail: "Apply Desk fills each page, checks it, fills it again, and stops at Review. You can start another in a different tab; press ` here to stop this one.", symbol: "wand.and.stars"), for: 60)
+        waitForFill(FillWatch(script: script, tabID: tab.id, label: label)) { [weak self] result in
+            self?.finishFill(result, tab: tab, role: role, resume: resume, label: label)
         }
     }
 
-    /// A fill run in progress, which can span several pages.
+    /// A fill run in progress in one tab, which can span several pages.
     private struct FillWatch {
         let script: String
+        let tabID: String
+        let label: String
         var progress = ""
         var lastChange = Date()
         var missingSince: Date?
@@ -690,13 +742,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// The filler keeps working after it starts; check on it until it's done.
+    /// Each check also wakes the filler (a background tab's timers are slowed).
     /// When a step loads as a whole new page, start the filler again there;
     /// it picks up the same run from the tab's session storage.
     private func waitForFill(_ watch: FillWatch, completion: @escaping (Autofill.Result?) -> Void) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self = self else { return }
             var watch = watch
-            if let result = Autofill.parse(Chrome.runJavaScript(Autofill.statusScript)) {
+            if let result = Autofill.parse(Chrome.runJavaScript(Autofill.statusScript, tabID: watch.tabID)) {
                 if result.done { return completion(result) }
                 watch.missingSince = nil
                 let progress = "\(result.beat)|\(result.items.count)|\(result.fields.count)"
@@ -705,12 +758,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     watch.page = result.page
                     watch.waiting = result.waiting
                     self.toasts.show(result.waiting
-                        ? Toast(title: "Waiting for you on \(result.page)", detail: "Answer what's listed on the page. Apply Desk keeps going by itself once you're done.", symbol: "hand.raised")
-                        : Toast(title: "Filling \(result.page)…", detail: "Apply Desk goes page by page and stops at Review. Press ` to stop.", symbol: "wand.and.stars"), for: 60)
+                        ? Toast(title: "\(watch.label) needs you on \(result.page)", detail: "Answer what's listed in that tab. Apply Desk keeps going by itself once you're done.", symbol: "hand.raised")
+                        : Toast(title: "\(watch.label): filling \(result.page)…", detail: "Apply Desk goes page by page and stops at Review. Press ` in that tab to stop.", symbol: "wand.and.stars"), for: 60)
                 }
                 watch.last = result
             } else if watch.last?.advancing == true, watch.reloads < 12 {
-                if Chrome.activeTab()?.loading == false, Chrome.runJavaScript(watch.script) != nil {
+                if Chrome.tab(id: watch.tabID)?.loading == false, Chrome.runJavaScript(watch.script, tabID: watch.tabID) != nil {
                     watch.reloads += 1
                     watch.last = nil
                     watch.lastChange = Date()
@@ -725,15 +778,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func finishFill(_ result: Autofill.Result?, tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?) {
-        fillStarted = nil
+    private func finishFill(_ result: Autofill.Result?, tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?, label: String) {
+        fills[tab.id] = nil
         guard let result = result, result.done else {
-            return toasts.show(Toast(title: "The form stopped responding", detail: "Some fields may be filled. Check the page and finish it yourself.", symbol: "exclamationmark.triangle"))
+            return toasts.show(Toast(title: "\(label): the form stopped responding", detail: "Some fields may be filled. Check that tab and press ` there to pick it up again.", symbol: "exclamationmark.triangle"))
         }
         if !result.learned.isEmpty {
             backend.send("api/answers", json: ["answers": result.learned]) { _ in }
         }
-        let filled = result.fields.count
+        // Lines with a value are answers; the rest are blanks listed for the user.
+        let answered = result.items.filter { !($0["value"] ?? "").isEmpty }.count
+        let blanks = result.items.filter { ($0["flag"] ?? "").hasPrefix("Required") }.count
+        let filled = max(result.fields.count, answered)
         if let role = role, let resume = resume, !result.items.isEmpty || result.attached {
             // Keep the exact resume that went with this application, and the
             // review of every page; later pages of the same run update it.
@@ -745,16 +801,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let open: () -> Void = { [weak self] in if let role = role { self?.workspace.show(path: "job/\(role)") } }
         let pageName = result.page.isEmpty ? "This page" : result.page
+        let resumeNote = !result.attached ? "" : role == nil ? " Attached your resume as it is (Apply Desk couldn't find the posting to tune it)." : " Attached your tuned resume."
+        // A Review step, or a one-page form that's been filled, checked, and filled
+        // again: what's left is in the panel on that tab.
+        let onePage = result.pages.isEmpty && (result.stop == "end" || result.stop == "needs")
+        if result.stop == "review" || (onePage && answered > 0) {
+            let pages = result.pages.count
+            let detail = "Filled \(answered) field\(answered == 1 ? "" : "s")\(pages > 1 ? " across \(pages) pages" : "").\(resumeNote) "
+                + (blanks > 0 ? "\(blanks) still need\(blanks == 1 ? "s" : "") you. " : "") + (result.checks > 0 ? "\(result.checks) to check in the panel. " : "") + "Submit is yours."
+            return toasts.show(Toast(title: blanks > 0 ? "\(label): \(blanks) left for you" : "\(label) is ready for your review", detail: detail,
+                                     symbol: blanks > 0 ? "hand.raised" : "checkmark.seal", actionTitle: role == nil ? nil : "See What Was Sent", action: open), for: 14)
+        }
         switch result.stop {
-        case "review":
-            let total = result.items.count, pages = result.pages.count
-            let detail = "Filled \(total) field\(total == 1 ? "" : "s")\(pages > 1 ? " across \(pages) pages" : ""). "
-                + (result.checks > 0 ? "\(result.checks) to check in the panel. " : "") + "Submit is yours."
-            return toasts.show(Toast(title: "Ready for your review", detail: detail, symbol: "checkmark.seal",
-                                     actionTitle: role == nil ? nil : "See What Was Sent", action: open), for: 14)
         case "needs", "errors":
             let shown = result.needs.prefix(3).joined(separator: "; ") + (result.needs.count > 3 ? "…" : "")
-            return toasts.show(Toast(title: "\(pageName) needs you", detail: "\(shown). Answer \(result.needs.count == 1 ? "it" : "them"), then press ` to keep going.",
+            return toasts.show(Toast(title: "\(label): \(pageName) needs you", detail: "\(shown). Answer \(result.needs.count == 1 ? "it" : "them") in that tab, then press ` there to keep going.",
                                      symbol: "hand.raised"), for: 14)
         case "signin":
             return toasts.show(Toast(title: "Sign in first", detail: "Apply Desk never types passwords. Sign in, then press ` on the application's first page.", symbol: "person.badge.key"))
@@ -768,7 +829,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if filled > 0 || result.attached {
             let parts = [filled > 0 ? "filled \(filled) field\(filled == 1 ? "" : "s")" : nil,
                          result.blocks > 0 ? "\(result.blocks) experience and education entr\(result.blocks == 1 ? "y" : "ies")" : nil,
-                         result.attached ? "attached your tuned resume" : nil].compactMap { $0 }
+                         result.attached ? (role == nil ? "attached your resume" : "attached your tuned resume") : nil].compactMap { $0 }
             let sentence = parts.joined(separator: ", ")
             let detail = result.attached || role == nil ? "Review every value, answer the rest, and submit it yourself."
                 : resume == nil ? "Couldn't prepare your tuned resume. Save it from the role page and upload it yourself."

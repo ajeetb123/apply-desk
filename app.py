@@ -125,7 +125,8 @@ def init_db():
         # slugs ("Externalcareersite") become the company's own name.
         for row in conn.execute("SELECT id, company, url, description FROM jobs WHERE company != ''").fetchall():
             name = applying.company_name(row[1], row[2] or "", row[3] or "")
-            if "myworkdayjobs.com" in (row[2] or "") and name.lower() not in (row[3] or "").lower():
+            # A careers-site slug or an organization id (Ashby) the posting never uses.
+            if ("myworkdayjobs.com" in (row[2] or "") and name.lower() not in (row[3] or "").lower()) or re.fullmatch(r"[0-9a-f-]{20,}", name):
                 name = applying.company_from_intro(row[3] or "") or name
             if name and name != row[1]:
                 conn.execute("UPDATE jobs SET company=? WHERE id=?", (name, row[0]))
@@ -990,7 +991,8 @@ def unique_review(items: list[dict]) -> list[dict]:
 
 
 def fields_filled(review: list[dict]) -> str:
-    return f"{len(review)} field{'s' if len(review) != 1 else ''}"
+    count = sum(1 for item in review if item.get("value"))  # blanks left for the user are listed too, not counted
+    return f"{count} field{'s' if count != 1 else ''}"
 
 
 def merge_duplicates():
@@ -1206,6 +1208,10 @@ def job(job_id):
     for application in sent:
         application["host"] = urlparse(application["url"]).netloc
         application["review"] = json.loads(application["review"] or "[]")
+        # Lines without a value are blanks left for the user, listed apart from answers to check.
+        application["blanks"] = [item for item in application["review"] if not item.get("value")]
+        application["blank_required"] = sum(1 for item in application["blanks"] if item.get("flag", "").startswith("Required"))
+        application["review"] = [item for item in application["review"] if item.get("value")]
         application["checks"] = sum(1 for item in application["review"] if item.get("flag"))
     odds = role_odds(item, match, p, resume_plain(resume["text"]) if resume else "")
     return render_template("job.html", page="job", title=item["title"] or "Role", job=item, report=report, match=match, resume=resume, odds=odds,
@@ -1535,16 +1541,37 @@ def api_fill_plan():
     for answer in answers:
         if answer["key"] == "location_preference" and answer["answer"]:
             answer["open"] = open_to_all = answer["options"][0] == "No preference"
-            if answer["open"]:  # with no "no preference" option, the listing's own places
-                answer["options"] = answer["options"] + facts["locations"] + applying.state_options(p.get("state", ""))[:1]
+            if answer["open"]:
+                # Open to anywhere: name this listing's own place when a form asks
+                # which one ("San Diego, California", or just "San Diego"), then
+                # "no preference", then the user's state.
+                places = [variant for place in facts["locations"] for variant in (place, place.split(",")[0])]
+                answer["options"] = list(dict.fromkeys(places + answer["options"] + applying.state_options(p.get("state", ""))[:1]))
+                answer["text"] = facts["locations"][0] if facts["locations"] else "Open to any location"
     for answer in answers:
         # Open to every location: "Yes- Either Somerville or Devens" over one office.
         if answer["key"] == "work_onsite" and open_to_all and answer["answer"].lower() == "yes":
             answer["options"] = ["Yes either", "Yes any", "Yes all", "Yes, any", "Yes, all"] + answer["options"]
+    applied_before = False
+    if role and role["company"]:
+        with db() as conn:
+            others = conn.execute("SELECT jobs.company FROM applications JOIN jobs ON jobs.id=applications.job_id "
+                                  "WHERE applications.job_id!=? AND applications.attached=1", (role["id"],)).fetchall()
+        applied_before = any(applying.company_word(other[0]) == applying.company_word(role["company"]) for other in others)
+    # Stories for essay drafts read in the resume's own order (its first line
+    # of a project says what it is), not the order tuned for this posting.
+    plain = resume_outline(resume["text"])[1] if resume else []
+    stories = applying.story_entries(applying.experience_entries(plain), plain)
+    pay = facts.get("pay") or {}
+    # Salary questions: the posting's own stated pay, or "Negotiable"; a number only when the posting gives one.
+    salary = {"text": f"I'm fine with the posted rate ({pay['text']})." if pay else "Negotiable", "hourly": pay.get("hourly"),
+              "annual": pay.get("annual") or (round(pay["hourly"] * 2080) if pay.get("hourly") else None)}
     return {"profile": contact, "answers": answers, "learned": learned,
+            "presumed": applying.presumed_answers(hints, education, experience, applied_before), "salary": salary,
+            "stories": [{"name": story["name"], "kind": story["kind"], "text": story["text"]} for story in stories],
             "disclosures": applying.disclosure_answers(p), "today": applying.date_formats((today.year, today.month, today.day)),
             "experience": experience, "education": education, "skills": skills, "start": {**start, "source": start_source},
-            "drafts": applying.drafts(p, education, experience, skills, role, posting),
+            "drafts": applying.drafts(hints, education, experience, skills, role, posting, stories, applying.honor_lines(sections)),
             # The user's choice in Profile: tick required terms boxes and sign
             # with their name, for them to read before they submit.
             "agree_terms": p.get("agree_terms") == "Yes",
