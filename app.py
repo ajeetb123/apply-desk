@@ -43,7 +43,8 @@ app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 
 CONTACT_FIELDS = [("name", "Full name"), ("email", "Email"), ("phone", "Mobile phone"), ("address", "Street address"),
                   ("city", "City"), ("state", "State"), ("postal_code", "ZIP code")]
-EDUCATION_FIELDS = [("school", "School"), ("degree", "Degree"), ("graduation", "Expected graduation"), ("gpa", "GPA"),
+EDUCATION_FIELDS = [("school", "School"), ("degree", "Degree"), ("graduation", "Expected graduation"),
+                    ("preferred_start", "Preferred internship start date"), ("gpa", "GPA"),
                     ("gpa_range", "GPA range for forms with no N/A"),
                     ("work_authorization", "Work authorization")]
 LINK_FIELDS = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("website", "Portfolio or website")]
@@ -104,7 +105,7 @@ def init_db():
             "skills": "",
             "career_goals": "",
             "role_campaigns": "Wave 1, Wave 2, Defense, Seed-stage startups",
-            "larp": "2", "gpa": "", "gpa_range": "",
+            "larp": "2", "gpa": "", "gpa_range": "", "preferred_start": "",
         }
         defaults.update({spec["key"]: spec["default"] for spec in applying.STANDARD_QUESTIONS if spec["key"] not in defaults})
         for key, value in defaults.items():
@@ -1519,8 +1520,10 @@ def api_fill_plan():
         text = tune_resume(resume["text"], row["description"], row["title"] or "")["text"] if row else resume["text"]
         sections = resume_outline(text)[1]
     declared = [x.strip() for x in re.split(r"[,;\n]", p.get("skills", "")) if x.strip()]
-    term = applying.listing_facts(row["title"] or "", row["description"] or "", row["url"] or "").get("term", "") if row else ""
-    start, start_source = applying.program_start(row["description"] if row else "", term)
+    facts = applying.listing_facts(row["title"] or "", row["description"] or "", row["url"] or "") if row else {}
+    # A preferred internship date says nothing about a full-time role.
+    preferred = p.get("preferred_start", "") if not row or re.search(r"intern|co.?op", facts.get("kind", "") or row["title"] or "", re.I) else ""
+    start, start_source = applying.program_start(row["description"] if row else "", facts.get("term", ""), preferred)
     with db() as conn:
         learned = [{"question": r["question"], "answer": r["answer"]} for r in conn.execute("SELECT question, answer FROM answers")]
     contact = {key: p.get(key, "") for key in AUTOFILL_FIELDS}

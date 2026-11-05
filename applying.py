@@ -538,9 +538,15 @@ def date_formats(parsed, default_day: int = 1) -> dict:
             "mm_dd_yyyy": f"{month:02d}/{day:02d}/{year}", "iso": f"{year}-{month:02d}-{day:02d}", "iso_month": f"{year}-{month:02d}"}
 
 
-def program_start(description: str, term: str = "") -> tuple[dict, str]:
-    """When the internship or role starts, from the posting or its term ("Summer 2027"); today otherwise."""
+def program_start(description: str, term: str = "", preferred: str = "") -> tuple[dict, str]:
+    """When the internship or role starts: the user's preferred date for a summer or
+    unnamed term (in that term's year), else the posting or its term ("Fall 2027"), else today."""
     text = description or ""
+    wanted = parse_month_year(preferred)
+    other_term = re.search(r"\b(spring|fall|autumn|winter)\b", term or "", re.I)
+    if wanted and not other_term:
+        year = re.search(r"\b(20\d{2})\b", term or "")
+        return date_formats((int(year.group(1)) if year else wanted[0], wanted[1], wanted[2])), "your preferred start date"
     range_match = re.search(r"([A-Z][a-z]{2,8}\.? \d{1,2}(?:st|nd|rd|th)?,? 20\d{2})\s*(?:-|–|—|to|through)\s*[A-Z][a-z]{2,8}\.? \d{1,2}", text)
     if range_match:
         return date_formats(parse_month_year(range_match.group(1))), "the program dates in the posting"
