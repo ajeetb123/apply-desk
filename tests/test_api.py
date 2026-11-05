@@ -500,7 +500,10 @@ class ApplyDeskApiTests(unittest.TestCase):
                                                          "description": self.POSTING + " Location: Reston, VA."}).json["saved_job_id"]
         answers = {a["key"]: a for a in self.client.get(f"/api/fill-plan?job_id={job_id}").json["answers"]}
         self.assertTrue(answers["location_preference"]["open"])
-        self.assertEqual(answers["location_preference"]["options"][0], "No preference")
+        # Open to anywhere: this listing's own place first (for "Which location are you applying for?"), then "no preference".
+        self.assertEqual(answers["location_preference"]["options"][0], "Reston, VA")
+        self.assertEqual(answers["location_preference"]["text"], "Reston, VA")
+        self.assertIn("No preference", answers["location_preference"]["options"])
         self.assertIn("Reston, VA", answers["location_preference"]["options"])
         self.assertEqual(answers["listing_term"]["answer"], "Summer 2027")
         self.assertEqual(answers["listing_job_id"]["answer"], "R-00157321")
@@ -700,6 +703,85 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(company, "Globex")
         home = self.client.post("/api/evaluate", json={"url": "https://gx.wd5.myworkdayjobs.com/en-US/Careers/userHome", "title": "Candidate Home", "description": self.LONG_POSTING})
         self.assertEqual(home.status_code, 400)
+
+    def test_drafts_read_like_a_person_and_use_only_resume_lines(self):
+        applying = application.applying
+        self.assertEqual(applying.first_person("Found and fixed a bug; added 20 tests"), "I found and fixed a bug and added 20 tests.")
+        self.assertEqual(applying.first_person("Team of 4 built a web app"), "My team of 4 built a web app.")
+        self.assertEqual(applying.plain_title("Summer 2027 - Software Engineer Intern"), "Software Engineer Intern")
+        self.assertEqual(applying.plain_title("Intern - Cloud Engineer"), "Cloud Engineer Intern")
+        self.add_resume(self.JAKE)
+        self.client.post("/profile", data={"name": "Riley Chen", "school": "State University", "class_year": "Freshman", "graduation": "May 2028"})
+        job_id = self.evaluate(self.WORKDAY, title="Summer 2027 - Backend Intern", description=self.LONG_POSTING)
+        plan = self.client.get(f"/api/fill-plan?job_id={job_id}").json
+        drafts = {d["key"]: d for d in plan["drafts"]}
+        self.assertEqual(plan["drafts"][0]["key"], "plans")
+        why = drafts["why"]["text"]
+        self.assertIn("I'm a first-year computer science student at State University", why)
+        self.assertIn("the Backend Intern role at Acme", why)
+        self.assertIn("At Acme, I", why)  # the resume's own job, in first person
+        for phrase in ("stands out", "passionate", "leverage", "excited", "—"):
+            self.assertNotIn(phrase, why)
+        self.assertTrue(drafts["cover"]["text"].startswith("Dear Acme Hiring Team,"))
+        self.assertTrue(drafts["cover"]["text"].rstrip().endswith("Riley Chen"))
+        self.assertIn("At Acme, I", drafts["accomplishments"]["text"])
+        self.assertTrue(drafts["why"]["short"].endswith("."))
+        self.assertTrue(plan["stories"] and plan["stories"][0]["text"].startswith("At Acme, I"))
+        import re as regex
+        patterns = {d["key"]: d["pattern"] for d in plan["drafts"]}
+        self.assertTrue(regex.search(patterns["accomplishments"], "technical accomplishments school/internships"))
+        self.assertTrue(regex.search(patterns["about"], "tell us about yourself"))
+
+    def test_standard_screening_answers_and_listing_facts(self):
+        import re as regex
+        applying = application.applying
+        answers = {a["key"]: a for a in applying.presumed_answers(
+            {"us_citizen": "Yes", "currently_student": "Yes", "over_18": "Yes", "degree_recent": "No"}, [{"field": "Computer Science"}],
+            [{"start": {"year": "2026", "month": "05"}, "end": {"year": "2026", "month": "11"}}])}
+        def claims(question):
+            return next((key for key, a in answers.items() if regex.search(a["pattern"], question, regex.I)), None)
+        self.assertEqual(claims("have you ever been convicted of a felony"), "criminal")
+        self.assertEqual(claims("are you bound by any non compete agreement"), "noncompete")
+        self.assertEqual(claims("what languages are you fluent in"), "languages")
+        self.assertEqual(claims("which degrees have you already completed, if any"), "degrees_completed")
+        self.assertEqual(claims("do you have the right to work in the uk without sponsorship"), "other_country_work")
+        self.assertEqual(claims("have you previously interned or worked at acme, or applied before"), "applied_before")
+        self.assertEqual(answers["criminal"]["answer"], "No")
+        self.assertTrue(answers["criminal"]["assumed"])
+        self.assertFalse(answers["degrees_completed"]["assumed"])  # follows from what the user said
+        self.assertEqual((answers["years_experience"]["answer"], answers["years_experience"]["number"]), ("Less than 1 year", "1"))
+        self.assertNotIn("other_citizenship", {a["key"] for a in applying.presumed_answers({}, [], [])})  # only for a stated citizen
+        facts = applying.listing_facts("Intern (Raleigh, NC)", "Location\n\nSan Diego, California\n\nInterns are paid $40 - $55 per hour. Also in Austin, TX.", "")
+        self.assertEqual(facts["locations"], ["San Diego, California", "Raleigh, NC", "Austin, TX"])
+        self.assertEqual(facts["pay"]["hourly"], 47.5)
+        self.assertEqual(applying.listing_facts("Intern", "x", "https://a.wd5.myworkdayjobs.com/Ext/job/US---Ashburn-VA/Intern_R1")["locations"], ["Ashburn, VA"])
+        # An Ashby link with an organization id, not a name: the posting names the company.
+        text = "Role details.\nIf selected for employment with Globex AI, you will build things. A great fit at Globex AI. Globex AI hires interns."
+        self.assertEqual(applying.identify_role({"url": "https://jobs.ashbyhq.com/f7d8749a-72d6-407c-bf98-292ea630c73a/abc/application", "title": "Intern"}, text)[1], "Globex AI")
+
+    def test_fill_plan_salary_location_text_and_blank_lines(self):
+        self.add_resume(self.JAKE)
+        self.client.post("/profile", data={"location_preference": "Open to all", "state": "VA"})
+        job_id = self.evaluate(self.WORKDAY, description=self.LONG_POSTING + " Location: Austin, TX. Interns are paid $55/hr.")
+        plan = self.client.get(f"/api/fill-plan?job_id={job_id}").json
+        self.assertEqual((plan["salary"]["hourly"], plan["salary"]["annual"]), (55.0, 114400))
+        self.assertIn("$55 an hour", plan["salary"]["text"])
+        location = next(a for a in plan["answers"] if a["key"] == "location_preference")
+        self.assertEqual(location["text"], "Austin, TX")
+        other = self.evaluate("https://acme.wd5.myworkdayjobs.com/External/job/Boston-MA/Data-Intern_R-00099999", title="Data Intern",
+                              description=self.LONG_POSTING.replace("platform", "data"))
+        self.assertEqual(self.client.get(f"/api/fill-plan?job_id={other}").json["salary"]["text"], "Negotiable")
+        # Blanks the filler lists for the user aren't counted as filled, and show apart on the role page.
+        review = [{"page": "Apply", "question": "Phone", "value": "555", "flag": ""},
+                  {"page": "Apply", "question": "LinkedIn Profile", "value": "", "flag": "Required and still blank. This one needs you"},
+                  {"page": "Apply", "question": "Twitter", "value": "", "flag": "Left blank (optional)"}]
+        self.client.post("/api/applications", json={"job_id": job_id, "attached": True, "run": "1", "review": review})
+        import sqlite3
+        with sqlite3.connect(application.DB) as conn:
+            self.assertEqual(conn.execute("SELECT filled FROM applications WHERE job_id=?", (job_id,)).fetchone()[0], "1 field")
+        page = self.client.get(f"/job/{job_id}").data.decode()
+        self.assertIn("Left blank · 1 required", page)
+        self.assertIn("LinkedIn Profile", page)
 
     def test_redoing_an_application_keeps_one_record_with_one_line_per_question(self):
         self.add_resume(self.JAKE)

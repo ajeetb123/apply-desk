@@ -32,6 +32,16 @@ Apply Desk opens at login by default and lives in the menu bar. Closing the wind
 
   It works on Workday, Greenhouse (including its searchable dropdowns), Lever, Ashby (Yes/No buttons), Jobvite, JazzHR, Pinpoint, Paylocity, and Oracle's first step. On BambooHR and Rippling it opens the application from the listing and fills the text fields, but their custom dropdowns are still yours. Hidden spam-trap fields are never filled. Dell's Oracle site emails you a code, and iCIMS and Workday need you signed in, so those steps are yours.
 
+  - **standard screening answers**, each marked in the review so you can change it: no criminal record, non-compete, or prior termination; no military service; yes to a background check, the full program dates, and returning to school; languages (English); degrees completed (none yet); years of experience (from your resume's dates). Your own Profile answers and answers you gave on earlier forms always win;
+  - **salary**: "Negotiable", or the posting's own stated pay when it gives one. A number is typed only when the posting states it;
+  - **essay questions get a draft, not a finished answer**: why this role, about yourself, your strongest accomplishments, a project, a cover letter, and "describe your X experience" (honestly: "I haven't used C++ in a project yet" when your resume doesn't show it). Drafts are your resume's own lines in plain first person. A prompt Apply Desk doesn't recognize gets the closest story from your resume, marked as a starting point to rewrite.
+
+  **Every page is filled, reviewed, and filled again.** Apply Desk reads each answer back from its field, re-enters any the site dropped, fills whatever is still empty, and only then moves on. If the site rejects the page it fills and checks it once more before asking you. Anything still blank is listed in the review, required ones first.
+
+  **Several applications at once.** Press ` in one tab, switch to another, and press ` there. Each tab runs its own fill and the notifications name the company. A tab in the background fills more slowly, because Chrome slows background tabs. Pressing ` in a tab that's being filled stops that one.
+
+  **A resume always goes with it.** If you open an application without having looked at its listing first, Apply Desk finds the posting from the application page (Workday, Lever) so the resume is still tuned for it. If it can't find the posting, it attaches your resume as it is and says so.
+
   Search boxes (school, skills, how you heard) are searched the way you would: type the name, press Enter. Schools are searched by their everyday name first ("Virginia Tech"), then the official one.
 
   **The review panel** lists, page by page, everything Apply Desk filled, and puts first what deserves a second look: drafts it wrote, neutral picks, decline answers it chose for you, closest-option picks (like "How did you hear"), today's date used as a start date, answers reused from earlier applications, and any value that isn't shown beside its label on the review page (a pick that didn't take). Click a line to jump to it. Each question appears once, even if you press ` again. The same review is saved with the role under **What you sent**: one entry per role, so redoing an application updates it and keeps the answers from both runs.

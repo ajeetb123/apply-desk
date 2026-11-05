@@ -45,6 +45,9 @@
         <small><time datetime="{{ a.created }}">{{ a.created.replace('T', ' ') }}</time>{% if a.filled %} · filled {{ a.filled }}{% endif %}{% if a.pages > 1 %} · {{ a.pages }} pages{% endif %}</small>
         {% if a.review %}<details class="copy-review"><summary>Review{% if a.checks %} · {{ a.checks }} to check{% endif %}</summary>
           <ul>{% for item in a.review %}<li{{ ' class=is-flag' if item.flag }}><span>{% if item.page %}{{ item.page }} · {% endif %}{{ item.question }}</span><b>{{ item.value }}</b>{% if item.flag %}<em>{{ item.flag }}</em>{% endif %}</li>{% endfor %}</ul>
+        </details>{% endif %}
+        {% if a.blanks %}<details class="copy-review"><summary>Left blank · {{ a.blank_required }} required</summary>
+          <ul>{% for item in a.blanks %}<li{{ ' class=is-flag' if item.flag.startswith('Required') }}><span>{% if item.page %}{{ item.page }} · {% endif %}{{ item.question }}</span>{% if item.flag %}<em>{{ item.flag }}</em>{% endif %}</li>{% endfor %}</ul>
         </details>{% endif %}</div>
       <div class="copy-actions">
         {% if a.has_pdf %}<a class="button" href="/job/{{ job.id }}/applications/{{ a.id }}.pdf">{{ ui.icon('download') }}<span>PDF</span></a>{% endif %}

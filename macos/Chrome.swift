@@ -83,7 +83,28 @@ enum Chrome {
             return ((id of currentTab) as text) & linefeed & ((loading of currentTab) as text) & linefeed & (URL of currentTab) & linefeed & (title of currentTab)
         end tell
         """
-        guard let value = run(script), !value.isEmpty else { return nil }
+        return tab(from: run(script))
+    }
+
+    /// Any tab by its id, wherever it is now: another window, or behind the
+    /// front tab (a fill keeps running in a tab the user has left).
+    static func tab(id: String) -> Tab? {
+        guard isRunning else { return nil }
+        let script = """
+        tell application id "\(bundleID)"
+            repeat with theWindow in windows
+                repeat with theTab in tabs of theWindow
+                    if ((id of theTab) as text) is "\(appleScriptLiteral(id))" then return ((id of theTab) as text) & linefeed & ((loading of theTab) as text) & linefeed & (URL of theTab) & linefeed & (title of theTab)
+                end repeat
+            end repeat
+            return ""
+        end tell
+        """
+        return tab(from: run(script))
+    }
+
+    private static func tab(from value: String?) -> Tab? {
+        guard let value = value, !value.isEmpty else { return nil }
         let parts = value.components(separatedBy: "\n")
         guard parts.count >= 3, !parts[2].isEmpty else { return nil }
         return Tab(id: parts[0], url: parts[2], title: parts.dropFirst(3).joined(separator: "\n"), loading: parts[1] == "true")
@@ -116,17 +137,44 @@ enum Chrome {
     })()
     """
 
-    static func readPage() -> Page? {
-        guard let value = runJavaScript(readPageScript), let data = value.data(using: .utf8),
+    static func readPage(tabID: String? = nil) -> Page? {
+        guard let value = runJavaScript(readPageScript, tabID: tabID), let data = value.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return Page(url: object["url"] as? String ?? "", ready: object["ready"] as? String == "complete",
                     signals: object.compactMapValues { $0 as? String }.filter { $0.key != "description" && $0.key != "ready" },
                     description: object["description"] as? String ?? "")
     }
 
-    /// Runs JavaScript in the front tab and returns its string result.
-    static func runJavaScript(_ source: String) -> String? {
+    /// What `runJavaScript` gets back when the tab it was sent to has closed.
+    nonisolated static let tabGone = "__apply_desk_tab_gone__"
+
+    /// The AppleScript that runs `source` in the tab with `tabID`: the front
+    /// tab when that's the one, otherwise whichever window holds it.
+    nonisolated static func tabScript(_ source: String, tabID: String) -> String {
+        """
+        tell application id "\(bundleID)"
+            if (count of windows) is 0 then return "\(tabGone)"
+            set theSource to "\(appleScriptLiteral(source))"
+            set frontTab to active tab of front window
+            if ((id of frontTab) as text) is "\(appleScriptLiteral(tabID))" then return execute frontTab javascript theSource
+            repeat with theWindow in windows
+                repeat with theTab in tabs of theWindow
+                    if ((id of theTab) as text) is "\(appleScriptLiteral(tabID))" then return execute theTab javascript theSource
+                end repeat
+            end repeat
+            return "\(tabGone)"
+        end tell
+        """
+    }
+
+    /// Runs JavaScript in the front tab, or in the tab with `tabID` wherever
+    /// it is, and returns its string result (nil if that tab has closed).
+    static func runJavaScript(_ source: String, tabID: String? = nil) -> String? {
         guard isRunning else { return nil }
+        if let tabID = tabID {
+            let value = run(tabScript(source, tabID: tabID))
+            return value == tabGone ? nil : value
+        }
         // Passed as an AppleScript string literal, not eval(), so pages with a
         // strict Content Security Policy still run it.
         let script = """
@@ -190,6 +238,41 @@ enum JobListing {
                      "opening", "vacanc", "intern"]
         return hints.contains(where: lower.contains)
     }
+
+    /// Finds the posting an application page belongs to when the page itself
+    /// doesn't show it (Workday's apply steps, Lever's /apply): asks the same
+    /// site for the listing and leaves `{url, title, company, description}` as
+    /// JSON in `window.__applyDeskPosting` (`{}` when there's nothing to find).
+    static let findPostingScript = """
+    (() => {
+      window.__applyDeskPosting = '';
+      const done = value => { window.__applyDeskPosting = JSON.stringify(value); };
+      const here = location.href.replace(/[?#].*$/, '');
+      const text = html => {
+        const doc = new DOMParser().parseFromString(html || '', 'text/html');
+        doc.querySelectorAll('script, style, noscript').forEach(node => node.remove());
+        doc.querySelectorAll('p, div, li, br, h1, h2, h3, h4, h5, tr, section').forEach(node => node.append('\\n'));
+        return (doc.body ? doc.body.textContent : '').replace(/[ \\t]+/g, ' ').replace(/\\n\\s*\\n+/g, '\\n').trim();
+      };
+      (async () => {
+        try {
+          const workday = /\\.myworkdayjobs\\.com$/.test(location.host) && location.pathname.match(/^\\/(?:[a-z]{2}-[A-Z]{2}\\/)?([^/]+)\\/job\\/(.+?)(?:\\/apply.*)?$/);
+          if (workday) {
+            const data = await (await fetch(`/wday/cxs/${location.host.split('.')[0]}/${workday[1]}/job/${workday[2]}`, { headers: { Accept: 'application/json' } })).json();
+            const info = data.jobPostingInfo || {};
+            return done({ url: info.externalUrl || here.replace(/\\/apply.*$/, ''), title: info.title || '', company: (data.hiringOrganization || {}).name || '',
+                          description: [info.title, info.location, info.jobReqId, text(info.jobDescription)].filter(Boolean).join('\\n') });
+          }
+          const listing = here.replace(/\\/(apply|application)(\\/.*)?$/i, '');
+          if (listing === here) return done({});
+          const html = await (await fetch(listing, { credentials: 'same-origin' })).text();
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          done({ url: listing, title: (doc.querySelector('meta[property="og:title"]') || {}).content || doc.title || '', company: '', description: text(html) });
+        } catch (error) { done({}); }
+      })();
+      return 'started';
+    })()
+    """
 
     static func looksLikePosting(_ value: String) -> Bool {
         let lower = value.lowercased()

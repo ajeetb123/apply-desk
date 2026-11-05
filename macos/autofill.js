@@ -30,7 +30,18 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     run.updated = Date.now();
     try { sessionStorage.setItem('applyDeskRun', JSON.stringify(run)); } catch (error) { /* storage can be blocked */ }
   };
-  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  // Chrome slows a background tab's timers to a crawl. Every wait is also
+  // kept in `naps`, and the Mac app wakes the ones that are due each time it
+  // checks on this tab (window.__applyDeskPump), so a run keeps moving while
+  // the user works in another tab.
+  const naps = new Set();
+  const sleep = ms => new Promise(resolve => {
+    state.beat += 1;   // every wait shows the Mac app this run is alive
+    const nap = { due: Date.now() + ms, wake: () => { naps.delete(nap); resolve(); } };
+    naps.add(nap);
+    setTimeout(nap.wake, ms);
+  });
+  window.__applyDeskPump = () => { const now = Date.now(); for (const nap of [...naps]) if (nap.due <= now) nap.wake(); };
   // "✱" is Lever's required mark.
   const norm = s => (s || '').toLowerCase().replace(/&/g, ' and ').replace(/[_*✱:?()\[\]]+/g, ' ').replace(/[-–]/g, ' ').replace(/\s+/g, ' ').trim();
   const textOf = el => el ? (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim() : '';
@@ -77,13 +88,43 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // For a Yes/No or pick-several group whose options are labels of their own
   // (Lever, Greenhouse, Ashby), the question is the text around the whole
   // group with the options taken out.
+  // The inputs that are one question's choices. Radios share a name; tick
+  // boxes often don't (Ashby names each after its own label), so those are
+  // the boxes sitting together in the nearest container that holds only them.
+  // A container's text without its options: option labels (wrapping an option
+  // or pointing at it) aren't the question.
+  function textAround(node, options) {
+    const ids = new Set(options.length > 1 ? options.map(option => option.id).filter(Boolean) : []);
+    return textWithout(node, part => controlPart(part) || part.matches('[role="radio"], [role="checkbox"]')
+      || (part.matches('label') && (!!part.querySelector('input') || ids.has(part.htmlFor))));
+  }
+  const controlCount = node => node.querySelectorAll('input:not([type=hidden]), select, textarea').length;
+  function choiceGroup(el) {
+    const named = el.name ? [...document.getElementsByName(el.name)].filter(o => o.type === el.type) : [];
+    if (el.type === 'radio' && named.length) return named;
+    // Tick boxes go by where they sit: a form can repeat a question, names and all.
+    const same = node => [...node.querySelectorAll(`input[type="${el.type}"]`)];
+    for (let node = el.parentElement, depth = 0; node && node !== document.body && depth < 6; node = node.parentElement, depth += 1) {
+      let group = same(node);
+      if (group.length < 2) continue;
+      if (controlCount(node) > group.length + 1) break;
+      // Options laid out in columns: widen to the container that also holds the question.
+      while (textAround(node, group).length < 3 && node.parentElement && node.parentElement !== document.body
+             && controlCount(node.parentElement) <= same(node.parentElement).length + 1) {
+        node = node.parentElement;
+        group = same(node);
+      }
+      return group;
+    }
+    return named.length > 1 ? named : [el];
+  }
+
   function groupQuestion(el) {
-    const options = el.name ? [...document.getElementsByName(el.name)] : [el];
+    const options = choiceGroup(el);
     for (let node = el.parentElement, depth = 0; node && node !== document.body && depth < 7; node = node.parentElement, depth += 1) {
       if (!options.every(option => node.contains(option))) continue;
-      if (node.querySelectorAll('input:not([type=hidden]), select, textarea').length > options.length + 1) return '';
-      const text = textWithout(node, part => controlPart(part) || part.matches('[role="radio"], [role="checkbox"]')
-        || (part.matches('label') && !!part.querySelector('input')));
+      if (controlCount(node) > options.length + 1) return '';
+      const text = textAround(node, options);
       if (text.length >= 3) return text.slice(0, 300);
     }
     return '';
@@ -118,6 +159,16 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return own || el.placeholder || '';
   }
 
+  // The helper text between a field's label and the field: on some forms
+  // (Ashby) the label is a title ("Values") and this is the real question.
+  function detailOf(el) {
+    const label = el.labels && el.labels[0];
+    const next = label && label.nextElementSibling;
+    if (!next || next === el || next.contains(el) || next.querySelector('input, select, textarea, button')) return '';
+    const text = textOf(next);
+    return text.length >= 20 && text.length <= 700 ? text : '';
+  }
+
   // Extra hints (name, id, autocomplete) for matching, not for learning.
   const hintsOf = el => norm([questionOf(el), el.getAttribute('autocomplete'), el.name, el.id, el.placeholder,
                               el.getAttribute('data-automation-id')].filter(Boolean).join(' '));
@@ -129,7 +180,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Searchable dropdowns built with react-select (Greenhouse's new forms and
   // many others): a combobox input inside a "...__control" box.
   const comboControl = el => el.closest('.select__control, [class*="select__control"], [class*="-control"]');
-  const isCombo = el => el.tagName === 'INPUT' && el.getAttribute('role') === 'combobox' && !isPromptBox(el) && !!comboControl(el);
+  // Ashby's are a plain combobox input with its own arrow button beside it.
+  const comboToggle = el => el.getAttribute('aria-haspopup') === 'listbox' && el.parentElement ? el.parentElement.querySelector('button') : null;
+  const isCombo = el => el.tagName === 'INPUT' && el.getAttribute('role') === 'combobox' && !isPromptBox(el) && (!!comboControl(el) || !!comboToggle(el));
   const isPromptBox = el => el.getAttribute('data-automation-id') === 'searchBox' || !!el.closest('[data-automation-id="multiselectInputContainer"]');
   const placeholderText = s => /^(select( one)?|choose( one)?|please select|--.*|)$/.test(norm(s));
 
@@ -329,8 +382,10 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const at = state.items.findIndex(old => old.page === item.page && old.question === item.question);
     if (at >= 0) state.items[at] = item; else state.items.push(item);
   }
+  const filledEls = new Map();   // this page's review lines → the field each one filled
   function note(el, question, value = '') {
     handled.add(el);
+    filledEls.set(String(question).replace(/[*✱]\s*$/, '').trim().slice(0, 160), { el, value: String(value || '') });
     state.filled.push(norm(question).slice(0, 60));
     const shown = String(value || '').replace(/\s+/g, ' ').trim();
     record({ page: pageNow, question: String(question).replace(/[*✱]\s*$/, '').trim().slice(0, 160), value: shown.slice(0, 300), flag: flagFor(current, shown) });
@@ -436,11 +491,11 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const comboValue = el => {
     const control = comboControl(el);
     const shown = control && control.querySelector('[class*="singleValue"], [class*="single-value"], [class*="multiValue"] [class*="label"], [class*="multi-value__label"]');
-    return shown ? textOf(shown) : '';
+    return shown ? textOf(shown) : control ? '' : el.value.trim();
   };
   async function pickCombo(input, want, question) {
     if (comboValue(input)) return false;
-    const control = comboControl(input);
+    const control = comboControl(input) || input.parentElement;
     const shell = control.parentElement && control.parentElement.parentElement || control;
     // Its options carry its instance id ("react-select-2-option-0" or
     // "react-select-question_123-option-0"), named in the input's aria links.
@@ -451,7 +506,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const open = async () => {
       if (input.getAttribute('aria-expanded') === 'true' && own().length) return true;
       const toggle = shell.querySelector('button[aria-label*="flyout" i], button[aria-label*="toggle" i], [class*="dropdown-indicator"], [class*="dropdownIndicator"], [class*="indicatorContainer"], [class*="indicator-container"]');
-      if (toggle) press(toggle);
+      if (toggle || comboToggle(input)) press(toggle || comboToggle(input));
       if (!(await waitFor(() => input.getAttribute('aria-expanded') === 'true', 700))) {
         input.focus();
         press(control);
@@ -600,7 +655,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     ['location', /^(current )?location$|where are you (currently )?(located|based)|^city,? state$/, [[p.city, p.state].filter(Boolean).join(', ')]],
     ['city', /(^| )city( |$)|town/, [p.city]], ['state', /(^| )state( |$)|province|region/, p.state_options || [p.state], { strict: true }],
     ['postal', /zip|postal code|postcode|^postal$/, [p.postal_code]],
-    ['school', /school|university|college|institution/, schoolNames, { strict: true, search: schoolSearch(schoolNames) }],
+    // The school field itself, never any label that mentions one ("Technical Accomplishments - School/Internships").
+    ['school', /^(current |name of (your )?)?(school|university|college|institution)( name| attended)?$|school or university|college\/university|university\/college|(school|university|college) (name|attended|attending|enrolled)|(which|what) (school|university|college)|(school|university|college).{0,50}(enrolled|attend|study|studying|graduat)|name of (your )?(school|university|college|institution)/,
+     schoolNames, { strict: true, search: schoolSearch(schoolNames) }],
     ['field', /field of study|area of study|\bmajors?\b|academic discipline/, school.field_options || [], { strict: true, search: [school.field] }],
     // The degree itself, not any question that mentions one ("credit hours toward your degree").
     ['degree', /^(highest |type of |current )?degree( type| level| earned| obtained| pursuing| sought)?$|(what|which) degree|degree (type|level)|type of degree/, [p.degree, ...(((plan.education || [])[0] || {}).degree_options || [])]],
@@ -615,6 +672,43 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Optional sign-ups that are never ticked, even with "agree to terms" on.
   const marketing = /newsletter|marketing|promotion|sms|text message|texts|job alerts?|updates|subscribe|talent (community|network|pool)|future (opportunities|roles|openings)|other (roles|positions|opportunities)|contact me about/;
   const todayDate = /^(today'?s )?date$|^date signed$|^signature date$/;
+  const salaryAsk = /salary|compensation|pay (expectation|requirement|rate|range)|desired (pay|rate|wage)|hourly rate|expected (pay|wage|rate)/;
+  // Questions that want a few sentences, and boxes that are only for extra notes.
+  const essayPrompt = /\b(describe|tell us|tell me|explain|share|discuss|what|how|why|example|a time|which of)\b/;
+  const sideNote = /additional (information|comments|details)|anything else|comments?$|notes?$|accommodat|if (yes|no|so|other|you (answered|selected))/;
+
+  // The job or project from the resume that fits an essay question best.
+  function storyFor(q) {
+    const stories = plan.stories || [];
+    const prefer = /team|collaborat|group|others/.test(q) ? /team|co authored|with /
+      : /challeng|difficult|problem|obstacle|fail|mistake|bug|hard/.test(q) ? /bug|fix|debug|problem|issue|prevent/ : null;
+    let top = null, score = -1;
+    for (const story of stories) {
+      const text = norm(story.text);
+      let points = [...tokens(q)].filter(word => word.length > 3 && text.includes(word)).length;
+      if (prefer && prefer.test(text)) points += 3;
+      if (/project|built|build|made/.test(q) && story.kind === 'project') points += 2;
+      if (points > score) { top = story; score = points; }
+    }
+    return top ? top.text : '';
+  }
+
+  // "Describe your C++ experience": what the resume shows, or plainly that it shows none.
+  function skillExperience(q) {
+    const found = q.match(/describe your (.{1,30}?) experience|experience (?:with|in|using) ([a-z0-9+#.]{1,20})(?:$| )/);
+    const name = found ? (found[1] || found[2] || '').trim() : '';
+    if (!name || /work|relevant|professional|technical|previous|past|prior|leadership|research|internship|team|the|this|our|a /.test(name + ' ')) return '';
+    const stories = plan.stories || [];
+    const known = (plan.skills || []).find(skill => norm(skill) === name);
+    const shown = known || name.replace(/(^| )[a-z]/g, letter => letter.toUpperCase());
+    const mentions = new RegExp(`(^|[^a-z0-9+#])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9+#]|$)`, 'i');
+    const story = stories.find(item => mentions.test(item.text));
+    if (story) return `I've used ${shown} in real work. ${story.text}`;
+    if (known) return `I've used ${shown} in my projects.${stories[0] ? ' ' + stories[0].text : ''}`;
+    const top = (plan.skills || []).slice(0, 3);
+    const most = top.length > 1 ? `${top.slice(0, -1).join(', ')} and ${top[top.length - 1]}` : top[0] || '';
+    return `I haven't used ${shown} in a project yet.${most ? ` Most of my work so far has been in ${most}.` : ''}${stories[0] ? ' ' + stories[0].text : ''}`;
+  }
   // Self-identification: the user's Profile answer, or the form's decline option.
   function disclosureFor(text) {
     const q = norm(text);
@@ -631,10 +725,13 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (want.replace) return "Replaced the text Workday read from your resume with your resume's own";
     if (want.source === 'disclosure') return want.declined ? 'Chose the decline option for you' : 'Your self-identification answer from Profile';
     if (want.source === 'learned') return 'From an answer you gave on an earlier application';
-    if (want.source === 'draft') return 'Draft by Apply Desk. Edit it in your own words';
+    if (want.source === 'draft') return want.loose ? "Starting point from your resume. It doesn't answer the question yet: rewrite it" : 'Draft from your resume. Read it and make it yours';
+    if (want.source === 'presumed') return "Standard answer picked for you. Change it if it's wrong";
+    if (want.source === 'salary') return 'Salary answer picked for you. Change it if you want something else';
     if (want.source === 'terms') return 'Ticked for you. Read what you agreed to before you submit';
     if (want.source === 'signature') return 'Signed with your name for you. Read what it certifies before you submit';
     if (want.source === 'neutral') return `No saved answer, so Apply Desk picked "${value}". Check it`;
+    if (want.key === 'location_preference') return want.open ? "You said you're open to all locations. Change this if you'd rather not" : '';
     if (want.browse && value && norm(value) !== norm(want.values[0])) return `Closest option to your answer: ${want.values[0]}`;
     if (want.date && want.date === plan.start && /today/i.test(plan.start.source || '')) return "Today's date: the posting gives no start date";
     return '';
@@ -671,6 +768,13 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (plan.agree_terms && p.name && isText(el) && /\b(e.?)?signature\b|sign (here|your (full )?name)|type your (full )?name/.test(q) && !/date/.test(q)) {
       return { values: [p.name], source: 'signature' };
     }
+    // Salary: "Negotiable" (or the posting's stated pay), and a number only when the posting gives one.
+    if (salaryAsk.test(q) && plan.salary && !/history|current|previous|last/.test(q)) {
+      const numeric = el.type === 'number' || /numbers? only|numeric|digits only/.test(q);
+      if (isText(el) && !numeric) return { values: [plan.salary.text], source: 'salary' };
+      const amount = /hour/.test(q) ? plan.salary.hourly : plan.salary.annual;
+      return isText(el) && amount ? { values: [String(amount)], source: 'salary' } : null;
+    }
     if (never.test(q)) return null;
     if (el.tagName !== 'TEXTAREA' && startDate.test(q) && !pastJob.test(q)) return { date: plan.start, source: 'date' };
     if (el.tagName !== 'TEXTAREA' && todayDate.test(q) && plan.today) return { date: plan.today, source: 'date' };
@@ -686,6 +790,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     for (const answer of plan.answers || []) {
       if (!new RegExp(answer.pattern, 'i').test(q)) continue;
       if (!answer.answer) { claimed = true; break; }
+      // A text box asking which location gets the listing's own place.
+      if (answer.text && isText(el) && !isCombo(el) && !isPrompt(el)) return { values: [answer.text], source: 'answer', key: answer.key };
       return { values: answer.options.length ? answer.options : [answer.answer], source: 'answer', key: answer.key, open: !!answer.open,
                browse: answer.key === 'heard_about' || !!answer.open };
     }
@@ -693,12 +799,25 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (norm(learned.question) === q || similar(learned.question, q) >= 0.8) return { values: learned.answer.split(/;\s*/), source: 'learned' };
     }
     if (claimed) return null;
-    // Common short-answer questions get a plain draft from the user's own details.
+    // Screening questions with one sensible answer for the user's profile.
+    for (const answer of plan.presumed || []) {
+      if (!new RegExp(answer.pattern, 'i').test(q)) continue;
+      const number = answer.number && isText(el) && (el.type === 'number' || /^how many|number of years/.test(q));
+      return { values: number ? [answer.number] : answer.options, source: answer.assumed ? 'presumed' : 'answer', key: answer.key };
+    }
+    // Questions that need writing get a draft from the user's own resume lines.
     if (el.tagName === 'TEXTAREA' || isText(el)) {
       const draft = (plan.drafts || []).find(d => new RegExp(d.pattern, 'i').test(q));
-      if (draft) return { values: [draft.text], source: 'draft' };
+      if (draft) return { values: [el.tagName === 'TEXTAREA' ? draft.text : draft.short || draft.text], source: 'draft' };
     }
-    if (otherPeople.test(q) || /\bwhy\b|describe|statement|cover letter|tell us|explain/.test(q)) return null;
+    if (otherPeople.test(q)) return null;
+    if (el.tagName === 'TEXTAREA' && !sideNote.test(q)) {
+      const skill = skillExperience(q);
+      if (skill) return { values: [skill], source: 'draft' };
+      const story = essayPrompt.test(q) ? storyFor(q) : '';
+      if (story) return { values: [story], source: 'draft', loose: true };
+    }
+    if (/\bwhy\b|describe|statement|cover letter|tell us|explain/.test(q)) return null;
     const hints = el.closest ? hintsOf(el) : q;
     for (const [field, pattern, values, how] of contact) {
       if (pattern.test(q) || pattern.test(hints)) {
@@ -781,6 +900,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const addButton = section => [...section.querySelectorAll('button, [role="button"]')]
     .filter(visible).find(b => /^(\+\s*)?add( another)?\b/i.test(textOf(b) || b.getAttribute('aria-label') || ''));
 
+  const addsTried = new Set();
   async function fillBlocks(kind, entries) {
     if (!entries || !entries.length) return;
     const first = kind === 'experience' ? /job title|position title|^title$|role title/ : /school|university|college|institution/;
@@ -792,7 +912,10 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (!section) return;
     const find = section === document.body ? entryBlocks : blocksIn;
     let blocks = find(section, first, second);
-    for (let guard = 0; blocks.length < entries.length && guard <= entries.length; guard += 1) {
+    // Entries are added once per page; a second pass only fills what's there.
+    const addKey = `${pageNow}|${kind}`;
+    for (let guard = addsTried.has(addKey) ? Infinity : 0; blocks.length < entries.length && guard <= entries.length; guard += 1) {
+      addsTried.add(addKey);
       const add = addButton(section);
       if (!add) break;
       const before = blocks.length;
@@ -873,6 +996,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return named.some(name => skillKey(name) === skillKey(skill));
   }) || null;
   const ticked = o => !!((o.closest('[role="option"], [data-automation-id="menuItem"]') || o).querySelector('input[type=checkbox]:checked'));
+  const skillsMissed = new Set();
   async function fillSkills() {
     const findInput = () => controlsIn(document).find(el => isPrompt(el) && /skill/.test(norm(questionOf(el))));
     let input = findInput();
@@ -891,7 +1015,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const names = [];
     for (const skill of plan.skills) {
       if (pills().length >= limit) break;
-      if (has(skill)) continue;
+      if (has(skill) || skillsMissed.has(skill)) continue;
       input = findInput() || input;
       if (!input.isConnected) break;
       handled.add(input);
@@ -899,6 +1023,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const options = await freshOptions(input, before, previous, 2500);
       previous = options ? options.map(optionLabel).join('|') : previous;
       const match = options && skillOption(options, skill);
+      if (!match) skillsMissed.add(skill);  // the form's list doesn't have it; don't search again on the second pass
       if (match && !ticked(match) && !has(optionLabel(match))) {
         const count = pills().length;
         press(match);
@@ -935,7 +1060,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // ---------- Remembering what the user typed ----------
   // Learns only answers Apply Desk couldn't give itself: not profile fields,
   // standard answers, dates (they change per role), or consent boxes.
-  const pseudo = { tagName: 'INPUT' };  // a question without a field, for learning checks
+  // A question without a field of its own, for learning checks and button choices.
+  const stand = tagName => ({ tagName, getAttribute: () => null, hasAttribute: () => false, closest: () => null });
+  const pseudo = stand('INPUT');
   // Fields of one job or school entry come from the resume, not from memory.
   const entryField = /^(job title|position title|title|company|employer|organization|location|from|to|role description|description|school or university|school|university|degree|field of study|major|overall result gpa|gpa|skills?|type to add skills)$/;
   function remember(question, answer) {
@@ -954,7 +1081,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (isListbox(el)) return placeholderText(textOf(el)) ? '' : textOf(el);
     if (isCombo(el)) return comboValue(el);
     if (isPrompt(el)) return selectedPills(el).join('; ');
-    if (isText(el) && el.tagName !== 'TEXTAREA') return el.value;
+    // Any other input a person types or picks in, date and month pickers included.
+    if (el.tagName === 'INPUT' && !['radio', 'checkbox', 'file'].includes(el.type)) return el.value;
     return '';
   }
 
@@ -996,19 +1124,24 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   }
 
   // ---------- Resume upload ----------
+  let attachedHere = false;   // once per page: a second pass must not feed another upload box
   function attachResume() {
-    if (!pdfB64) return;
+    if (!pdfB64 || attachedHere) return;
     const uploads = [...document.querySelectorAll('input[type=file]')].filter(i => !i.disabled && !(i.files && i.files.length));
     const other = /cover|transcript|portfolio|writing sample|photo|headshot/;
     const named = i => hintsOf(i);
-    const target = uploads.find(i => /resume|(^| )cv( |$)|curriculum/.test(named(i)) && !other.test(named(i)))
-      || (uploads.length === 1 && !other.test(named(uploads[0])) ? uploads[0] : null);
-    if (!target || (target.accept && !/pdf|application\/|\*/.test(target.accept))) return;
+    const fits = i => (!i.accept || /pdf|application\/|\*/.test(i.accept)) && !other.test(named(i));
+    const resumes = uploads.filter(i => fits(i) && /resume|(^| )cv( |$)|curriculum/.test(named(i)));
+    // The application's own resume field, not an "autofill from resume" importer
+    // (Ashby has both; the importer would overwrite what's been filled).
+    const importer = i => /autofill|auto fill|parse|import|prefill|pre fill/.test(named(i)) || /autofill|parse/i.test(textOf(i.closest('section, div[class*="autofill" i]') || i.parentElement).slice(0, 200));
+    const target = resumes.find(i => !importer(i)) || resumes[0] || (uploads.length === 1 && fits(uploads[0]) ? uploads[0] : null);
+    if (!target) return;
     const files = new DataTransfer();
     files.items.add(new File([Uint8Array.from(atob(pdfB64), c => c.charCodeAt(0))], decode(nameB64) || 'Resume.pdf', { type: 'application/pdf' }));
     target.files = files.files;
     for (const type of ['input', 'change']) target.dispatchEvent(new Event(type, { bubbles: true }));
-    state.attached = true;
+    state.attached = attachedHere = true;
   }
 
   // Required terms and certification boxes, when the user turned on "agree
@@ -1041,7 +1174,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       }
       const value = answeredValue(el);
       if (value) { remember(question, value); continue; }
-      await fillControl(el, question, wanted(el, question));
+      const detail = detailOf(el);
+      await fillControl(el, question, wanted(el, question) || (detail ? wanted(el, `${question} ${detail}`) : null));
     }
     for (const group of Object.values(radios)) {
       const question = questionOf(group[0]);
@@ -1061,7 +1195,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (checked.length) { remember(question, checked.map(choiceLabel).join('; ')); continue; }
       // Self-identification boxes (disability forms) are often known only by their options.
       const want = wanted(group[0], question) || disclosureFor(group.map(choiceLabel).join(' '));
-      if (!want || !(['learned', 'disclosure'].includes(want.source) || want.key === 'location_preference')) continue;
+      if (!want || !want.values || want.source === 'draft') continue;
       current = want;
       if (want.source === 'disclosure') {
         const match = best(group, want.values, choiceLabel, 'prefix');
@@ -1069,16 +1203,21 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       } else if (want.open) {
         // Open to every location: the "no preference" box when there is one, otherwise all of them.
         const any = group.find(box => /no preference|^any\b|^all\b|open to (all|any)|anywhere|flexible/i.test(choiceLabel(box)));
-        const targets = any ? [any] : group;
+        const targets = any ? [any] : group.filter(box => !/^(other|none|international|not |n\/a)/i.test(choiceLabel(box)));
         targets.filter(box => !box.checked).forEach(press);
-        note(group[0], question, targets.map(choiceLabel).join('; '));
-      } else {
+        if (targets.length) note(targets[0], question, targets.map(choiceLabel).join('; '));
+      } else if (want.source === 'learned') {
+        // What the user ticked on an earlier form: every one of them.
         const picked = [];
         for (const value of want.values) {
           const match = best(group, [value], choiceLabel);
-          if (match && !match.checked) { press(match); picked.push(choiceLabel(match)); }
+          if (match && !match.checked) { press(match); picked.push(match); }
         }
-        if (picked.length) note(group[0], question, picked.join('; '));
+        if (picked.length) note(picked[0], question, picked.map(choiceLabel).join('; '));
+      } else {
+        // One answer ("English", "I have not yet completed a degree"): its box only.
+        const match = best(group, want.values, choiceLabel, want.strict || 'prefix') || best(group, want.values.slice(0, 1), choiceLabel);
+        if (match && !match.checked) { press(match); note(match, question, choiceLabel(match)); }
       }
       current = null;
     }
@@ -1106,7 +1245,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       }
       if (!question) continue;
       if (chosen) { remember(question, textOf(chosen)); continue; }
-      const want = wanted({ tagName: 'BUTTON' }, question);
+      const want = wanted(stand('BUTTON'), question);
       if (!want || !want.values) continue;
       current = want;
       const match = best(choices, want.values, textOf, want.strict);
@@ -1362,6 +1501,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Required choices with no saved answer: a neutral option when the form has one.
   const NEUTRAL = ['N/A', 'NA', 'Not applicable', 'None', 'Prefer not to say', 'Prefer not to answer', 'I prefer not to answer',
                    'I do not wish to answer', "I don't wish to answer"];
+  // A required text box that can take "N/A": not a link, contact detail, name, number, or date.
+  const noAnswerNeeded = (el, question) => !['email', 'tel', 'url', 'number', 'date', 'password'].includes((el.type || '').toLowerCase())
+    && !/linkedin|url|link|website|twitter|e ?mail|phone|date|zip|postal|social security|\bssn\b|birth|password|gpa|name$|year|how many|number/.test(norm(question));
   async function fillNeutral(needs) {
     for (const need of needs) {
       const el = need.el;
@@ -1369,8 +1511,90 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (el.tagName === 'SELECT') pickSelect(el, NEUTRAL, need.question, 'prefix');
       else if (isListbox(el)) await pickListbox(el, { values: NEUTRAL, strict: 'prefix' }, need.question);
       else if (el.type === 'radio') pickRadio(controlsIn(document).filter(r => r.type === 'radio' && r.name === el.name), NEUTRAL, need.question, 'prefix');
+      else if (isText(el) && !isCombo(el) && !isPrompt(el) && !isDatePart(el) && !el.value.trim() && noAnswerNeeded(el, need.question)) {
+        typeInto(el, 'N/A');
+        note(el, need.question, 'N/A');
+      }
       current = null;
     }
+  }
+
+  // ---------- Reviewing a page ----------
+  // Once a page is filled, it's checked and filled again: every answer is
+  // read back from its field (a typed value the site threw away is set a
+  // second way), the whole page gets a second pass for whatever is still
+  // empty, required leftovers get a neutral answer, and what stays blank is
+  // listed in the review.
+  const pressed = el => el.getAttribute('aria-pressed') === 'true' || el.getAttribute('aria-checked') === 'true';
+  const holdsValue = el => (el.type === 'radio' || el.type === 'checkbox' ? el.checked
+    : el.hasAttribute('aria-pressed') || el.getAttribute('role') === 'radio' ? pressed(el)
+    : el.tagName === 'TEXTAREA' || isDatePart(el) ? !!el.value.trim() : !!answeredValue(el));
+  function setValue(el, value) {
+    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    el.focus({ preventScroll: true });
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+    for (const type of ['input', 'change']) el.dispatchEvent(new Event(type, { bubbles: true }));
+    el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+  }
+  const lost = entry => entry.el.isConnected && visible(entry.el) && !holdsValue(entry.el);
+
+  function noteBlanks() {
+    const seen = new Set(), controls = controlsIn(document);
+    let optional = 0;
+    for (const el of controls) {
+      const asked = questionOf(el);
+      const question = asked.replace(/[*✱]\s*$/, '').trim().slice(0, 160);
+      if (!question || seen.has(question)) continue;
+      seen.add(question);
+      let empty;
+      if (el.type === 'radio' || el.type === 'checkbox') {
+        const group = controls.filter(o => o.type === el.type && (el.type === 'radio' && el.name ? o.name === el.name : questionOf(o) === asked));
+        empty = !group.some(o => o.checked);
+        if (el.type === 'checkbox' && group.length < 2 && !isRequired(el, asked)) continue;  // an optional lone box (sign-ups)
+      } else {
+        empty = !holdsValue(el);
+      }
+      if (!empty || (/^to\b/.test(norm(question)) && currentJob(el))) continue;
+      const required = isRequired(el, asked);
+      if (!required && (optional >= 15 || otherPeople.test(norm(question)))) continue;
+      optional += required ? 0 : 1;
+      record({ page: pageNow, question, value: '', flag: required ? 'Required and still blank. This one needs you' : 'Left blank (optional)' });
+    }
+  }
+
+  async function reviewPage() {
+    for (const entry of filledEls.values()) {
+      const el = entry.el;
+      if (lost(entry) && entry.value && isText(el) && !isCombo(el) && !isPrompt(el) && !isDatePart(el)) setValue(el, entry.value);
+    }
+    await fillPage();   // the second pass
+    let needs = needsOnPage();
+    if (needs.length) {
+      await fillNeutral(needs);
+      needs = needsOnPage();
+    }
+    for (const [question, entry] of filledEls) {
+      const item = lost(entry) && state.items.find(known => known.page === pageNow && known.question === question);
+      if (item) item.flag = "Didn't take. Check this field";
+    }
+    noteBlanks();
+    return needs;
+  }
+
+  // Presses Continue; true once the next page has loaded.
+  async function advance() {
+    const next = continueButton();
+    if (!next) return false;
+    // Commit the last typed field before leaving the page.
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    await sleep(300);
+    const key = pageKey();
+    state.advancing = true;
+    saveRun();
+    press(next);
+    const moved = await nextPage(key);
+    state.advancing = false;
+    return moved;
   }
 
   // Waits on the page while the user answers what's left, then carries on by
@@ -1402,7 +1626,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   }
 
   // Everything filled across the run, checked against what the review page shows.
-  function showReview() {
+  // `onForm`: a one-page form that's just been filled, where there is no
+  // separate review page to compare against.
+  function showReview(onForm = false) {
     // A value counts as shown when it sits next to its own label ("State:
     // Virginia"), not just anywhere ("Virginia" inside the school's name).
     const labels = [...document.body.querySelectorAll('*')].filter(e => e.children.length <= 2 && !e.closest('#apply-desk-panel') && visible(e));
@@ -1418,17 +1644,19 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       return own.some(e => [e.nextElementSibling, e.parentElement, e.parentElement && e.parentElement.parentElement]
         .some(near => near && near.textContent.length < label.length + value.length + 200 && has(near.textContent)));
     };
-    const check = [];
+    const check = [], blank = [], optional = [];
     for (const item of state.items) {
-      if (item.flag) check.push({ ...item, why: item.flag });
-      else if (!shows(item)) check.push({ ...item, why: "Not on the review page. Check it took." });
+      if (!item.value) (/^Required/.test(item.flag) ? blank : optional).push({ ...item, why: item.flag });
+      else if (item.flag) check.push({ ...item, why: item.flag });
+      else if (!onForm && !shows(item)) check.push({ ...item, why: "Not on the review page. Check it took." });
     }
-    const errors = errorsShown().map(text => ({ question: text }));
+    const errors = errorsShown().map(text => ({ question: text })).concat(blank);
     const attached = state.attached ? [{ question: 'Resume', value: decode(nameB64) || 'Resume.pdf', why: '' }] : [];
-    showPanel('Ready for your review', roleName || 'Everything Apply Desk filled, page by page.', [
+    showPanel(blank.length ? `${blank.length} left for you` : 'Ready for your review', roleName || 'Everything Apply Desk filled, page by page.', [
       { title: 'Needs you', tone: '#e5484d', items: errors },
       { title: 'Check these', tone: '#d9822b', items: check, byPage: true },
-      { title: 'Filled by Apply Desk', tone: '#10b77f', items: [...attached, ...state.items], byPage: true, collapsed: true },
+      { title: 'Filled by Apply Desk', tone: '#10b77f', items: [...attached, ...state.items.filter(item => item.value)], byPage: true, collapsed: true },
+      { title: 'Left blank (optional)', tone: '#8e8e93', items: optional, byPage: true, collapsed: true },
     ], 'Look it over, then click Submit yourself. Apply Desk never submits.');
     state.checks = check.length;
   }
@@ -1444,6 +1672,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       for (let step = 0; ; step += 1) {
         pageNow = state.page = pageTitle();
         state.beat += 1;
+        filledEls.clear();
+        attachedHere = false;
         if (signInPage()) { state.stop = 'signin'; break; }
         if (onReview()) { showReview(); state.stop = 'review'; break; }
         if (step >= 20) { state.stop = 'limit'; break; }
@@ -1457,36 +1687,30 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         }
         await fillPage();
         saveRun();
-        let needs = needsOnPage();
-        if (needs.length) {
-          await fillNeutral(needs);
-          saveRun();
-          needs = needsOnPage();
+        const needs = await reviewPage();
+        saveRun();
+        state.needs = needs.map(need => need.question);
+        // A single-page form ends here, with anything still blank listed.
+        if (!continueButton()) {
+          if (state.items.length) showReview(true);
+          state.stop = needs.length ? 'needs' : 'end';
+          break;
         }
-        if (needs.length) {
-          state.needs = needs.map(need => need.question);
-          // A single-page form ends here; on a step, wait and then keep going.
-          if (!continueButton()) { showNeeds(needs, []); state.stop = 'needs'; break; }
-          if (!(await waitForUser())) { state.stop = window.__applyDeskStop ? 'stopped' : 'needs'; break; }
-          removePanel();
-        }
-        const next = continueButton();
-        if (!next) { state.stop = 'end'; break; }
         if (window.__applyDeskStop) { state.stop = 'stopped'; break; }
         if (!run.pages.includes(pageNow)) run.pages.push(pageNow);
-        // Commit the last typed field before leaving the page.
-        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-        await sleep(300);
-        const key = pageKey();
-        state.advancing = true;
-        saveRun();
-        press(next);
-        const moved = await nextPage(key);
-        state.advancing = false;
+        // Move on even with a blank: forms mark fields required that aren't.
+        // If the site objects, fill and review the page once more and retry.
+        let moved = await advance();
+        if (!moved) {
+          await fillPage();
+          await reviewPage();
+          saveRun();
+          moved = await advance();
+        }
         if (!moved) {
           const blank = needsOnPage(), errors = errorsShown();
           if (!blank.length && !errors.length) { state.stop = 'stuck'; break; }
-          // The site found something missing: wait for the user, then try again.
+          // The site still wants something: wait for the user, then try again.
           state.needs = [...blank.map(need => need.question), ...errors].slice(0, 12);
           showNeeds(blank, errors, true);
           if (!(await waitForUser())) { state.stop = window.__applyDeskStop ? 'stopped' : 'errors'; break; }

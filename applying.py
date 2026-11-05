@@ -211,6 +211,7 @@ FOLLOW_UPS = [
     ("other_followup", r"^if (you )?(selected|answered|chose|checked|picked)? ?.{0,12}\bother\b.{0,60}(specify|explain|describe|list)", "", "", "N/A", ["N/A", "Not applicable"]),
     ("citizenship_followup", r"if you (answered|selected|chose|checked) .{0,40}(no|yes|other|protected individual).{0,160}(countr|citizen|national|status|specify|explain)",
      "us_citizen", "Yes", "N/A", ["N/A", "Not applicable"]),
+    ("international_followup", r"if international|\(international (applicants?|candidates?|students?)( only)?\)|international (applicants?|students?) only", "us_citizen", "Yes", "N/A", ["N/A", "Not applicable"]),
     ("sponsorship_followup", r"^if (yes|so)\b.{0,60}sponsor|type of (visa )?sponsorship", "needs_sponsorship", "No", "N/A", ["N/A", "Not applicable", "None"]),
     ("export_control", r"export control|\bu\.? ?s\.? person\b|\bitar\b|\bear\b.{0,20}regulat|lawful permanent resident|protected individual",
      "us_citizen", "Yes", "Yes", ["Yes", "A citizen of the U.S.", "U.S. Citizen", "US Citizen", "Citizen", "U.S. person"]),
@@ -226,6 +227,89 @@ def follow_up_answers(profile: dict) -> list[dict]:
     for key, pattern, source, when, answer, options in FOLLOW_UPS:
         if not source or (profile.get(source) or "").strip().lower() == when.lower():
             out.append({"key": key, "pattern": pattern, "answer": answer, "options": options})
+    return out
+
+
+# Screening questions with one sensible answer for someone with the user's
+# profile (a student who told Apply Desk: U.S. citizen, never in government or
+# the military, nothing else on file). `assumed` ones are a standard answer
+# rather than something the user said, and the filler flags them in the
+# review. They come after the user's own answers, which always win.
+YES, NO = ["Yes"], ["No"]
+PRESUMED = [
+    # (key, question pattern, answer, option labels, assumed, profile condition)
+    ("criminal", r"convicted|felony|misdemeanor|criminal (record|history|offen[cs]e|charge)|plead(ed)? guilty|no contest", "No", NO, True, None),
+    ("noncompete", r"non ?compete|non ?solicit|restrictive covenant|(agreement|contract|obligation)s? .{0,80}(restrict|prevent|limit|prohibit|conflict)|bound by (any|an) ", "No", NO + ["N/A"], True, None),
+    ("terminated", r"(terminated|discharged|fired|dismissed|asked to resign|involuntarily (separated|terminated))", "No", NO, True, None),
+    ("discipline", r"disciplinary action|academic (misconduct|probation|dishonesty)|been (suspended|expelled)", "No", NO, True, None),
+    ("debarred", r"debarred|excluded .{0,40}(federal|government) (program|contract)", "No", NO, True, None),
+    ("military_service", r"(have you|did you) (ever )?serve|served in the|armed forces status|military service|currently serving|member of the (armed forces|military|national guard|reserves?)",
+     "No", ["No", "I have not served", "Never served", "None", "Not applicable", "N/A"], True, None),
+    ("military_spouse", r"military spouse|spouse of .{0,40}(service member|veteran|military)", "No", NO, True, None),
+    ("unable_contribute", r"reasons? (why )?you (would|could|may|might) not be able to|unable to (fully )?(contribute|support|perform)|anything that would prevent you", "No", NO, True, None),
+    ("other_citizenship", r"dual citizen|citizen(ship)? (of|in) any other|other citizenships?|hold citizenship (in|of) (any|another)|citizen of (any )?(another|other) countr",
+     "No", NO + ["None", "N/A"], True, ("us_citizen", "yes")),
+    ("visa_status", r"are you (currently )?(on|in|under|a holder of|holding) (a |an )?.{0,30}(visa|f 1|opt|cpt|h 1b)|(visa|immigration) (status|type)|what (type of )?visa",
+     "U.S. Citizen", ["U.S. Citizen", "US Citizen", "Citizen", "Not applicable", "N/A", "None", "No"], False, ("us_citizen", "yes")),
+    ("other_country_work", r"(right|authori[sz]\w+|eligib\w+|permit\w*|legally (able|allowed)) to work in (the )?(uk|u\.k\.|united kingdom|canada|europe|eu|european union|india|australia|germany|france|ireland|singapore|japan|china|mexico|netherlands)",
+     "No", NO, True, ("us_citizen", "yes")),
+    ("background_check", r"background (check|investigation|screen)|drug (test|screen)|pre employment (screen|check)", "Yes", YES, True, None),
+    ("essential_functions", r"essential (job )?functions|perform the (essential )?(duties|functions)", "Yes", YES, True, None),
+    ("return_to_school", r"return(ing)? to (school|university|college|your (degree|studies|program|campus))|continu(e|ing) your (education|studies|degree)|still be (enrolled|a student)|enrolled .{0,60}(after|following|upon completion of) (the|your|this) (internship|program|co op)",
+     "Yes", YES, False, ("currently_student", "yes")),
+    ("enrolled", r"enrolled (in|at) (a |an )?(accredited|college|university|degree|bachelor|undergraduate|four year|4 year)|accredited (college|university|institution|program)|(pursuing|working towards?|seeking|completing) (a |an )?(bachelor|undergraduate|degree|bs\b|b\.s)",
+     "Yes", YES, False, ("currently_student", "yes")),
+    ("full_availability", r"(available|commit|able to work|participate) .{0,80}(full time|40 hours|entire|duration|full (length|program)|whole|\d+ weeks?)|available (for|during) the (entire|full|whole)", "Yes", YES, True, None),
+    ("referred", r"were you referred|referred by (a|an|any) |did (a|an|any)(one| employee)? .{0,20}refer", "No", NO, True, None),
+    ("travel", r"willing(ness)? to travel|able to travel|travel (up to|required|requirement)", "Yes", YES, True, None),
+    ("transportation", r"reliable (means of )?transportation", "Yes", YES, True, None),
+    ("flexible_hours", r"(willing|able|available) to work .{0,60}(overtime|weekends?|nights?|evenings?|shifts?|holidays|flexible hours|extended hours)", "Yes", YES, True, None),
+    ("meets_requirements", r"meet (the |all |all of the )?(minimum|basic|required) (qualifications|requirements)|read (and (understood|understand) )?the (job|position) description", "Yes", YES, True, None),
+    ("under_18", r"under (the age of )?18|are you a minor", "No", NO, False, ("over_18", "yes")),
+    ("english", r"fluent in english|english (proficiency|fluency|language)|proficien\w+ in english|speak(ing)? english|read,? write,? and speak english",
+     "Yes", ["Yes", "Fluent", "Native", "Native or bilingual", "Native / Bilingual", "Advanced", "Full professional"], True, None),
+    ("languages", r"(what|which) languages? (do you|are you|can you)|languages? (spoken|you speak|fluent|proficiency)|^languages?$", "English", ["English"], True, None),
+    ("notice", r"notice period|how much notice", "N/A", ["N/A", "None", "Not applicable", "Immediately", "No notice", "2 weeks", "Two weeks"], True, None),
+    ("hours_per_week", r"how many hours (per|a|each) week|hours per week (are you|can you|you can)", "40", ["40", "40 hours", "Full time", "35 40", "40+"], True, None),
+    ("degrees_completed", r"degrees? (have you|you have|you've) (already )?(completed|earned|obtained)|completed (any )?degrees?|already completed",
+     "I have not yet completed a degree", ["I have not yet completed a degree", "None", "No degree", "N/A", "Not applicable", "High School"], False, ("degree_recent", "no")),
+    ("highest_education", r"highest (level of )?education|education level|highest degree (completed|obtained|earned|attained)|level of education",
+     "High School", ["High School Diploma", "High School", "High school or equivalent", "High School/GED", "Secondary", "Some College", "GED"], False, ("degree_recent", "no")),
+]
+
+
+def experience_months(experience: list[dict]) -> int:
+    """Months of work on the resume, counting a current job up to today."""
+    today = date.today()
+    total = 0
+    for job in experience:
+        start, end = job.get("start") or {}, job.get("end") or {}
+        if not start.get("year"):
+            continue
+        last = (int(end["year"]), int(end["month"])) if end.get("year") else (today.year, today.month)
+        total += max(1, (last[0] - int(start["year"])) * 12 + last[1] - int(start["month"]))
+    return total
+
+
+def presumed_answers(profile: dict, education: list[dict], experience: list[dict], applied_before: bool = False) -> list[dict]:
+    out = []
+    for key, pattern, answer, options, assumed, condition in PRESUMED:
+        if condition and (profile.get(condition[0]) or "").strip().lower() != condition[1]:
+            continue
+        out.append({"key": key, "pattern": pattern, "answer": answer, "options": options, "assumed": assumed})
+    field = ((education[0].get("field") if education else "") or "").lower()
+    if re.search(r"comput|software|engineer|data|math|information", field):
+        out.append({"key": "related_degree", "answer": "Yes", "options": YES, "assumed": False,
+                    "pattern": r"(degree|major|majoring|studying|pursuing|enrolled).{0,100}(computer science|software engineering|computer engineering|related (technical |stem |engineering )?(field|discipline|major|degree))"})
+    out.append({"key": "applied_before", "answer": "Yes" if applied_before else "No", "options": YES if applied_before else NO, "assumed": True,
+                "pattern": r"(previously|ever|before|already) applied|applied (to|for|with|at|here) .{0,60}(before|previously|in the past|past \d+)|have you applied|or applied before"})
+    months = experience_months(experience)
+    years = months / 12
+    label = "Less than 1 year" if years < 1 else f"{round(years)} year{'s' if round(years) != 1 else ''}"
+    options = ([label, "Less than 1", "<1", "0 1", "Under 1 year", "0", "1"] if years < 1
+               else [label, str(round(years)), f"{int(years)} {int(years) + 1}", f"{int(years)}+"])
+    out.append({"key": "years_experience", "pattern": r"years of .{0,60}experience|how many years", "answer": label, "options": options,
+                "number": str(1 if 6 <= months < 12 else round(years)), "assumed": True})
     return out
 
 
@@ -260,7 +344,8 @@ def company_from_host(url: str) -> str:
     host, parts = parsed.netloc.lower(), [p for p in parsed.path.split("/") if p]
     if any(h in host for h in ("greenhouse.io", "lever.co", "ashbyhq.com", "workable.com", "smartrecruiters.com", "breezy.hr", "recruitee.com")) and parts:
         slug = parts[1] if parts[0] in {"embed", "v1"} and len(parts) > 1 else parts[0]
-        return slug
+        # Ashby sometimes puts the organization's id, not its name, in the URL.
+        return "" if re.fullmatch(r"[0-9a-f-]{20,}", slug) else slug
     match = re.match(r"([a-z0-9-]+)\.(wd\d+\.)?myworkdayjobs\.com", host)
     if match:
         return match.group(1)
@@ -293,14 +378,20 @@ INTRO_SKIP = {"at least", "at the", "at this", "at our", "at that", "at times", 
 def company_from_intro(text: str) -> str:
     """The company a posting names when it introduces itself: "At RTX, we...",
     "At HP IQ, our team..." (Workday listings often have no company field)."""
-    for found in re.finditer(r"(?:^|[\n.!?]\s*)At ([A-Z][A-Za-z0-9&.'-]*(?: [A-Z][A-Za-z0-9&.'-]*){0,3}),\s", (text or "")[:4000]):
+    text = (text or "")[:20000]
+    for found in re.finditer(r"(?:^|[\n.!?]\s*)At ([A-Z][A-Za-z0-9&.'-]*(?: [A-Z][A-Za-z0-9&.'-]*){0,3}),\s", text):
         name = found.group(1).strip(" .")
         if f"at {name.split()[0].lower()}" not in INTRO_SKIP and len(re.findall(re.escape(name), text)) >= 2:
             return name
     # "HP IQ's AI Machine Learning team is building...", opening a paragraph.
-    for found in re.finditer(r"(?:^|\n)\s*([A-Z][A-Za-z0-9&.-]*(?: [A-Z][A-Za-z0-9&.-]*){0,3})['’]s ", (text or "")[:4000]):
+    for found in re.finditer(r"(?:^|\n)\s*([A-Z][A-Za-z0-9&.-]*(?: [A-Z][A-Za-z0-9&.-]*){0,3})['’]s ", text):
         name = found.group(1).strip(" .")
         if name.split()[0].lower() not in {"the", "our", "this", "your", "we", "it", "that", "today"} and len(re.findall(re.escape(name), text)) >= 3:
+            return name
+    # "If selected for employment with Shield AI, ...", "a great fit at Shield AI".
+    for found in re.finditer(r"\b(?:employment|career|careers|fit|working|work|role|position|join us|internship) (?:with|at) ([A-Z][A-Za-z0-9&-]*(?: [A-Z][A-Za-z0-9&-]*){0,2})", text):
+        name = found.group(1).strip(" .")
+        if len(re.findall(re.escape(name), text)) >= 3:
             return name
     return ""
 
@@ -596,6 +687,10 @@ def state_options(state: str) -> list[str]:
 # Readable names for tailoring.THEMES, in the same order.
 THEME_NAMES = ["data", "AI", "automation", "web interfaces", "backend systems", "cloud infrastructure", "embedded systems", "mobile apps"]
 DRAFT_QUESTIONS = [
+    ("cover", r"cover letter|letter of (interest|motivation)|motivation letter"),
+    ("about", r"tell (us|me) (a (little|bit) )?(more )?about yourself|about yourself|introduce yourself|describe yourself|personal (summary|statement)|professional summary|brief (bio|introduction)|summary of (your )?(background|experience|qualifications)"),
+    ("accomplishments", r"accomplishment|achievement|proud(est)? of|strongest (technical )?(work|project)|technical (experience|background|projects)|relevant (experience|projects)|what have you built"),
+    ("project", r"(a|one|your) (favorite |recent |personal |side |technical |past )?project|something you('ve| have)? (built|made|created)"),
     ("availability", r"dates? of (internship |co.?op )?availability|availability dates|(start|end) dates? .{0,30}availab|availab\w* .{0,40}(start|end) dates?|when (are|will) you (be )?available"),
     ("plans", r"plans? (after|following|post) ?graduat|after (you )?graduat|career (goals|plans|aspirations)|where do you see yourself|long.term goals|what are your (career )?goals"),
     ("why", r"\bwhy\b.{0,60}(interest|want|work|join|apply|choose|chose|role|position|internship|company)|(what|that|which) (interests|interested|excites|excited|draws|drew|attracts|attracted|motivates|motivated) you|why are you interested"),
@@ -606,41 +701,139 @@ def _join(items: list[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def drafts(profile: dict, education: list[dict], experience: list[dict], skills: list[str], role: dict | None, posting: str) -> list[dict]:
-    """Short, plain answers to common required questions ("plans after
-    graduation", "why this role"), built only from the user's own profile,
-    resume, and the posting. The filler marks every draft for the user to edit."""
+YEAR_WORDS = {"freshman": "first-year", "sophomore": "second-year", "junior": "third-year", "senior": "fourth-year"}
+PAST_VERBS = {"built", "found", "wrote", "led", "ran", "made", "won", "taught", "grew", "cut", "set", "sent", "kept", "held", "drove", "took",
+              "gave", "began", "chose", "spoke", "met", "got", "did", "saw", "brought", "sold", "read", "spent", "put", "rebuilt", "rewrote",
+              "oversaw", "dealt", "drew", "ran", "shrank", "sped", "stood", "caught", "fought", "sought", "thought", "understood"}
+
+
+def first_person(bullet: str) -> str:
+    """A resume bullet as a plain sentence, in the resume's own words:
+    "Built an API; added tests" → "I built an API and added tests."."""
+    text = re.sub(r"\s+", " ", bullet or "").strip().rstrip(".")
+    if not text:
+        return ""
+    first = text.split()[0]
+    word = re.sub(r"[^a-z-]", "", first.lower())
+    if re.match(r"team of\b", text, re.I):
+        text = "My t" + text[1:]
+    elif word in PAST_VERBS or re.search(r"[a-z]{2}ed$", word):
+        text = f"I {first[0].lower()}{first[1:]}{text[len(first):]}"
+    text = re.sub(r";\s+(?=[a-z])", " and ", text)
+    return text if text[-1] in "?!”\"" else text + "."
+
+
+def _lower_first(sentence: str) -> str:
+    return sentence if sentence.startswith("I ") or sentence[:2].isupper() else sentence[:1].lower() + sentence[1:]
+
+
+def story_entries(experience: list[dict], sections) -> list[dict]:
+    """The user's jobs and projects as short first-person stories ("At Acme,
+    I built ..."), made only of their resume's own lines, for essay drafts."""
+    out = []
+    for job in experience:
+        lines = [first_person(line.lstrip("• ").strip()) for line in job["description"].splitlines() if line.strip()]
+        if lines and job.get("company"):
+            out.append({"name": job["company"], "kind": "job", "lead": f"At {job['company']}", "sentences": lines})
+    for section in sections:
+        if section["kind"] != "projects":
+            continue
+        for entry in section["entries"]:
+            bullets = [b["text"] if isinstance(b, dict) else b for b in entry["bullets"]]
+            name = re.split(r"\s+\|\s+|\s{3,}", entry["header"][0])[0].strip() if entry["header"] else ""
+            if name and bullets:
+                out.append({"name": name, "kind": "project", "lead": f"For my project {name}", "sentences": [first_person(b) for b in bullets]})
+    for story in out:
+        story["text"] = " ".join([f"{story['lead']}, {_lower_first(story['sentences'][0])}"] + story["sentences"][1:2])
+    return out[:8]
+
+
+def plain_title(title: str) -> str:
+    """A posting's title the way you'd say it: "Summer 2027 - Software Engineer
+    Intern" and "2027 Software Engineer Intern - Reston VA" → "Software Engineer Intern"."""
+    text = re.sub(r"\(?\b(summer|fall|autumn|spring|winter)\s*(of\s*)?20\d{2}\)?|\b20\d{2}\b", " ", title or "", flags=re.I)
+    parts = [part.strip(" ,-–()") for part in re.split(r"\s+[-–|]\s+", text) if part.strip(" ,-–()")]
+    if len(parts) > 1 and parts[0].lower() in {"intern", "internship", "co-op"}:
+        parts = [f"{parts[1]} Intern"]  # "Intern - Cloud Engineer"
+    best = next((part for part in parts if re.search(TITLE_WORDS, part, re.I)), parts[0] if parts else "")
+    return re.sub(r"\s+", " ", best).strip() or (title or "").strip()
+
+
+def honor_lines(sections) -> list[str]:
+    """Awards as the resume states them: "1st Place, Sponsor Track at VT Hacks"."""
+    out = []
+    for section in sections:
+        if re.search(r"honor|award|competition|achievement|hackathon", section["title"], re.I):
+            for entry in section["entries"]:
+                lines = entry["header"][:1] or [b["text"] if isinstance(b, dict) else b for b in entry["bullets"][:1]]
+                out += [re.sub(r"\s+\|\s+", " at ", line).strip().rstrip(".") for line in lines if line.strip()]
+    return out[:3]
+
+
+def drafts(profile: dict, education: list[dict], experience: list[dict], skills: list[str], role: dict | None, posting: str,
+           stories: list[dict] | None = None, honors: list[str] | None = None) -> list[dict]:
+    """Drafts for the questions that need writing ("why this role", "tell us
+    about yourself", "your strongest accomplishments", a cover letter), in
+    plain first person and built only from the user's profile, their resume's
+    own lines, and the posting. The filler marks every one as a draft."""
+    stories, honors = stories or [], honors or []
     school = (profile.get("school") or (education[0]["school"] if education else "")).strip()
-    field = (education[0].get("field") if education else "") or "computer science"
+    field = ((education[0].get("field") if education else "") or "computer science").lower()
     graduation = (profile.get("graduation") or "").strip()
+    year = YEAR_WORDS.get((profile.get("class_year") or "").strip().lower(), "")
+    me = f"I'm a {year + ' ' if year else ''}{field} student{f' at {school}' if school else ''}"
     goals = [g.strip() for g in re.split(r"[,;\n]", profile.get("career_goals", "")) if g.strip()][:2]
     themes = [name for (pattern, _), name in zip(tailoring.THEMES, THEME_NAMES) if re.search(pattern, posting or "", re.I)][:2]
-    focus = goals or themes
-    plans = (f"After I graduate{f' from {school}' if school else ''}{f' in {graduation}' if graduation else ''} with a degree in {field}, "
-             f"I plan to work full time as a software engineer{f', focusing on {_join(focus)}' if focus else ''}. "
-             "Until then, I want to keep building real software through internships like this one.")
+    jobs = [story for story in stories if story["kind"] == "job"]
+    projects = [story for story in stories if story["kind"] == "project"]
+    title, company = plain_title((role or {}).get("title") or ""), (role or {}).get("company") or ""
     patterns = dict(DRAFT_QUESTIONS)
-    out = [{"key": "plans", "pattern": patterns["plans"], "text": plans}]
+    out = []
+
+    def add(key: str, text: str, short: str = ""):
+        if text.strip():
+            out.append({"key": key, "pattern": patterns[key], "text": text.strip(), "short": (short or text).strip()})
+
+    focus = goals or themes
+    add("plans", f"After I graduate{f' from {school}' if school else ''}{f' in {graduation}' if graduation else ''}, I want to work as a software engineer"
+                 f"{f', ideally on {_join(focus)}' if focus else ''}. Between now and then I'm trying to get as much real experience as I can, "
+                 "which is why I'm applying for internships like this one.")
     # Availability: the posting's own program dates, or the usual summer
     # break when it only names a summer term.
     dates = re.search(r"([A-Z][a-z]{2,8}\.? \d{1,2}(?:st|nd|rd|th)?,? 20\d{2})\s*(?:-|–|—|to|through)\s*([A-Z][a-z]{2,8}\.? \d{1,2}(?:st|nd|rd|th)?,? 20\d{2})", posting or "")
-    term = listing_facts("", posting or "", "")["term"]
+    term = listing_facts((role or {}).get("title") or "", posting or "", "")["term"]
+    available = ""
     if dates:
-        out.append({"key": "availability", "pattern": patterns["availability"],
-                    "text": f"I'm available for the full program, {dates.group(1)} – {dates.group(2)}."})
+        available = f"I'm available for the full program, {dates.group(1)} – {dates.group(2)}."
     elif term.startswith("Summer"):
-        year = term.split()[1]
-        out.append({"key": "availability", "pattern": patterns["availability"],
-                    "text": f"I'm available from mid-May {year} through mid-August {year}, after my spring semester ends."})
-    if role and role.get("company"):
-        title, company = role.get("title") or "this", role["company"]
-        why = (f"I'm a {field} student{f' at {school}' if school else ''}, and the {title} role at {company} stands out to me"
-               f"{f' because of its focus on {_join(themes)}' if themes else ''}.")
-        job = experience[0] if experience else None
-        if job and job.get("title") and job.get("company"):
-            doing = f"I'm currently a {job['title']} at {job['company']}" if job.get("current") else f"I've worked as a {job['title']} at {job['company']}"
-            why += f" {doing}{f', working with {_join(skills[:3])}' if skills else ''}, and I'd like to bring that experience to {company}."
-        out.append({"key": "why", "pattern": patterns["why"], "text": why})
+        available = f"I'm available from mid-May {term.split()[1]} through mid-August {term.split()[1]}, after my spring semester ends."
+    add("availability", available)
+
+    # What I've done, in my resume's words: the current job first, then a project.
+    work = f"{jobs[0]['lead']}, {_lower_first(jobs[0]['sentences'][0])}" if jobs else ""
+    side = f"Outside of work, {_lower_first(projects[0]['sentences'][0])}" if projects and jobs else (projects[0]["text"] if projects else "")
+    done = " ".join(part for part in (work, side) if part)
+    reason = (f"the work is in {_join(themes)}, which is what I've spent most of my time on so far" if themes
+              else "I want to spend my time building software that people actually use")
+    if company:
+        opening = f"{me}. I'm applying for the {title or 'open'} role at {company} because {reason}."
+        closing = f"I'd like to keep doing that kind of work on a bigger team, and {company} looks like a good place to learn how."
+        add("why", "\n\n".join(part for part in (opening, done, closing) if part), short=opening)
+        letter = [f"Dear {company} Hiring Team,", opening, done,
+                  " ".join(part for part in (f"I expect to graduate in {graduation}." if graduation else "", available) if part),
+                  f"Thank you for reading. I'd be glad to talk more about the role.\n\n{profile.get('name', '').strip()}"]
+        add("cover", "\n\n".join(part for part in letter if part.strip()))
+    before = f"Before that I worked at {jobs[1]['name']}." if len(jobs) > 1 else ""
+    now = (f"Right now I work at {jobs[0]['name']}, where {_lower_first(jobs[0]['sentences'][0])}" if jobs and experience and experience[0].get("current")
+           else work)
+    add("about", " ".join(part for part in (f"{me}{f', graduating in {graduation}' if graduation else ''}.", now, before, side) if part),
+        short=f"{me}{f', graduating in {graduation}' if graduation else ''}.")
+    # Strongest work: one short paragraph per job or project, then any award.
+    proud = [story["text"] for story in (jobs[:1] + projects[:2] + jobs[1:2])[:3]]
+    if honors:
+        proud.append(f"I also earned {honors[0]}.")
+    add("accomplishments", "\n\n".join(proud), short=proud[0] if proud else "")
+    add("project", " ".join([projects[0]["text"]] + projects[0]["sentences"][2:3]) if projects else "")
     return out
 
 
@@ -657,27 +850,70 @@ LISTING_QUESTIONS = [
 ]
 
 
+STATE_NAMES = "|".join(sorted((re.escape(name) for name in STATES.values()), key=len, reverse=True))
+
+
+def listing_locations(title: str, description: str, url: str) -> list[str]:
+    """Where the posting says the job is, most specific first: its own
+    "Location" line, then every "City, ST" it names, then Workday's URL."""
+    places: list[str] = []
+
+    def add(place: str):
+        place = re.sub(r",? (United States of America|United States|USA)$", "", re.sub(r"\s+", " ", place).strip(" ,.-"))
+        if place and place.lower() not in [known.lower() for known in places]:
+            places.append(place)
+
+    state = rf"(?:{'|'.join(STATES)}|{STATE_NAMES})"
+    text = f"{title}\n{description or ''}"
+    for found in re.finditer(r"(?im)^\s*locations?\s*:?\s*\n+\s*(.{3,80})$", text):
+        if re.search(rf",\s*{state}\b", found.group(1)):
+            add(found.group(1))
+    for found in re.finditer(rf"\b([A-Z][a-zA-Z.'-]+(?: [A-Z][a-zA-Z.'-]+){{0,2}}),\s*({state})\b", text):
+        city = re.sub(r"^(?:(?:Also|In|At|The|Our|Located|Based|From|To|And|Or|Near|Location|Locations|Office|Offices|Intern|Internship) )+", "", found.group(1))
+        add(f"{city}, {found.group(2)}")
+    slug = re.search(r"/job/(?:US-+)?([A-Za-z-]+?)-+(" + "|".join(STATES) + r")/", unquote(url or ""))
+    if slug and not places:
+        add(f"{slug.group(1).replace('-', ' ')}, {slug.group(2)}")
+    if re.search(r"\bremote\b", text, re.I):
+        add("Remote")
+    return places[:4]
+
+
+def listing_pay(description: str) -> dict:
+    """The pay the posting itself states: {"hourly": 55.0, "text": "$55 an hour"}
+    (the middle of a range), or {"annual": ...}; empty when it states none."""
+    text = description or ""
+    amount = r"\$\s?(\d{2,3}(?:\.\d{1,2})?)"
+    per_hour = r"\s*(?:/|per|an|a)\s*(?:hr|hour)"
+    found = re.search(rf"{amount}\s*(?:-|–|—|to)\s*{amount}{per_hour}", text, re.I)
+    if found:
+        low, high = float(found.group(1)), float(found.group(2))
+        return {"hourly": round((low + high) / 2, 2), "text": f"${low:g}–${high:g} an hour"}
+    found = re.search(rf"{amount}{per_hour}", text, re.I)
+    if found:
+        return {"hourly": float(found.group(1)), "text": f"${float(found.group(1)):g} an hour"}
+    found = re.search(r"\$\s?(\d{2,3}),(\d{3})(?:\.\d\d)?\s*(?:-|–|—|to)\s*\$\s?(\d{2,3}),(\d{3})", text)
+    if found:
+        low, high = int(found.group(1) + found.group(2)), int(found.group(3) + found.group(4))
+        return {"annual": round((low + high) / 2), "text": f"${low:,}–${high:,} a year"}
+    return {}
+
+
 def listing_facts(title: str, description: str, url: str) -> dict:
     """What the posting says about itself: its title, requisition ID, term
-    ("Summer 2027"), and work locations ("Reston, VA", "Remote")."""
+    ("Summer 2027"), work locations ("Reston, VA", "Remote"), and pay."""
     text = f"{title}\n{description}"
     term = re.search(r"\b(summer|fall|autumn|spring|winter)\s*(?:of\s*)?(20\d{2})\b", text, re.I)
     job_id = (re.search(r"_((?:R|JR|REQ)-?\d{4,}(?:-\d+)?)(?:$|[/?#])", url or "")
               or re.search(r"(?:job|requisition|req|posting)\s*(?:id|#|number|no\.?)\s*[:#]?\s*([A-Z]{0,4}-?\d{4,}(?:-\d+)?)", text, re.I))
-    locations = []
-    for match in re.finditer(rf"\b([A-Z][a-zA-Z.'-]+(?: [A-Z][a-zA-Z.'-]+){{0,2}}),\s*({'|'.join(STATES)})\b", description or ""):
-        place = f"{match.group(1)}, {match.group(2)}"
-        if place not in locations:
-            locations.append(place)
-    if re.search(r"\bremote\b", text, re.I):
-        locations.append("Remote")
     kind = "Co-op" if re.search(r"\bco.?op\b", title or "", re.I) else "Intern" if re.search(r"\bintern", title or "", re.I) else ""
     if not term and kind == "Intern":
         # An internship that names no term is a summer one: the coming summer.
         today = date.today()
         term = re.match(r"(summer)\s*(\d{4})", f"summer {today.year + (1 if today.month >= 6 else 0)}", re.I)
     return {"title": title or "", "kind": kind, "term": f"{term.group(1).title()} {term.group(2)}" if term else "",
-            "job_id": job_id.group(1) if job_id else "", "locations": locations[:4]}
+            "job_id": job_id.group(1) if job_id else "", "locations": listing_locations(title, description, url),
+            "pay": listing_pay(description)}
 
 
 # ---------- One role per posting ----------
