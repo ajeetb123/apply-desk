@@ -57,13 +57,14 @@ STANDARD_QUESTIONS = [
     {"key": "country", "label": "Country", "default": "United States of America", "pattern": r"^country( or region|/region)?$|country of residence"},
     {"key": "country_code", "label": "Country phone code", "default": "United States of America (+1)", "pattern": r"country (phone )?code|phone country"},
     {"key": "enrollment_status", "label": "Enrollment status", "default": "", "pattern": r"enrollment status|(degree|level) (are you )?(currently )?(pursuing|working towards?)|student status"},
+    # Before class_year and currently_student: "If you are currently enrolled..., what is your GPA?" is about GPA.
+    {"key": "gpa", "label": "GPA", "default": "", "pattern": r"^(?!.*comment).*(\bgpa\b|grade point|overall result)"},
     {"key": "class_year", "label": "Year in school", "default": "",
      "pattern": r"year in (school|college|university)|class (standing|year|level)|academic (year|standing|classification)|current year of (study|school)|what year are you|year of study|grade level"},
     {"key": "currently_student", "label": "Currently a student", "default": "",
      "pattern": r"currently (working towards?|pursuing|enrolled|attending|a student)|are you (a )?(current )?(college |university )?student"},
     {"key": "degree_recent", "label": "Earned a degree in the last 2 years", "default": "",
      "pattern": r"(obtain|obtained|earn|earned|receive|received|complete|completed|graduate|graduated)( this| your| a)?( degree)? (with)?in the (last|past) \d+ (months|years)|recent graduate"},
-    {"key": "gpa", "label": "GPA", "default": "", "pattern": r"^(?!.*comment).*(\bgpa\b|grade point|overall result)"},
     {"key": "over_18", "label": "18 or older", "default": "", "pattern": r"(18|eighteen) (years|or older)|at least 18|over (the age of )?18"},
     {"key": "relatives", "label": "Relatives employed there", "default": "", "pattern": r"relative|family members? (currently )?employed"},
     {"key": "location_preference", "label": "Work locations you'd take", "default": "",
@@ -87,6 +88,7 @@ DISCLOSURE_QUESTIONS = [
     {"key": "eeo_race", "label": "Race or ethnicity",
      "choices": ["American Indian or Alaska Native", "Asian", "Black or African American", "Native Hawaiian or Other Pacific Islander", "White", "Two or More Races"],
      "pattern": r"\brace\b|ethnic"},
+    {"key": "eeo_pronouns", "label": "Pronouns", "choices": ["He/Him", "She/Her", "They/Them"], "pattern": r"pronoun"},
     {"key": "eeo_gender", "label": "Gender", "choices": ["Male", "Female", "Non-binary"], "pattern": r"\bgender\b|^sex$|what is your sex"},
     {"key": "eeo_veteran", "label": "Veteran status", "choices": ["I am not a protected veteran", "I identify as a protected veteran"],
      "pattern": r"veteran|military status"},
@@ -96,6 +98,8 @@ DISCLOSURE_KEYS = [q["key"] for q in DISCLOSURE_QUESTIONS]
 DISCLOSURE_VARIANTS = {
     # Only the Hispanic or Latino question has Yes/No answers.
     "No": ["No", "Not Hispanic or Latino", "No, not Hispanic or Latino"], "Yes": ["Yes", "Hispanic or Latino", "Yes, Hispanic or Latino"],
+    "He/Him": ["He/Him", "He / Him", "He, Him", "He Him", "He"], "She/Her": ["She/Her", "She / Her", "She, Her", "She Her", "She"],
+    "They/Them": ["They/Them", "They / Them", "They, Them", "They Them", "They"],
     "Male": ["Male", "Man"], "Female": ["Female", "Woman"], "Non-binary": ["Non-binary", "Nonbinary", "Non binary", "Genderqueer"],
     "I am not a protected veteran": ["I am not a protected veteran", "I am not a veteran", "Not a protected veteran", "Not a veteran", "No"],
     "I identify as a protected veteran": ["I identify as one or more of the classifications of protected veteran", "I identify as a protected veteran",
@@ -181,7 +185,7 @@ def option_variants(key: str, answer: str) -> list[str]:
                  "junior": ["Junior", "Third Year", "Third-year", "3rd Year", "Year 3"], "senior": ["Senior", "Fourth Year", "Fourth-year", "4th Year", "Year 4"]}
         return years.get(lower, [answer])
     if key == "gpa" and lower in {"n/a", "na", "none"}:
-        return ["N/A", "Not applicable", "0"]
+        return ["N/A", "NA", "Not applicable", "No GPA", "I do not have", "I don't have", "None", "0"]
     if yes:
         return ["Yes"]
     if no:
@@ -196,9 +200,15 @@ def standard_answers(profile: dict) -> list[dict]:
         answer = (profile.get(question["key"]) or question["default"]).strip()
         if question["key"] == "enrollment_status" and not answer and re.search(r"\bb\.?s\.?\b|bachelor", profile.get("degree", ""), re.I):
             answer = "Bachelor's"
+        options = option_variants(question["key"], answer)
+        # A form with GPA brackets and no N/A: the filler picks the bracket closest to the user's range.
+        gpa_range = (profile.get("gpa_range") or "").strip()
+        if question["key"] == "gpa" and gpa_range:
+            answer = answer or gpa_range
+            options = [option for option in options if option not in {"0", gpa_range}] + [gpa_range]
         # Unanswered questions stay in the list so a later, looser pattern
         # can't claim them; the filler leaves them for the user.
-        out.append({"key": question["key"], "pattern": question["pattern"], "answer": answer, "options": option_variants(question["key"], answer)})
+        out.append({"key": question["key"], "pattern": question["pattern"], "answer": answer, "options": options})
     return out
 
 

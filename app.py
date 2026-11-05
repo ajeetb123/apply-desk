@@ -44,6 +44,7 @@ app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 CONTACT_FIELDS = [("name", "Full name"), ("email", "Email"), ("phone", "Mobile phone"), ("address", "Street address"),
                   ("city", "City"), ("state", "State"), ("postal_code", "ZIP code")]
 EDUCATION_FIELDS = [("school", "School"), ("degree", "Degree"), ("graduation", "Expected graduation"), ("gpa", "GPA"),
+                    ("gpa_range", "GPA range for forms with no N/A"),
                     ("work_authorization", "Work authorization")]
 LINK_FIELDS = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("website", "Portfolio or website")]
 # Values the Mac app may type into clearly labeled, empty application fields.
@@ -103,7 +104,7 @@ def init_db():
             "skills": "",
             "career_goals": "",
             "role_campaigns": "Wave 1, Wave 2, Defense, Seed-stage startups",
-            "larp": "2", "gpa": "",
+            "larp": "2", "gpa": "", "gpa_range": "",
         }
         defaults.update({spec["key"]: spec["default"] for spec in applying.STANDARD_QUESTIONS if spec["key"] not in defaults})
         for key, value in defaults.items():

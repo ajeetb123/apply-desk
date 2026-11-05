@@ -321,6 +321,26 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return found && found.options.length ? found.options : null;
   }
 
+  // A form's GPA bracket as [low, high]: "3.5 - 3.99", "3.5 and above", "Below 2.5", "4.0".
+  const GPA_RANGE = /^(\d\.\d+) (?:to )?(\d\.\d+)$/;
+  function gpaBracket(text) {
+    const found = text.replace(/(\/|out of|on an?|scale of) ?[45](\.0+)?( scale)?/g, ' ').match(/\b[0-5](\.\d+)?\b/g);
+    if (!found) return null;
+    const [a, b] = found.map(Number);
+    if (found.length > 1) return [Math.min(a, b), Math.max(a, b)];
+    if (/below|under|less than|lower than|</.test(text)) return [0, a];
+    if (/\+|above|over|higher|greater|more than|at least|>/.test(text)) return [a, 4];
+    return [a, a];
+  }
+  // The bracket sharing most of the range, then the narrowest, then the lowest: a claim is never rounded up.
+  function closestBracket(texts, low, high) {
+    const ranked = texts.map(([candidate, t]) => ({ candidate, bracket: gpaBracket(t) })).filter(o => o.bracket)
+      .map(o => ({ ...o, shared: Math.round((Math.min(high, o.bracket[1]) - Math.max(low, o.bracket[0])) * 100), width: o.bracket[1] - o.bracket[0] }))
+      .filter(o => o.shared >= 0)
+      .sort((a, b) => b.shared - a.shared || a.width - b.width || a.bracket[0] - b.bracket[0]);
+    return ranked.length ? ranked[0].candidate : null;
+  }
+
   // Exact match first; short answers like "No" never match "North Carolina".
   // Strict matching (schools, majors, states) also refuses a longer, different
   // name: "Computer Science" never picks "Computer Science and Engineering
@@ -329,6 +349,12 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const texts = candidates.map(c => [c, norm(label(c))]);
     const shortest = hits => hits.sort((a, b) => a[1].length - b[1].length)[0];
     for (const variant of variants.map(norm).filter(Boolean)) {
+      const range = variant.match(GPA_RANGE);
+      if (range) {
+        const bracket = closestBracket(texts, Number(range[1]), Number(range[2]));
+        if (bracket) return bracket;
+        continue;
+      }
       const short = variant.length <= 3;
       const exact = texts.find(([, t]) => t === variant);
       if (exact) return exact[0];
@@ -729,7 +755,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     // "Ethnicity" is sometimes only "Hispanic or Latino / Not Hispanic or Latino".
     const hispanic = found.key === 'eeo_race' ? (plan.disclosures || []).find(d => d.key === 'eeo_hispanic') : null;
     const values = found.options.concat(hispanic && !hispanic.declined ? hispanic.options.filter(o => /hispanic/i.test(o)) : []);
-    return { values, source: 'disclosure', strict: 'prefix', declined: !!found.declined };
+    return { values, source: 'disclosure', strict: 'prefix', declined: !!found.declined, typed: found.key === 'eeo_pronouns' && !found.declined };
   }
   // Why a value deserves a second look in the review, if it does.
   function flagFor(want, value) {
@@ -744,6 +770,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (want.source === 'terms') return 'Ticked for you. Read what you agreed to before you submit';
     if (want.source === 'signature') return 'Signed with your name for you. Read what it certifies before you submit';
     if (want.source === 'neutral') return `No saved answer, so Apply Desk picked "${value}". Check it`;
+    if (want.source === 'no_linkedin') return "You don't share LinkedIn, so this says N/A";
+    if (want.key === 'gpa' && p.gpa_range && (want.floor || gpaBracket(norm(value)))) return 'From the GPA range in your Profile. Check it before you submit';
     if (want.key === 'location_preference') return want.open ? "You said you're open to all locations. Change this if you'd rather not" : '';
     if (want.browse && value && norm(value) !== norm(want.values[0])) return `Closest option to your answer: ${want.values[0]}`;
     if (want.date && want.date === plan.start && /today/i.test(plan.start.source || '')) return "Today's date: the posting gives no start date";
@@ -769,6 +797,16 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const when = at(grad.year, Number(grad.month || 1));
     if (!month(found[1]) || !month(found[3])) return '';
     return when >= at(found[2], month(found[1])) && when <= at(found[4], month(found[3])) ? 'Yes' : 'No';
+  }
+
+  // "Do you have a GPA of 3.0 or higher?" → Yes or No, only when the user's range settles it.
+  function gpaFloor(q) {
+    const range = norm(p.gpa_range).match(GPA_RANGE);
+    if (!range || !/\bgpa\b|grade point/.test(q)) return '';
+    const found = q.match(/(?:at least|minimum(?: of)?|above|over|greater than|exceed\w*) (?:an? )?(?:cumulative |overall )?(?:gpa )?(?:of )?([0-5]\.\d+)|([0-5]\.\d+) ?(?:\/ ?4(?:\.0+)? ?)?(?:cumulative |overall )?(?:gpa )?(?:\+|or (?:higher|above|better|greater)|and above)/);
+    if (!found) return '';
+    const minimum = Number(found[1] || found[2]);
+    return Number(range[1]) >= minimum ? 'Yes' : Number(range[2]) < minimum ? 'No' : '';
   }
 
   // Returns {values, date} for a field, or null to leave it alone.
@@ -797,6 +835,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     }
     const window_ = graduatingBetween(q);
     if (window_) return { values: [window_], source: 'answer' };
+    const floor = gpaFloor(q);
+    if (floor && (!isText(el) || isCombo(el) || isPrompt(el))) return { values: [floor, p.gpa_range], source: 'answer', key: 'gpa', floor: true };
     // A standard question owns its question; when its answer is blank, only
     // something the user answered on an earlier form can fill it.
     let claimed = false;
@@ -856,13 +896,13 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (isListbox(el)) return await pickListbox(el, { ...want, values }, question);
       if (isCombo(el)) return await pickCombo(el, { ...want, values }, question);
       if (isPrompt(el)) return selectedPills(el).length ? false : await pickPrompt(el, { ...want, values }, question);
-      // Self-identification answers are picked from the form's options, never typed.
+      // Self-identification answers are picked from the form's options, never typed (pronouns are often a text box).
       if (want.field === 'location' && isText(el) && !el.value.trim()) {
         if (!(await typeAndPick(el, values[0]))) return false;
         note(el, question, el.value);
         return true;
       }
-      if ((isText(el) || (el.tagName === 'TEXTAREA' && want.source === 'draft')) && (!el.value.trim() || want.replace) && want.source !== 'disclosure') {
+      if ((isText(el) || (el.tagName === 'TEXTAREA' && want.source === 'draft')) && (!el.value.trim() || want.replace) && (want.source !== 'disclosure' || want.typed)) {
         typeInto(el, values[0]);
         note(el, question, values[0]);
         return true;
@@ -969,7 +1009,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
             : /school|university|college|institution/.test(q) ? { values: names, strict: true, search: schoolSearch(names) }
             : /degree/.test(q) ? { values: entry.degree_options.length ? entry.degree_options : [entry.degree] }
             : /field of study|major|discipline/.test(q) ? { values: entry.field_options && entry.field_options.length ? entry.field_options : [entry.field], strict: true, search: [entry.field] }
-            : /gpa|grade|overall result/.test(q) ? { values: [entry.gpa] } : null;
+            : /gpa|grade|overall result/.test(q) ? { values: [entry.gpa, p.gpa_range], key: 'gpa' } : null;
         }
         // Not one of the entry's own fields ("If you selected Other, please specify"): answered like any other question.
         if (!want) continue;
@@ -1521,14 +1561,17 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // A required text box that can take "N/A": not a link, contact detail, name, number, or date.
   const noAnswerNeeded = (el, question) => !['email', 'tel', 'url', 'number', 'date', 'password'].includes((el.type || '').toLowerCase())
     && !/linkedin|url|link|website|twitter|e ?mail|phone|date|zip|postal|social security|\bssn\b|birth|password|gpa|name$|year|how many|number/.test(norm(question));
+  // The user doesn't share LinkedIn: a required box says N/A (a URL-only box can't), an optional one stays out of the review.
+  const noLinkedIn = question => !p.linkedin && /linkedin/.test(norm(question));
   async function fillNeutral(needs) {
     for (const need of needs) {
       const el = need.el;
-      current = { source: 'neutral' };
+      const skipLink = noLinkedIn(need.question) && el.type !== 'url';
+      current = { source: skipLink ? 'no_linkedin' : 'neutral' };
       if (el.tagName === 'SELECT') pickSelect(el, NEUTRAL, need.question, 'prefix');
       else if (isListbox(el)) await pickListbox(el, { values: NEUTRAL, strict: 'prefix' }, need.question);
       else if (el.type === 'radio') pickRadio(controlsIn(document).filter(r => r.type === 'radio' && r.name === el.name), NEUTRAL, need.question, 'prefix');
-      else if (isText(el) && !isCombo(el) && !isPrompt(el) && !isDatePart(el) && !el.value.trim() && noAnswerNeeded(el, need.question)) {
+      else if (isText(el) && !isCombo(el) && !isPrompt(el) && !isDatePart(el) && !el.value.trim() && (skipLink || noAnswerNeeded(el, need.question))) {
         typeInto(el, 'N/A');
         note(el, need.question, 'N/A');
       }
@@ -1573,7 +1616,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       }
       if (!empty || (/^to\b/.test(norm(question)) && currentJob(el))) continue;
       const required = isRequired(el, asked);
-      if (!required && (optional >= 15 || otherPeople.test(norm(question)))) continue;
+      if (!required && (optional >= 15 || otherPeople.test(norm(question)) || noLinkedIn(question))) continue;
       optional += required ? 0 : 1;
       record({ page: pageNow, question, value: '', flag: required ? 'Required and still blank. This one needs you' : 'Left blank (optional)' });
     }
