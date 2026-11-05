@@ -360,7 +360,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return ranked.length ? ranked[0].candidate : null;
   }
 
-  // A graduation date against a form's own list: the exact month, a range or
+  // A date against a form's own list: the exact month, a range or
   // term holding it ("July 2028 - December 2028", "Spring 2029"), then the year.
   function closestDate(texts, year, month) {
     const months = 'jan feb mar apr may jun jul aug sep oct nov dec'.split(' ');
@@ -380,7 +380,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const top = texts.map(([candidate, t]) => [candidate, score(t)]).sort((a, b) => b[1] - a[1])[0];
     return top && top[1] ? top[0] : null;
   }
-  const DATE_VARIANT = /^graduation date (\d{4}) (\d{2})$/;
+  const DATE_VARIANT = /^month of (\d{4}) (\d{2})$/;
   // "Did not obtain high school diploma" never answers "High School Diploma".
   const saysNo = t => /^(did not|didn.t|do not|don.t|not |no |never |without |none)/.test(t);
 
@@ -677,7 +677,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const month = MONTHS[Number(formats.month) - 1] || '';
       const values = part === 'month' ? [month, month.slice(0, 3), formats.month, String(Number(formats.month))]
         : part === 'year' ? [formats.year] : part === 'day' ? [formats.day, String(Number(formats.day))]
-        : [formats.mm_dd_yyyy, formats.mm_yyyy, formats.year];
+        : [formats.mm_dd_yyyy, formats.mm_yyyy, `month of ${formats.year} ${formats.month}`, formats.year];
       return fillControl(el, question, { values, strict: true });
     }
     if (part && isText(el) && !el.value.trim()) {
@@ -749,7 +749,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const otherPeople = /\breferences?\b|emergency|supervisor|manager|guardian|parent|spouse|high school|extension|\breferr(al|er|ed) (name|email|by)|\b(alternate|alternative|secondary|additional|backup) (phone|email|contact|number)/;
   // A start date at a past job ("Government Civilian Start Date") is not the user's to invent.
   const pastJob = /government|military|civilian|clearance|served|service|former|previous|prior/;
-  const startDate = /(start|availability|available) date|when can you (start|begin)|earliest (start|date)|proposed start|date (you are )?available/;
+  const startDate = /(start|availability|available|work) date|(preferred|desired) (start|work) (month|time)|when can you (start|begin)|earliest (start|date)|proposed start|date (you are )?available/;
   const graduationDate = /when .{0,25}graduate|anticipated graduation|graduation date|(expected|anticipated|projected) graduation|graduation (month|year|term)|date of graduation|completion date/;
   // Marketing's exception: contact a form requires, about this application.
   const aboutThisApplication = /(regarding|about|related to|concerning|for) (my|your|this|the) (application|candidacy|interview)/;
@@ -890,7 +890,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (el.tagName !== 'TEXTAREA' && graduationDate.test(q) && !/high school/.test(q)) {
       const dated = p.graduation_dates || {};
       const picks = el.tagName === 'SELECT' || isListbox(el) || isCombo(el) || el.type === 'radio' || el.tagName === 'BUTTON';
-      return picks ? { values: [`graduation date ${dated.year} ${dated.month}`], source: 'date' } : { date: dated, source: 'date' };
+      return picks ? { values: [`month of ${dated.year} ${dated.month}`], source: 'date' } : { date: dated, source: 'date' };
     }
     const window_ = graduatingBetween(q);
     if (window_) return { values: [window_], source: 'answer' };

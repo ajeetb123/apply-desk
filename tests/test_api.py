@@ -742,6 +742,13 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertIn("summer 2027", source)
         start, source = application.applying.program_start("We build things.", "")
         self.assertIn("today", source)
+        # The user's preferred date, in the year of a summer internship; a fall term is the fall.
+        start, source = application.applying.program_start("We build things.", "Summer 2028", "June 7, 2027")
+        self.assertEqual(start["iso"], "2028-06-07")
+        start, source = application.applying.program_start("We build things.", "", "June 7, 2027")
+        self.assertEqual(start["iso"], "2027-06-07")
+        start, source = application.applying.program_start("We build things.", "Fall 2027", "June 7, 2027")
+        self.assertEqual(start["iso"], "2027-09-01")
 
     def test_gpa_range_and_pronouns(self):
         self.client.post("/profile", data={"gpa": "N/A", "gpa_range": "3.0-3.4", "eeo_pronouns": "They/Them"})
