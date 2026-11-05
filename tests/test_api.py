@@ -783,6 +783,54 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertIn("Left blank · 1 required", page)
         self.assertIn("LinkedIn Profile", page)
 
+    def test_local_model_answers_are_checked_before_use(self):
+        applying = application.applying
+        resume = "Team of 4 built a web app. Found and fixed a bug; added schema validation across 2 manifest versions and 20 unittest cases. Tested 2007–2026 ETF data."
+        essay = ("Pursuing excellence resonates most with me. I focus on making sure my code is correct. At Acme, I found and fixed a bug where a read request silently created data. "
+                 "I added schema validation across 2 manifest versions and 20 unittest cases — it proved the endpoint performs zero writes. I tested 2007–2026 ETF data. "
+                 "I led a team of 9 engineers. I improved latency by 40%. I am passionate about reliability. These projects show my ability to build systems.")
+        cleaned = applying.clean_essay(essay, resume)
+        self.assertTrue(cleaned.startswith("Pursuing excellence matters most to me."))
+        self.assertIn("2007–2026", cleaned)  # a range keeps its dash
+        for gone in ("—", "led a team", "40%", "passionate", "These projects show"):
+            self.assertNotIn(gone, cleaned)
+        self.assertEqual(applying.clean_essay("I am passionate. I am excited.", resume), "")  # nothing usable left
+        asked = applying.model_questions([
+            {"id": 1, "kind": "choice", "question": "Which team interests you most?", "options": ["Backend", "Hardware"]},
+            {"id": 2, "kind": "text", "question": "What is your GPA?"}, {"id": 3, "kind": "text", "question": "LinkedIn URL"},
+            {"id": 4, "kind": "choice", "question": "What is your gender?", "options": ["Male", "Female"]},
+            {"id": 5, "kind": "multi", "question": "Which clubs?", "options": ["Hackathons", "Aero"]}, {"id": 6, "kind": "text", "question": "Strongest language?"},
+            {"id": 7, "kind": "text", "question": "Desired salary?"}, {"id": 8, "kind": "choice", "question": "Do you agree to the terms?", "options": ["Yes", "No"]}])
+        self.assertEqual([q["id"] for q in asked], [1, 5, 6])  # never GPA, links, self-identification, pay, or consent
+        checked = applying.check_answers(asked, [{"id": 1, "answer": "backend", "choices": []}, {"id": 5, "answer": "", "choices": ["Hackathons", "Chess"]},
+                                                  {"id": 6, "answer": "Python with 9 years", "choices": []}, {"id": 2, "answer": "3.9", "choices": []}], resume)
+        self.assertEqual(checked, [{"id": 1, "answer": "Backend", "choices": []}, {"id": 5, "answer": "", "choices": ["Hackathons"]}])
+
+    def test_suggest_uses_the_local_model_only_when_turned_on(self):
+        self.add_resume(self.JAKE)
+        job_id = self.evaluate(self.WORKDAY)
+        questions = [{"id": 1, "kind": "choice", "question": "Which team interests you most?", "options": ["Backend", "Hardware"]}]
+        calls = []
+        real = (application.local_models, application.ask_model)
+        application.local_models = lambda: ["llama3:8b", "gemma4:12b"]
+        application.ask_model = lambda model, prompt: calls.append((model, prompt)) or [{"id": 1, "answer": "Backend", "choices": []}, {"id": 1, "answer": "Sales", "choices": []}]
+        try:
+            self.assertEqual(self.client.post("/api/suggest", json={"job_id": job_id, "questions": questions}).json, {"answers": [], "model": ""})
+            self.assertEqual(self.client.get(f"/api/fill-plan?job_id={job_id}").json["model"], "")
+            self.client.post("/profile", data={"use_model": "Yes", "us_citizen": "Yes"})
+            reply = self.client.post("/api/suggest", json={"job_id": job_id, "questions": questions}).json
+            self.assertEqual(reply, {"answers": [{"id": 1, "answer": "Backend", "choices": []}], "model": "gemma4:12b"})
+            self.assertEqual(self.client.get(f"/api/fill-plan?job_id={job_id}").json["model"], "gemma4:12b")
+            model, prompt = calls[0]
+            self.assertIn("U.S. citizen: Yes", prompt)
+            self.assertIn("GPA: none yet", prompt)
+            self.assertIn("Which team interests you most?", prompt)
+            application.local_models = lambda: []  # Ollama not running
+            self.assertEqual(self.client.get(f"/api/fill-plan?job_id={job_id}").json["model"], "")
+            self.assertIn(b"A model on this Mac", self.client.get("/profile").data)
+        finally:
+            application.local_models, application.ask_model = real
+
     def test_redoing_an_application_keeps_one_record_with_one_line_per_question(self):
         self.add_resume(self.JAKE)
         job_id = self.evaluate(self.WORKDAY)

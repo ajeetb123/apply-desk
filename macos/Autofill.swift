@@ -29,6 +29,20 @@ enum Autofill {
         /// Waiting on the page for the user to answer what Apply Desk couldn't.
         let waiting: Bool
         let beat: Int
+        /// Questions the filler wants the model on this Mac to look at, if any.
+        let ask: Ask?
+    }
+
+    struct Ask {
+        let id: String
+        let questions: [[String: Any]]
+    }
+
+    /// Hands a tab the model's checked answers for the questions it asked.
+    static func answersScript(id: String, answers: [[String: Any]]) -> String {
+        let json = (try? JSONSerialization.data(withJSONObject: answers)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let key = id.filter { $0.isNumber || $0.isLetter }
+        return "window.__applyDeskAnswers = Object.assign(window.__applyDeskAnswers || {}, {\"\(key)\": \(json)}); 'ok'"
     }
 
     /// Also wakes the filler's waits that are due: Chrome slows a background
@@ -61,6 +75,10 @@ enum Autofill {
                       stop: object["stop"] as? String ?? "", page: object["page"] as? String ?? "", needs: object["needs"] as? [String] ?? [],
                       items: items, pages: object["pages"] as? [String] ?? [], checks: object["checks"] as? Int ?? 0,
                       run: object["run"] as? String ?? "", advancing: object["advancing"] as? Bool ?? false,
-                      waiting: object["waiting"] as? Bool ?? false, beat: object["beat"] as? Int ?? 0)
+                      waiting: object["waiting"] as? Bool ?? false, beat: object["beat"] as? Int ?? 0,
+                      ask: (object["ask"] as? [String: Any]).flatMap { ask in
+                          guard let id = ask["id"] as? String, let questions = ask["questions"] as? [[String: Any]], !questions.isEmpty else { return nil }
+                          return Ask(id: id, questions: questions)
+                      })
     }
 }
