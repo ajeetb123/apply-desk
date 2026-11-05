@@ -22,6 +22,15 @@
   <div class="field"><label for="clr">Security clearance level</label><select id="clr"><option value="">--</option><option>None</option><option>Secret</option><option>Top Secret</option></select></div>
   <div class="field"><label for="sdate">Earliest start date</label><input id="sdate" type="date"></div>
   <div class="field"><label for="gpa">GPA</label><input id="gpa" type="text"></div>
+  <!-- GPA brackets as Lever asks them, one with a way to say N/A, one whose brackets don't line up, and a minimum question -->
+  <div class="field"><label for="gpaband">If you are currently enrolled in or have graduated from a university within the past 24 months, what is your current or final GPA? *</label><select id="gpaband" required><option value="">--</option><option>4.0</option><option>3.5 - 3.9</option><option>3.0 - 3.4</option><option>2.5 - 2.9</option><option>Below 2.5</option></select></div>
+  <div class="field"><label for="gpana">Undergraduate GPA range</label><select id="gpana"><option value="">--</option><option>3.50 - 4.00</option><option>3.00 - 3.49</option><option>Below 3.00</option><option>N/A</option></select></div>
+  <div class="field"><label for="gpaoff">Cumulative GPA band</label><select id="gpaoff"><option value="">--</option><option>3.75 and above</option><option>3.50 - 3.74</option><option>3.00 - 3.49</option><option>Below 3.00</option></select></div>
+  <fieldset class="field"><legend>Do you have a cumulative GPA of 3.0 or higher?</legend><label><input type="radio" name="gpamin" value="Yes"> Yes</label><label><input type="radio" name="gpamin" value="No"> No</label></fieldset>
+  <!-- Pronouns as a list and as a text box, and a LinkedIn box the form insists on -->
+  <div class="field"><label for="pronlist">Pronouns</label><select id="pronlist"><option value="">--</option><option>She/her/hers</option><option>He/him/his</option><option>They/them/theirs</option><option>Prefer not to say</option></select></div>
+  <div class="field"><label for="prontext">What are your preferred pronouns?</label><input id="prontext" type="text"></div>
+  <div class="field"><label for="lireq">LinkedIn URL *</label><input id="lireq" type="text" required></div>
   <div class="field"><label><input type="checkbox" id="certify"> I certify that the information provided is accurate.</label></div>
   <div class="field"><label for="gender">Gender</label><select id="gender"><option value="">--</option><option>Male</option><option>Female</option></select></div>
   <div class="field"><label for="race">Race / Ethnicity</label><select id="race"><option value="">--</option><option>Asian</option></select></div>

@@ -676,6 +676,34 @@ class ApplyDeskApiTests(unittest.TestCase):
         order = [q["key"] for q in application.applying.STANDARD_QUESTIONS]
         self.assertLess(order.index("location_preference"), order.index("relocate"))
 
+    def test_gpa_range_and_pronouns(self):
+        self.client.post("/profile", data={"gpa": "N/A", "gpa_range": "3.0-3.4", "eeo_pronouns": "They/Them"})
+        plan = self.client.get("/api/fill-plan").json
+        owner = lambda question: next(a for a in plan["answers"] if re.search(a["pattern"], question))
+        # "Currently enrolled" in the question doesn't take it away from GPA.
+        lever = "if you are currently enrolled in or have graduated from a university within the past 24 months, what is your current or final gpa"
+        self.assertEqual(owner(lever)["key"], "gpa")
+        gpa = owner("what is your gpa")
+        self.assertEqual(gpa["answer"], "N/A")  # a text box still says N/A
+        self.assertEqual(gpa["options"][0], "N/A")  # so does a list that offers it
+        self.assertEqual(gpa["options"][-1], "3.0-3.4")  # the range is only the fallback
+        self.assertNotIn("0", gpa["options"])  # "0" would pick a "0 - 2.5" bracket first
+        self.assertEqual(plan["profile"]["gpa_range"], "3.0-3.4")
+        pronouns = next(d for d in plan["disclosures"] if re.search(d["pattern"], "gender pronouns"))
+        self.assertEqual((pronouns["key"], pronouns["options"][0], pronouns["declined"]), ("eeo_pronouns", "They/Them", False))
+        self.assertIn('name="gpa_range"', self.client.get("/profile").get_data(as_text=True))
+        self.assertIn('name="eeo_pronouns"', self.client.get("/profile").get_data(as_text=True))
+
+        # No range: nothing changes. No GPA at all: the range answers. Blank pronouns: the form's decline option.
+        self.client.post("/profile", data={"gpa_range": "", "eeo_pronouns": ""})
+        plan = self.client.get("/api/fill-plan").json
+        self.assertIn("0", owner("what is your gpa")["options"])
+        pronouns = next(d for d in plan["disclosures"] if d["key"] == "eeo_pronouns")
+        self.assertTrue(pronouns["declined"])
+        self.client.post("/profile", data={"gpa": "", "gpa_range": "3.0-3.4"})
+        plan = self.client.get("/api/fill-plan").json
+        self.assertEqual(owner("what is your gpa")["answer"], "3.0-3.4")
+
     def test_fill_plan_drafts_availability_and_reads_intern_or_coop(self):
         self.add_resume(self.JAKE)
         self.client.post("/profile", data={"class_year": "Freshman", "agree_terms": "Yes"})
