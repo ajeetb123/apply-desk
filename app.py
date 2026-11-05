@@ -1519,7 +1519,8 @@ def api_fill_plan():
         text = tune_resume(resume["text"], row["description"], row["title"] or "")["text"] if row else resume["text"]
         sections = resume_outline(text)[1]
     declared = [x.strip() for x in re.split(r"[,;\n]", p.get("skills", "")) if x.strip()]
-    start, start_source = applying.program_start(row["description"] if row else "")
+    term = applying.listing_facts(row["title"] or "", row["description"] or "", row["url"] or "").get("term", "") if row else ""
+    start, start_source = applying.program_start(row["description"] if row else "", term)
     with db() as conn:
         learned = [{"question": r["question"], "answer": r["answer"]} for r in conn.execute("SELECT question, answer FROM answers")]
     contact = {key: p.get(key, "") for key in AUTOFILL_FIELDS}
@@ -1672,15 +1673,17 @@ def api_learn_answers():
             question, answer = str(item.get("question", ""))[:300], str(item.get("answer", "")).strip()[:160]
             if not applying.learnable(question, answer):
                 continue
+            # The user changed this on a form: their word for this exact question, over any rule.
+            corrected = bool(item.get("corrected"))
             key = applying.standard_key(question)
-            if key:
+            if key and not corrected:
                 # A standard question fills in its Profile answer once, if blank.
                 if not p.get(key):
                     conn.execute("UPDATE profile SET value=? WHERE key=?", (answer, key))
                     p[key] = answer
                     saved += 1
                 continue
-            if any(answer.strip().lower() == str(v).strip().lower() for v in p.values() if v):
+            if not corrected and any(answer.strip().lower() == str(v).strip().lower() for v in p.values() if v):
                 continue  # already known from the profile
             conn.execute("INSERT INTO answers(question,label,answer,updated) VALUES(?,?,?,?) ON CONFLICT(question) DO UPDATE SET answer=excluded.answer, label=excluded.label, updated=excluded.updated",
                          (applying.normalize_question(question), question.strip()[:300], answer, datetime.now().isoformat(timespec="minutes")))

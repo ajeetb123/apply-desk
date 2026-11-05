@@ -38,7 +38,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var launchedAtLogin = false
     private var showingHelp = false
     private var remindedAboutResume = false
-    private var fills: [String: Date] = [:]            // tab id → when its fill started; pressing ` in that tab stops it after the page
+    private var fills: [String: Date] = [:]            // tab id → when its fill started; pressing ` in that tab stops it
+    private var stopping: Set<String> = []             // tabs where ` was pressed to stop the fill
+    private var learningTabs: [String: Date] = [:]     // tab id → when its last fill ended; the user's corrections are collected from it
+    private var learningTimer: Timer?
     private var resumeMakers: [String: ResumePDF] = [:] // tab id → the resume being rendered for its fill
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -625,10 +628,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         // Each tab runs its own fill, so several applications can go at once.
-        // Pressing ` in a tab that's being filled stops that one after its page.
+        // Pressing ` in a tab that's being filled stops that one right there.
         if let started = fills[tab.id], Date().timeIntervalSince(started) < 30 * 60 {
+            stopping.insert(tab.id)
             _ = Chrome.runJavaScript(Autofill.stopScript, tabID: tab.id)
-            return toasts.show(Toast(title: "Stopping after this page…", detail: "Press ` again later to pick up where it stopped.", symbol: "pause.circle"))
+            return toasts.show(Toast(title: "Stopping…", detail: "Press ` again whenever you like. It continues from there and leaves what's filled alone.", symbol: "pause.circle"))
         }
         fills[tab.id] = Date()
         roleForFill(tab) { [weak self] role in
@@ -710,6 +714,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func runFill(plan: [String: Any], tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?, name: String) {
+        // Stopped while the resume was being prepared: nothing has started.
+        if stopping.remove(tab.id) != nil {
+            fills[tab.id] = nil
+            return toasts.show(Toast(title: "Stopped", detail: "Press ` to start when you're ready.", symbol: "pause.circle"))
+        }
         guard let planData = try? JSONSerialization.data(withJSONObject: plan),
               let script = Autofill.script(plan: planData, resume: resume.map { (name, $0.pdf) }) else { fills[tab.id] = nil; return }
         guard Chrome.runJavaScript(script, tabID: tab.id) != nil else {
@@ -725,6 +734,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         waitForFill(FillWatch(script: script, tabID: tab.id, label: label, role: role)) { [weak self] result in
             self?.finishFill(result, tab: tab, role: role, resume: resume, label: label)
         }
+    }
+
+    /// What the user changes after a fill is how Apply Desk learns, and they may
+    /// submit without pressing ` again, so a filled tab is checked for a while after its run.
+    private func watchCorrections(_ tabID: String) {
+        learningTabs[tabID] = Date()
+        guard learningTimer == nil else { return }
+        learningTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in self?.collectCorrections() }
+    }
+
+    private func collectCorrections() {
+        guard Chrome.isRunning else { learningTabs.removeAll(); learningTimer?.invalidate(); learningTimer = nil; return }
+        for (tabID, started) in learningTabs {
+            guard Date().timeIntervalSince(started) < 6 * 3600, Chrome.tab(id: tabID) != nil else { learningTabs[tabID] = nil; continue }
+            guard fills[tabID] == nil,   // a running fill reads these itself
+                  let raw = Chrome.runJavaScript(Autofill.correctionsScript, tabID: tabID), !raw.isEmpty,
+                  let seen = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: String], !seen.isEmpty else { continue }
+            let answers = seen.map { ["question": $0.key, "answer": $0.value, "corrected": "yes"] }
+            backend.send("api/answers", json: ["answers": answers]) { _ in }
+        }
+        if learningTabs.isEmpty { learningTimer?.invalidate(); learningTimer = nil }
     }
 
     /// A fill run in progress in one tab, which can span several pages.
@@ -776,6 +806,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         : Toast(title: "\(watch.label): filling \(result.page)…", detail: "Apply Desk goes page by page and stops at Review. Press ` in that tab to stop.", symbol: "wand.and.stars"), for: 60)
                 }
                 watch.last = result
+            } else if self.stopping.contains(watch.tabID) {
+                return completion(watch.last)   // the page reloaded just as it was stopped: don't start it again
             } else if watch.last?.advancing == true, watch.reloads < 12 {
                 if Chrome.tab(id: watch.tabID)?.loading == false, Chrome.runJavaScript(watch.script, tabID: watch.tabID) != nil {
                     watch.reloads += 1
@@ -794,6 +826,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func finishFill(_ result: Autofill.Result?, tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?, label: String) {
         fills[tab.id] = nil
+        let wasStopped = stopping.remove(tab.id) != nil
+        watchCorrections(tab.id)
+        if wasStopped, result?.done != true {
+            return toasts.show(Toast(title: "Stopped \(label)", detail: "Press ` to continue where it left off.", symbol: "pause.circle"))
+        }
         guard let result = result, result.done else {
             return toasts.show(Toast(title: "\(label): the form stopped responding", detail: "Some fields may be filled. Check that tab and press ` there to pick it up again.", symbol: "exclamationmark.triangle"))
         }
@@ -834,7 +871,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "signin":
             return toasts.show(Toast(title: "Sign in first", detail: "Apply Desk never types passwords. Sign in, then press ` on the application's first page.", symbol: "person.badge.key"))
         case "stopped":
-            return toasts.show(Toast(title: "Stopped after \(pageName)", detail: "Press ` to pick up from the next page.", symbol: "pause.circle"))
+            return toasts.show(Toast(title: "Stopped on \(pageName)", detail: "Press ` to continue. It only fills what's still blank, and what you change now is learned.", symbol: "pause.circle"))
         case "stuck":
             return toasts.show(Toast(title: "The next page didn't load", detail: "Click Continue yourself, then press ` on the new page.", symbol: "exclamationmark.triangle"))
         default:

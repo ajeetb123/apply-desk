@@ -676,6 +676,73 @@ class ApplyDeskApiTests(unittest.TestCase):
         order = [q["key"] for q in application.applying.STANDARD_QUESTIONS]
         self.assertLess(order.index("location_preference"), order.index("relocate"))
 
+    def test_real_form_questions_get_the_right_owner(self):
+        self.client.post("/profile", data={"us_citizen": "Yes", "authorized_us": "Yes", "needs_sponsorship": "No", "born_in_us": "Yes", "class_year": "Freshman", "relatives": "None",
+                                           "currently_student": "Yes", "previously_employed": "No", "agreements_note": "I signed an NDA with Example Labs. It doesn't restrict this work."})
+        plan = self.client.get("/api/fill-plan").json
+        everything = plan["answers"] + plan["presumed"]
+        for question, key, value in [
+            ("do you now, or will you in the future, require sponsorship for work authorization/permit or permanent residency", "needs_sponsorship", "No"),
+            ("are you legally entitled to work within the country in which you are applying without company sponsorship or time restriction, be it now, or in the future", "authorized_us", "Yes"),
+            ('are you currently authorized to work in the united states note answering "no" to this question means you need a work visa.', "authorized_us", "Yes"),
+            ("do you have refugee status", "refugee_status", "No"),
+            ("are you an asylum applicant and have a valid ead", "refugee_status", "No"),
+            ("do you currently hold permanent residence or citizenship in another country", "other_citizenship", "No"),
+            ("do you speak any other languages", "other_languages", "No"),
+            ("language skill s check all that apply", "languages", "English"),
+            ("were you born in the united states", "born_in_us", "Yes"),
+            ("country of birth", "birth_country", "United States of America"),
+            ("i agree that i will not disclose or use, while interviewing, any confidential or proprietary information of a former employer", "confidentiality_promise", "Yes"),
+            ("are you currently subject to a non compete, non solicitation, confidentiality, or employment agreement", "noncompete", "No"),
+            ("have you ever signed a non disclosure agreement with an employer", "nda_signed", "Yes"),
+            ("if yes, please describe the non disclosure agreement.", "agreements_note", "I signed an NDA with Example Labs. It doesn't restrict this work."),
+            ("do you have a family member and/or close personal relationship with someone who works for acme", "relatives", "None"),
+            ("are you a former acme employee or contractor", "previously_employed", "No"),
+            ("will this be your final internship before graduating", "final_internship", "No"),
+            ("do you have any, or anticipate any upcoming offer deadlines", "offer_deadline", "No"),
+            ("can you provide verification of your identity upon hire", "verify_identity", "Yes"),
+            ("please tell us how you heard about this internship opportunity.", "heard_about", None),
+        ]:
+            with self.subTest(question=question):
+                found = next((item for item in everything if re.search(item["pattern"], question)), {})
+                self.assertEqual(found.get("key"), key)
+                if value:
+                    self.assertEqual(found.get("answer"), value)
+        # "Which university are you attending" is the school list, not "currently a student".
+        self.assertFalse(re.search(next(a for a in plan["answers"] if a["key"] == "currently_student")["pattern"], "which university are you currently attending or did you last attend"))
+        # "How do you pronounce your name?" is neither a pronoun question nor anything to guess.
+        self.assertFalse(any(re.search(d["pattern"], "how do you pronounce your name") for d in plan["disclosures"]))
+        self.assertTrue(re.search(plan["never"], "how do you pronounce your name"))
+        self.assertTrue(re.search(plan["never"], "what are your pronouns"))
+
+    def test_a_correction_beats_the_rules_and_ordinary_answers_do_not(self):
+        self.client.post("/profile", data={"needs_sponsorship": "No"})
+        question = "Will you require sponsorship?"
+        self.client.post("/api/answers", json={"answers": [{"question": question, "answer": "Yes"}]})
+        self.assertEqual(self.client.get("/api/fill-plan").json["learned"], [])  # a standard question keeps its Profile answer
+        self.client.post("/api/answers", json={"answers": [{"question": question, "answer": "Yes", "corrected": "yes"}]})
+        self.assertEqual(self.client.get("/api/fill-plan").json["learned"], [{"question": "will you require sponsorship", "answer": "Yes"}])
+        # Never for self-identification, passwords, or one-time codes.
+        self.client.post("/api/answers", json={"answers": [{"question": "Gender", "answer": "Other", "corrected": "yes"},
+                                                           {"question": "Enter your verification code", "answer": "123456", "corrected": "yes"}]})
+        self.assertEqual(len(self.client.get("/api/fill-plan").json["learned"]), 1)
+
+    def test_exact_graduation_date_wins_over_the_resume(self):
+        self.add_resume("Riley Chen\nEDUCATION\nState University    Austin, TX\nB.S. in Computer Science    Expected December 2028\n")
+        self.client.post("/profile", data={"name": "Riley Chen", "school": "State University", "degree": "B.S. Computer Science", "graduation": "May 17, 2029"})
+        plan = self.client.get("/api/fill-plan").json
+        self.assertEqual(plan["education"][0]["end"]["iso"], "2029-05-17")
+        self.assertEqual(plan["profile"]["graduation_dates"]["mm_dd_yyyy"], "05/17/2029")
+        self.assertIn("May 2029", " ".join(item["text"] for item in plan["drafts"]))
+        self.assertNotIn("May 17", " ".join(item["text"] for item in plan["drafts"]))
+
+    def test_internship_start_comes_from_its_term(self):
+        start, source = application.applying.program_start("We build things.", "Summer 2027")
+        self.assertEqual((start["year"], start["month"]), ("2027", "06"))
+        self.assertIn("summer 2027", source)
+        start, source = application.applying.program_start("We build things.", "")
+        self.assertIn("today", source)
+
     def test_gpa_range_and_pronouns(self):
         self.client.post("/profile", data={"gpa": "N/A", "gpa_range": "3.0-3.4", "eeo_pronouns": "They/Them"})
         plan = self.client.get("/api/fill-plan").json
