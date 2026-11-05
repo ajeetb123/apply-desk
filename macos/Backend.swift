@@ -34,9 +34,9 @@ final class Backend {
 
     /// Sends a request to the local service; `completion` runs on the main queue
     /// with the decoded JSON object, or nil when the request failed.
-    func send(_ path: String, json: [String: Any]? = nil, completion: @escaping @MainActor ([String: Any]?) -> Void) {
+    func send(_ path: String, json: [String: Any]? = nil, timeout: TimeInterval = 15, completion: @escaping @MainActor ([String: Any]?) -> Void) {
         var request = URLRequest(url: url(path))
-        request.timeoutInterval = 15
+        request.timeoutInterval = timeout
         request.setValue(token, forHTTPHeaderField: "X-Apply-Desk-Token")
         if let json = json {
             request.httpMethod = "POST"

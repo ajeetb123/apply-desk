@@ -14,6 +14,8 @@ import subprocess
 import threading
 import time
 import unicodedata
+import urllib.error
+import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -47,7 +49,10 @@ LINK_FIELDS = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("website", "Port
 # Values the Mac app may type into clearly labeled, empty application fields.
 AUTOFILL_FIELDS = [key for key, _ in CONTACT_FIELDS + EDUCATION_FIELDS + LINK_FIELDS]
 PROFILE_FIELDS = AUTOFILL_FIELDS + ["target_roles", "skills", "career_goals", "role_campaigns", "larp"] + [
-    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS] + applying.DISCLOSURE_KEYS + ["agree_terms"]
+    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS] + applying.DISCLOSURE_KEYS + ["agree_terms", "use_model"]
+# A model running on this Mac (Ollama). Only this address is ever used, so
+# nothing the user has entered leaves the computer.
+OLLAMA = "http://127.0.0.1:11434"
 
 
 @app.before_request
@@ -1156,7 +1161,7 @@ def profile_page():
     if request.method == "GET":
         with db() as conn:
             learned = [dict(r) for r in conn.execute("SELECT id, label, answer, updated FROM answers ORDER BY updated DESC")]
-        return render_template("profile.html", page="profile", title="Profile", profile=profile(), learned=learned,
+        return render_template("profile.html", page="profile", title="Profile", profile=profile(), learned=learned, local_models=local_models(),
                                standard=applying.STANDARD_QUESTIONS, disclosures=applying.DISCLOSURE_QUESTIONS,
                                groups=[("Contact", "Used to fill application forms.", CONTACT_FIELDS),
                                        ("Education", "Checked against graduation windows.", EDUCATION_FIELDS),
@@ -1575,7 +1580,84 @@ def api_fill_plan():
             # The user's choice in Profile: tick required terms boxes and sign
             # with their name, for them to read before they submit.
             "agree_terms": p.get("agree_terms") == "Yes",
+            # The model on this Mac to ask about what's left, when the user turned that on ("" otherwise).
+            "model": chosen_model(p),
             "never": applying.NEVER, "role": role}
+
+
+def local_models() -> list[str]:
+    """Models installed in Ollama on this Mac; empty when it isn't running."""
+    try:
+        with urllib.request.urlopen(f"{OLLAMA}/api/tags", timeout=1.5) as response:
+            return [model["name"] for model in json.load(response).get("models", [])]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def chosen_model(p) -> str:
+    """The local model to ask, when the user turned that on in Profile: Gemma if installed, else the first one."""
+    if p.get("use_model") != "Yes":
+        return ""
+    models = local_models()
+    return next((name for name in models if "gemma" in name.lower()), models[0] if models else "")
+
+
+def ask_model(model: str, prompt: str):
+    """The model's raw answers (a list), or None when it didn't reply with them."""
+    body = {"model": model, "stream": False, "think": False, "format": applying.MODEL_SCHEMA,
+            "options": {"temperature": 0.4, "num_predict": 1800, "num_ctx": 8192},
+            "messages": [{"role": "system", "content": applying.MODEL_RULES}, {"role": "user", "content": prompt}]}
+    for attempt in (body, {key: value for key, value in body.items() if key != "think"}):  # models without a thinking step reject "think"
+        try:
+            call = urllib.request.Request(f"{OLLAMA}/api/chat", data=json.dumps(attempt).encode(), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(call, timeout=150) as response:
+                return json.loads(json.load(response)["message"]["content"]).get("answers")
+        except urllib.error.HTTPError:
+            continue
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+    return None
+
+
+def model_facts(p) -> list[str]:
+    """What the user has told Apply Desk about themselves, as plain lines for the model."""
+    facts = [f"{question['label']}: {p[question['key']]}" for question in applying.STANDARD_QUESTIONS
+             if (p.get(question["key"]) or "").strip() and question["key"] not in {"gpa", "heard_about", "phone_type", "country_code"}]
+    facts += [f"{label}: {p[key]}" for key, label in (("school", "School"), ("degree", "Degree"), ("graduation", "Expected graduation"),
+                                                      ("city", "Lives in"), ("state", "State")) if (p.get(key) or "").strip()]
+    gpa = (p.get("gpa") or "").strip()
+    facts.append("GPA: none yet" if gpa.lower() in {"", "n/a", "na", "none"} else f"GPA: {gpa}")
+    with db() as conn:
+        facts += [f'On an earlier application, to "{row["question"]}" they answered: {row["answer"]}' for row in conn.execute("SELECT question, answer FROM answers")]
+    facts.append(f"Today's date: {date.today():%B %d, %Y}")
+    return facts
+
+
+@app.post("/api/suggest")
+def api_suggest():
+    """Answers from the model on this Mac for questions the rules couldn't
+    settle, each one checked (applying.check_answers) before it's returned."""
+    data = request.get_json(silent=True) or {}
+    p = profile()
+    model = chosen_model(p)
+    questions = applying.model_questions(data.get("questions"))
+    if not model or not questions:
+        return {"answers": [], "model": model}
+    try:
+        job_id = int(data.get("job_id") or 0)
+    except (TypeError, ValueError):
+        job_id = 0
+    with db() as conn:
+        row = conn.execute("SELECT title, company, description FROM jobs WHERE id=?", (job_id,)).fetchone()
+    resume = resume_row()
+    resume_text = resume_plain(resume["text"]) if resume else ""
+    posting = f"{row['title']} at {row['company']}\n{row['description']}" if row else ""
+    facts = model_facts(p)
+    raw = ask_model(model, applying.model_prompt(facts, resume_text, posting, questions))
+    source = " ".join([resume_text, posting, " ".join(facts), " ".join(question["question"] for question in questions)])
+    answers = applying.check_answers(questions, raw, source)
+    log_activity("Local model", f"{model} answered {len(answers)} of {len(questions)} question{'s' if len(questions) != 1 else ''} on this Mac")
+    return {"answers": answers, "model": model}
 
 
 @app.post("/api/answers")

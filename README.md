@@ -36,6 +36,8 @@ Apply Desk opens at login by default and lives in the menu bar. Closing the wind
   - **salary**: "Negotiable", or the posting's own stated pay when it gives one. A number is typed only when the posting states it;
   - **essay questions get a draft, not a finished answer**: why this role, about yourself, your strongest accomplishments, a project, a cover letter, and "describe your X experience" (honestly: "I haven't used C++ in a project yet" when your resume doesn't show it). Drafts are your resume's own lines in plain first person. A prompt Apply Desk doesn't recognize gets the closest story from your resume, marked as a starting point to rewrite.
 
+  **Optional: a model on this Mac.** With [Ollama](https://ollama.com) running and Profile → "A model on this Mac" turned on, Apply Desk asks a model installed on your computer (Gemma, if you have it) about what its rules left open: essay drafts written for the exact question, and unusual multiple-choice questions like "which team interests you most?". It runs entirely on your Mac. It sees your resume, your Profile answers, and the posting, and is never asked about self-identification, contact details, pay, GPA, or consent. It leaves a question blank when your information doesn't settle it. Every answer is checked first (an option must be one the form offers; an essay loses any sentence with a number or a claim like "led" that your resume doesn't make) and is marked in the review. With the model off or Ollama closed, the built-in drafts are used instead.
+
   **Every page is filled, reviewed, and filled again.** Apply Desk reads each answer back from its field, re-enters any the site dropped, fills whatever is still empty, and only then moves on. If the site rejects the page it fills and checks it once more before asking you. Anything still blank is listed in the review, required ones first.
 
   **Several applications at once.** Press ` in one tab, switch to another, and press ` there. Each tab runs its own fill and the notifications name the company. A tab in the background fills more slowly, because Chrome slows background tabs. Pressing ` in a tab that's being filled stops that one.
@@ -83,7 +85,7 @@ Watching stays on while either is missing; the sidebar and menu bar say what's l
 
 ## Local data and privacy
 
-Your resume versions, profile, saved roles, and notes live in `~/Library/Application Support/Apply Desk`. Quit Apply Desk and delete that folder to erase them. Resume watching checks only the one file path you set. Apply Desk doesn't monitor general computer activity or send anything to a remote service. Running `app.py` directly from a checkout uses the project's `instance/` folder instead.
+Your resume versions, profile, saved roles, and notes live in `~/Library/Application Support/Apply Desk`. Quit Apply Desk and delete that folder to erase them. Resume watching checks only the one file path you set. Apply Desk doesn't monitor general computer activity or send anything to a remote service. The optional model runs in Ollama on this Mac and is reached only at `127.0.0.1`. Running `app.py` directly from a checkout uses the project's `instance/` folder instead.
 
 ## Resume-writing choices
 

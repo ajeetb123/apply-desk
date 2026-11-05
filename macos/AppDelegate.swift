@@ -722,7 +722,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let info = plan["role"] as? [String: Any]
         let label = [info?["company"] as? String, info?["title"] as? String].compactMap { $0 }.first { !$0.isEmpty } ?? "This application"
         toasts.show(Toast(title: "Filling \(label)…", detail: "Apply Desk fills each page, checks it, fills it again, and stops at Review. You can start another in a different tab; press ` here to stop this one.", symbol: "wand.and.stars"), for: 60)
-        waitForFill(FillWatch(script: script, tabID: tab.id, label: label)) { [weak self] result in
+        waitForFill(FillWatch(script: script, tabID: tab.id, label: label, role: role)) { [weak self] result in
             self?.finishFill(result, tab: tab, role: role, resume: resume, label: label)
         }
     }
@@ -732,6 +732,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let script: String
         let tabID: String
         let label: String
+        let role: Int?
+        var asked = ""          // the last batch of questions sent to the local model
         var progress = ""
         var lastChange = Date()
         var missingSince: Date?
@@ -752,6 +754,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let result = Autofill.parse(Chrome.runJavaScript(Autofill.statusScript, tabID: watch.tabID)) {
                 if result.done { return completion(result) }
                 watch.missingSince = nil
+                // Questions for the model on this Mac: ask the local service, then
+                // hand the checked answers back to that tab (an empty list if it
+                // can't answer, so the filler stops waiting).
+                if let ask = result.ask, ask.id != watch.asked {
+                    watch.asked = ask.id
+                    let tabID = watch.tabID
+                    self.toasts.show(Toast(title: "\(watch.label): drafting \(ask.questions.count) answer\(ask.questions.count == 1 ? "" : "s")…",
+                                           detail: "The model on this Mac is writing drafts and picking options for the questions left. Nothing leaves this computer.", symbol: "sparkles"), for: 60)
+                    self.backend.send("api/suggest", json: ["job_id": watch.role ?? 0, "questions": ask.questions], timeout: 170) { answers in
+                        _ = Chrome.runJavaScript(Autofill.answersScript(id: ask.id, answers: answers?["answers"] as? [[String: Any]] ?? []), tabID: tabID)
+                    }
+                }
                 let progress = "\(result.beat)|\(result.items.count)|\(result.fields.count)"
                 if progress != watch.progress { watch.progress = progress; watch.lastChange = Date() }
                 if result.waiting != watch.waiting || (!result.page.isEmpty && result.page != watch.page) {

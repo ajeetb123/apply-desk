@@ -47,6 +47,13 @@
         </div>
       </section>
 
+      <section class="panel" id="model" data-reveal style="--i:7">
+        <header class="panel-head"><div><h2>A model on this Mac</h2><p class="sub">With <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> running, Apply Desk can ask a model installed on this Mac about the questions its own rules can't settle: unusual multiple-choice questions and essay drafts. It runs entirely on this computer, sees only your resume, your answers here, and the job posting, and every answer is marked in the review. It never answers facts you haven't given (like GPA) and never touches self-identification, contact details, or pay. {% if local_models %}Installed: {{ local_models|join(', ') }}.{% else %}Ollama isn't running right now, so this stays off until it is.{% endif %}</p></div></header>
+        <div class="fields">
+          <label class="wide"><span>Ask the local model about leftover questions</span><select name="use_model"><option value="">No, rules only</option><option{{ ' selected' if profile.get('use_model') == 'Yes' }} value="Yes">Yes, and mark its answers for me to check</option></select></label>
+        </div>
+      </section>
+
       <section class="panel" id="self-id" data-reveal style="--i:7">
         <header class="panel-head"><div><h2>Voluntary self-identification</h2><p class="sub">Race, gender, veteran, and disability questions. Apply Desk picks the form's "I don't wish to answer" option unless you choose an answer here. On disability forms it also fills your name and today's date.</p></div></header>
         <div class="fields">

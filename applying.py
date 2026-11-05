@@ -5,6 +5,7 @@ user's own profile, resume, and the posting; nothing is invented.
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import date
 from urllib.parse import parse_qsl, unquote, urlparse
@@ -834,6 +835,120 @@ def drafts(profile: dict, education: list[dict], experience: list[dict], skills:
         proud.append(f"I also earned {honors[0]}.")
     add("accomplishments", "\n\n".join(proud), short=proud[0] if proud else "")
     add("project", " ".join([projects[0]["text"]] + projects[0]["sentences"][2:3]) if projects else "")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Questions for a model running on this Mac (Ollama). It sees only what's
+# already on this computer, answers what the rules above couldn't, and every
+# answer is checked here before the filler uses it.
+
+MODEL_RULES = """You fill in a job application for one person. Use only the FACTS, RESUME, and JOB POSTING below. Reply with JSON only: one entry per question id.
+
+FACT QUESTIONS (about the person: GPA, licenses, clearances, memberships, dates, numbers, history):
+- Answer only when the facts or resume state it. Otherwise leave "answer" empty and "choices" empty. Never guess.
+
+PREFERENCE QUESTIONS (what they want, prefer, or are most interested in: a team, desk, area, location, shift):
+- Always choose. Pick the option closest to the work on the resume and in the posting.
+
+FORMAT:
+- "choice": "answer" is one option copied exactly. "multi": "choices" lists each option that applies, copied exactly. "text": a few words.
+
+ESSAYS are drafts the person will edit. Write like a college student writing quickly and honestly, not like an AI:
+- First person, 70 to 120 words, plain words, mostly short sentences. Start by answering the question directly.
+- Use one or two specific things from the resume, and keep the resume's own wording for what was done. Do not upgrade it: "Team of 4 built" means "my team of 4 built", never "I led". Do not add results, numbers, tools, or feelings the resume doesn't state.
+- End on a concrete detail. No closing sentence that sums up, sells, or says what the experience shows or taught.
+- Never use: passionate, passion, leverage, excited, thrilled, delve, honed, stands out, aligns, journey, eager, confident, commitment, rigorous, fast-paced, cutting-edge, innovative, impactful, testament, I believe.
+- No em dashes, semicolons, bullet points, headings, or questions. Do not flatter the company or repeat its mission."""
+MODEL_SCHEMA = {"type": "object", "required": ["answers"], "properties": {"answers": {"type": "array", "items": {
+    "type": "object", "required": ["id", "answer", "choices"],
+    "properties": {"id": {"type": "integer"}, "answer": {"type": "string"}, "choices": {"type": "array", "items": {"type": "string"}}}}}}}
+# Never put to a model: self-identification, IDs, contact details, other people, pay, GPA, consent.
+MODEL_NEVER = NEVER + r"|linkedin|twitter|website|portfolio|github|\burl\b|e ?mail|phone|address|zip|postal|\bgpa\b|grade point|reference|emergency|agree|consent|certif|acknowledg"
+ESSAY_TELLS = r"passion|leverag|excit|thrill|delv|\bhoned\b|stands? out|\balign|journey|\beager|confident|commitment|rigorous|fast.paced|cutting.edge|innovative|impactful|testament|i believe|resonat|leader in|industry.leading|world.class|renowned|prestigious|reputation"
+# Sentences that sum up or sell ("These projects show my ability to ...").
+ESSAY_CLOSERS = r"^(these|this|such|overall|ultimately|in (conclusion|short|summary)|all of this|together)\b.{0,60}\b(show|shows|showed|demonstrat\w+|reflect\w*|taught|teach\w*|help\w*|allow\w*|prepar\w+|ma(de|kes?) me|highlight\w*|prove\w*)\b"
+# Words that claim more than a resume line may say; kept only when the resume uses them.
+CLAIM_WORDS = r"\b(led|lead|leading|managed|founded|spearheaded|architected|pioneered|published|patented|president|captain|director|increased|reduced|improved|saved|grew|doubled|tripled|optimized|award.winning|expert|expertise|proficient|mastered|extensive)\b"
+
+
+def model_questions(questions) -> list[dict]:
+    """The questions a model may be asked: cleaned up, and never the ones in MODEL_NEVER."""
+    out = []
+    for item in (questions if isinstance(questions, list) else [])[:16]:
+        if not isinstance(item, dict):
+            continue
+        question = re.sub(r"\s+", " ", str(item.get("question") or "")).strip()[:700]
+        kind = item.get("kind") if item.get("kind") in {"essay", "text", "choice", "multi"} else ""
+        options = [re.sub(r"\s+", " ", str(option)).strip()[:140] for option in (item.get("options") or [])[:40] if str(option).strip()]
+        try:
+            number = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if not question or not kind or re.search(MODEL_NEVER, question, re.I) or (kind in {"choice", "multi"} and len(options) < 2):
+            continue
+        out.append({"id": number, "kind": kind, "question": question, **({"options": options} if kind in {"choice", "multi"} else {})})
+    return out
+
+
+def model_prompt(facts: list[str], resume_text: str, posting: str, questions: list[dict]) -> str:
+    return ("FACTS\n" + "\n".join(f"- {fact}" for fact in facts) + f"\n\nRESUME\n{resume_text[:6000]}\n\nJOB POSTING\n{(posting or 'Not available.')[:5000]}"
+            + "\n\nQUESTIONS\n" + json.dumps(questions, indent=1, ensure_ascii=False))
+
+
+def clean_essay(text: str, source: str) -> str:
+    """A model's draft with the sentences that give it away or overstate
+    removed: stock phrases, closing lines that sell, numbers the user's own
+    material doesn't contain, and claims ("led", "improved") the resume
+    doesn't make. Empty when too little is left to be a draft."""
+    # Dashes used as punctuation become commas; a range like "2007–2026" stays.
+    text = re.sub(r"\s*—\s*|\s+–\s+", ", ", re.sub(r"\s+", " ", text or "")).replace(";", ",").strip().strip('"')
+    text = re.sub(r"resonates (the )?most with me", "matters most to me", text, flags=re.I)
+    known = source.lower()
+    kept = []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        lower = sentence.lower()
+        if not sentence.strip() or sentence.rstrip().endswith("?") or re.search(ESSAY_TELLS, lower) or re.search(ESSAY_CLOSERS, lower):
+            continue
+        if any(number not in known for number in re.findall(r"\d[\d,.]*\d|\d", sentence)):
+            continue
+        if any(not re.search(rf"\b{re.escape(claim)}", known) for claim in re.findall(CLAIM_WORDS, lower)):
+            continue
+        kept.append(sentence.strip())
+    result = " ".join(kept)
+    return result if len(kept) >= 2 and len(result.split()) >= 25 else ""
+
+
+def check_answers(questions: list[dict], answers, source: str) -> list[dict]:
+    """A model's answers, kept only when they pass: choices must be the
+    form's own options, short answers must not carry a number or link the
+    user's material doesn't, and essays go through clean_essay()."""
+    asked = {question["id"]: question for question in questions}
+    out = []
+    for item in answers if isinstance(answers, list) else []:
+        question = asked.get(item.get("id")) if isinstance(item, dict) else None
+        if not question:
+            continue
+        answer = str(item.get("answer") or "").strip()
+        choices = [str(choice).strip() for choice in (item.get("choices") or []) if str(choice).strip()]
+        options = {re.sub(r"\W+", " ", option.lower()).strip(): option for option in question.get("options", [])}
+        pick = lambda value: options.get(re.sub(r"\W+", " ", value.lower()).strip())
+        if question["kind"] == "choice":
+            # "Select your top three" on a one-answer field: its first pick.
+            chosen = pick(answer) or next(filter(None, map(pick, choices)), None)
+            if chosen:
+                out.append({"id": question["id"], "answer": chosen, "choices": []})
+        elif question["kind"] == "multi":
+            chosen = [option for option in dict.fromkeys(filter(None, map(pick, choices or [answer])))]
+            if chosen:
+                out.append({"id": question["id"], "answer": "", "choices": chosen})
+        elif question["kind"] == "essay":
+            draft = clean_essay(answer, source)
+            if draft:
+                out.append({"id": question["id"], "answer": draft, "choices": []})
+        elif answer and len(answer) <= 160 and not re.search(r"https?://|www\.|@", answer) \
+                and all(number in source.lower() for number in re.findall(r"\d[\d,.]*\d|\d", answer)):
+            out.append({"id": question["id"], "answer": answer.rstrip("."), "choices": []})
     return out
 
 

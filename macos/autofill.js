@@ -493,8 +493,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const shown = control && control.querySelector('[class*="singleValue"], [class*="single-value"], [class*="multiValue"] [class*="label"], [class*="multi-value__label"]');
     return shown ? textOf(shown) : control ? '' : el.value.trim();
   };
-  async function pickCombo(input, want, question) {
-    if (comboValue(input)) return false;
+  // With `readOnly`, opens the dropdown, returns its option labels, and closes it.
+  async function pickCombo(input, want, question, readOnly = false) {
+    if (comboValue(input)) return readOnly ? [] : false;
     const control = comboControl(input) || input.parentElement;
     const shell = control.parentElement && control.parentElement.parentElement || control;
     // Its options carry its instance id ("react-select-2-option-0" or
@@ -531,9 +532,15 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       press(match);
       return (await waitFor(() => norm(comboValue(input)).includes(norm(label).slice(0, 20)) || !input.isConnected, 1200)) ? label : '';
     };
-    if (!(await open())) return false;
+    if (!(await open())) return readOnly ? [] : false;
     // Short lists (Yes/No, months): read them as they are. Long ones: search.
     let options = await settle(null);
+    if (readOnly) {
+      const labels = (options || []).map(optionLabel);
+      if (input.getAttribute('aria-expanded') === 'true') escape(input);
+      await sleep(150);
+      return labels;
+    }
     let picked = await take(options);
     for (const term of (want.search || want.values).filter(Boolean).slice(0, 3)) {
       if (picked) break;
@@ -663,7 +670,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     ['degree', /^(highest |type of |current )?degree( type| level| earned| obtained| pursuing| sought)?$|(what|which) degree|degree (type|level)|type of degree/, [p.degree, ...(((plan.education || [])[0] || {}).degree_options || [])]],
   ];
   // Other people's details, and second contacts ("Alternate Phone Number") the user has none of.
-  const otherPeople = /reference|emergency|supervisor|manager|guardian|parent|spouse|high school|extension|\breferr(al|er|ed) (name|email|by)|\b(alternate|alternative|secondary|additional|backup) (phone|email|contact|number)/;
+  const otherPeople = /\breferences?\b|emergency|supervisor|manager|guardian|parent|spouse|high school|extension|\breferr(al|er|ed) (name|email|by)|\b(alternate|alternative|secondary|additional|backup) (phone|email|contact|number)/;
   // A start date at a past job ("Government Civilian Start Date") is not the user's to invent.
   const pastJob = /government|military|civilian|clearance|served|service|former|previous|prior/;
   const startDate = /(start|availability|available) date|when can you (start|begin)|earliest (start|date)|proposed start|date (you are )?available/;
@@ -672,10 +679,15 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Optional sign-ups that are never ticked, even with "agree to terms" on.
   const marketing = /newsletter|marketing|promotion|sms|text message|texts|job alerts?|updates|subscribe|talent (community|network|pool)|future (opportunities|roles|openings)|other (roles|positions|opportunities)|contact me about/;
   const todayDate = /^(today'?s )?date$|^date signed$|^signature date$/;
+  // "gemma4:12b" → "Gemma"
+  const modelName = (plan.model || '').split(':')[0].replace(/[\d.-]+$/, '').replace(/^[a-z]/, letter => letter.toUpperCase()) || 'The local model';
+  // While true, essay boxes are left for the local model to draft; the
+  // templates below fill whatever it doesn't.
+  let holdDrafts = false;
   const salaryAsk = /salary|compensation|pay (expectation|requirement|rate|range)|desired (pay|rate|wage)|hourly rate|expected (pay|wage|rate)/;
   // Questions that want a few sentences, and boxes that are only for extra notes.
   const essayPrompt = /\b(describe|tell us|tell me|explain|share|discuss|what|how|why|example|a time|which of)\b/;
-  const sideNote = /additional (information|comments|details)|anything else|comments?$|notes?$|accommodat|if (yes|no|so|other|you (answered|selected))/;
+  const sideNote = /additional (information|comments|details)|anything else|comments?$|notes?$|accommodat|if (yes|no|so|other|you (answered|selected))|^if\b.{0,80}(provide|specify|explain|elaborate)|more details/;
 
   // The job or project from the resume that fits an essay question best.
   function storyFor(q) {
@@ -727,6 +739,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (want.source === 'learned') return 'From an answer you gave on an earlier application';
     if (want.source === 'draft') return want.loose ? "Starting point from your resume. It doesn't answer the question yet: rewrite it" : 'Draft from your resume. Read it and make it yours';
     if (want.source === 'presumed') return "Standard answer picked for you. Change it if it's wrong";
+    if (want.source === 'model') return want.essay ? `Draft written by ${modelName} on this Mac from your resume. Read it and make it yours` : `Picked by ${modelName} on this Mac. Check it`;
     if (want.source === 'salary') return 'Salary answer picked for you. Change it if you want something else';
     if (want.source === 'terms') return 'Ticked for you. Read what you agreed to before you submit';
     if (want.source === 'signature') return 'Signed with your name for you. Read what it certifies before you submit';
@@ -808,13 +821,17 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     // Questions that need writing get a draft from the user's own resume lines.
     if (el.tagName === 'TEXTAREA' || isText(el)) {
       const draft = (plan.drafts || []).find(d => new RegExp(d.pattern, 'i').test(q));
+      // Dates, a cover letter, and the user's own plans keep their rule-written
+      // form (a model would guess intentions); other essays wait for the model when it's on.
+      if (draft && holdDrafts && el.tagName === 'TEXTAREA' && !['availability', 'cover', 'plans'].includes(draft.key)) return null;
       if (draft) return { values: [el.tagName === 'TEXTAREA' ? draft.text : draft.short || draft.text], source: 'draft' };
     }
     if (otherPeople.test(q)) return null;
     if (el.tagName === 'TEXTAREA' && !sideNote.test(q)) {
       const skill = skillExperience(q);
+      const story = !skill && essayPrompt.test(q) ? storyFor(q) : '';
       if (skill) return { values: [skill], source: 'draft' };
-      const story = essayPrompt.test(q) ? storyFor(q) : '';
+      if (story && holdDrafts) return null;
       if (story) return { values: [story], source: 'draft', loose: true };
     }
     if (/\bwhy\b|describe|statement|cover letter|tell us|explain/.test(q)) return null;
@@ -1562,12 +1579,107 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     }
   }
 
+  // ---------- Questions for the model on this Mac ----------
+  // What the rules above left open goes to the local model, through the Mac
+  // app: essay boxes, and multiple-choice or short questions with no answer.
+  // Never self-identification, contact details, pay, GPA, or consent.
+  const modelSkip = q => never.test(q) || !!disclosureFor(q) || consent.test(q) || otherPeople.test(q) || salaryAsk.test(q)
+    || /\bgpa\b|grade point/.test(q) || contact.some(([, pattern]) => pattern.test(q));
+
+  async function readOptions(el) {
+    if (isCombo(el)) return pickCombo(el, { values: [] }, '', true);
+    await closeLists();
+    const before = new Set(openOptions());
+    press(el);
+    const options = await freshOptions(el, before, null, 2500);
+    await closeLists(el);
+    return (options || []).map(optionLabel);
+  }
+
+  async function openQuestions() {
+    const out = [], controls = controlsIn(document);
+    const add = (kind, question, options, target) => {
+      const same = out.find(item => item.question === question.slice(0, 700) && item.kind === kind);
+      if (same) return same.targets.push(target);
+      if (out.length < 12) out.push({ id: out.length + 1, kind, question: question.slice(0, 700), options: [...new Set(options.map(clean).filter(Boolean))], targets: [target] });
+    };
+    const counted = new Set();
+    for (const el of controls) {
+      const asked = questionOf(el), q = norm(asked);
+      const label = asked.replace(/[*✱]\s*$/, '').trim();
+      if (q.length < 4 || counted.has(el) || modelSkip(q)) continue;
+      if (el.type === 'radio' || el.type === 'checkbox') {
+        const group = el.type === 'radio' && el.name ? controls.filter(o => o.type === 'radio' && o.name === el.name) : choiceGroup(el).filter(o => controls.includes(o));
+        group.forEach(o => counted.add(o));
+        if (group.length >= 2 && group.length <= 40 && !group.some(o => o.checked)) add(el.type === 'radio' ? 'choice' : 'multi', label, group.map(choiceLabel), { group });
+      } else if (el.tagName === 'SELECT') {
+        const options = [...el.options].filter(o => !placeholderText(o.textContent) && o.value !== '').map(o => o.textContent);
+        if (el.selectedIndex <= 0 && options.length >= 2 && options.length <= 40) add('choice', label, options, { el });
+      } else if (isListbox(el) || isCombo(el)) {
+        if (answeredValue(el)) continue;
+        const options = await readOptions(el);
+        if (options.length >= 2 && options.length <= 40) add('choice', label, options, { el });
+      } else if (el.tagName === 'TEXTAREA') {
+        const detail = detailOf(el);
+        if (!el.value.trim() && !sideNote.test(q)) add('essay', `${label}${detail ? ` ${detail}` : ''}`, [], { el });
+      } else if (isText(el) && !isPrompt(el) && !isDatePart(el) && !el.value.trim() && (isRequired(el, asked) || /\?\s*$/.test(label)) && noAnswerNeeded(el, asked)) {
+        add('text', label, [], { el });
+      }
+    }
+    return out;
+  }
+
+  async function applyAnswer(item, answer) {
+    for (const { el, group } of item.targets) {
+      current = { source: 'model', essay: item.kind === 'essay' };
+      try {
+        if (item.kind === 'multi') {
+          const picked = (answer.choices || []).map(choice => best(group, [choice], choiceLabel)).filter(box => box && !box.checked);
+          picked.forEach(press);
+          if (picked.length) note(picked[0], item.question, picked.map(choiceLabel).join('; '));
+        } else if (!answer.answer) {
+          continue;
+        } else if (group) {
+          pickRadio(group, [answer.answer], item.question);
+        } else if (item.kind === 'choice') {
+          await fillControl(el, item.question, { values: [answer.answer], source: 'model' });
+        } else if (el.isConnected && !el.value.trim()) {
+          typeInto(el, answer.answer);
+          note(el, item.question, answer.answer);
+        }
+      } finally {
+        current = null;
+      }
+    }
+  }
+
+  // Posts the open questions in this run's status (`ask`); the Mac app sends
+  // them to the local service and puts the checked answers in
+  // window.__applyDeskAnswers[id]. No answer in time means carry on without.
+  async function askModel() {
+    const open = await openQuestions();
+    if (!open.length) return;
+    const id = String(Date.now());
+    state.ask = { id, questions: open.map(({ id: number, kind, question, options }) => ({ id: number, kind, question, options })) };
+    const answers = await waitFor(() => (window.__applyDeskAnswers || {})[id], 160000);
+    state.ask = null;
+    for (const answer of answers || []) {
+      const item = open.find(question => question.id === answer.id);
+      if (item) await applyAnswer(item, answer);
+    }
+  }
+
   async function reviewPage() {
     for (const entry of filledEls.values()) {
       const el = entry.el;
       if (lost(entry) && entry.value && isText(el) && !isCombo(el) && !isPrompt(el) && !isDatePart(el)) setValue(el, entry.value);
     }
     await fillPage();   // the second pass
+    if (plan.model && holdDrafts) {
+      await askModel();
+      holdDrafts = false;
+      await fillPage();   // templates for any essay the model didn't draft
+    }
     let needs = needsOnPage();
     if (needs.length) {
       await fillNeutral(needs);
@@ -1674,6 +1786,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         state.beat += 1;
         filledEls.clear();
         attachedHere = false;
+        holdDrafts = !!plan.model;
         if (signInPage()) { state.stop = 'signin'; break; }
         if (onReview()) { showReview(); state.stop = 'review'; break; }
         if (step >= 20) { state.stop = 'limit'; break; }
