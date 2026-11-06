@@ -1562,6 +1562,9 @@ def api_fill_plan():
         # Open to every location: "Yes- Either Somerville or Devens" over one office.
         if answer["key"] == "work_onsite" and open_to_all and answer["answer"].lower() == "yes":
             answer["options"] = ["Yes either", "Yes any", "Yes all", "Yes, any", "Yes, all"] + answer["options"]
+        # "Are you able to work in our office?" with the offices as tick boxes: every real one.
+        if answer["key"] in {"work_onsite", "relocate"} and open_to_all and answer["answer"].lower() == "yes":
+            answer["open"] = True
     applied_before = False
     if role and role["company"]:
         with db() as conn:
@@ -1586,7 +1589,7 @@ def api_fill_plan():
             # with their name, for them to read before they submit.
             "agree_terms": p.get("agree_terms") == "Yes",
             # The model on this Mac to ask about what's left, when the user turned that on ("" otherwise).
-            "model": chosen_model(p),
+            "model": chosen_model(p), "model_wanted": p.get("use_model") == "Yes",
             "never": applying.NEVER, "role": role}
 
 

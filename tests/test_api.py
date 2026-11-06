@@ -701,6 +701,7 @@ class ApplyDeskApiTests(unittest.TestCase):
             ("will this be your final internship before graduating", "final_internship", "No"),
             ("do you have any, or anticipate any upcoming offer deadlines", "offer_deadline", "No"),
             ("can you provide verification of your identity upon hire", "verify_identity", "Yes"),
+            ("this internship is hybrid. are you able to work in our office 3 days/week throughout the internship", "work_onsite", None),
             ("please tell us how you heard about this internship opportunity.", "heard_about", None),
         ]:
             with self.subTest(question=question):
@@ -714,6 +715,23 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertFalse(any(re.search(d["pattern"], "how do you pronounce your name") for d in plan["disclosures"]))
         self.assertTrue(re.search(plan["never"], "how do you pronounce your name"))
         self.assertTrue(re.search(plan["never"], "what are your pronouns"))
+        # Sensitive questions stay the user's: no rule fills them and the model never sees them.
+        for question in ("do you identify as part of the lgbtqia+ community", "will you require a reasonable accommodation to complete the hiring process"):
+            self.assertTrue(re.search(plan["never"], question))
+            self.assertEqual(application.applying.model_questions([{"id": 1, "kind": "choice", "question": question, "options": ["Yes", "No"]}]), [])
+
+    def test_degree_after_graduating_and_one_rate(self):
+        self.add_resume("Riley Chen\nEDUCATION\nState University    Austin, TX\nB.S. in Computer Science    Expected December 2028\n")
+        self.client.post("/profile", data={"name": "Riley Chen", "school": "State University", "degree": "B.S. Computer Science", "graduation": "December 2028", "degree_recent": "No"})
+        plan = self.client.get("/api/fill-plan").json
+        owner = lambda question: next(item for item in plan["presumed"] if re.search(item["pattern"], question))
+        self.assertEqual(owner("level of education completed once you've graduated")["key"], "degree_after_graduating")
+        self.assertIn("Bachelor", owner("level of education completed once you've graduated")["options"])
+        self.assertEqual(owner("what is your highest level of education")["key"], "highest_education")
+        self.assertEqual(application.applying.listing_pay("Pay is $47-$47 an hour.")["text"], "$47 an hour")
+        patterns = {key: pattern for key, pattern in application.applying.DRAFT_QUESTIONS}
+        self.assertFalse(re.search(patterns["why"], "what interests you most about android development"))
+        self.assertTrue(re.search(patterns["why"], "what interests you about acme"))
 
     def test_a_correction_beats_the_rules_and_ordinary_answers_do_not(self):
         self.client.post("/profile", data={"needs_sponsorship": "No"})
@@ -897,6 +915,7 @@ class ApplyDeskApiTests(unittest.TestCase):
         for gone in ("—", "led a team", "40%", "passionate", "These projects show"):
             self.assertNotIn(gone, cleaned)
         self.assertEqual(applying.clean_essay("I am passionate. I am excited.", resume), "")  # nothing usable left
+        self.assertEqual(applying.clean_essay("Yes, my team of three built a small web app for a class.", resume + " three", 10), "Yes, my team of three built a small web app for a class.")
         asked = applying.model_questions([
             {"id": 1, "kind": "choice", "question": "Which team interests you most?", "options": ["Backend", "Hardware"]},
             {"id": 2, "kind": "text", "question": "What is your GPA?"}, {"id": 3, "kind": "text", "question": "LinkedIn URL"},

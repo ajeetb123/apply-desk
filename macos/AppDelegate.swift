@@ -637,7 +637,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fills[tab.id] = Date()
         roleForFill(tab) { [weak self] role in
             guard let self = self else { return }
-            self.backend.send("api/fill-plan?job_id=\(role ?? 0)") { [weak self] plan in
+            self.fetchPlan(role: role, startingModel: true) { [weak self] plan in
                 guard let self = self else { return }
                 guard let plan = plan, let profile = plan["profile"] as? [String: Any],
                       profile.values.contains(where: { ($0 as? String).map { !$0.isEmpty } ?? false }) else {
@@ -655,6 +655,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.resumeMakers[tab.id] = nil
                     self.runFill(plan: plan, tab: tab, role: role, resume: output, name: name)
                 }
+            }
+        }
+    }
+
+    /// The fill plan. With the local model turned on but Ollama not running,
+    /// Ollama is started in the background first, so essays still get its drafts.
+    private func fetchPlan(role: Int?, startingModel: Bool, completion: @escaping ([String: Any]?) -> Void) {
+        backend.send("api/fill-plan?job_id=\(role ?? 0)") { [weak self] plan in
+            guard let self = self, startingModel, plan?["model_wanted"] as? Bool == true, (plan?["model"] as? String ?? "").isEmpty,
+                  let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.electron.ollama") ?? Optional(URL(fileURLWithPath: "/Applications/Ollama.app")),
+                  FileManager.default.fileExists(atPath: app.path) else { return completion(plan) }
+            let launch = NSWorkspace.OpenConfiguration()
+            launch.activates = false
+            launch.hides = true
+            NSWorkspace.shared.openApplication(at: app, configuration: launch)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+                guard let self = self else { return completion(plan) }
+                self.fetchPlan(role: role, startingModel: false, completion: completion)
             }
         }
     }
