@@ -754,7 +754,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Marketing's exception: contact a form requires, about this application.
   const aboutThisApplication = /(regarding|about|related to|concerning|for) (my|your|this|the) (application|candidacy|interview)/;
   // Optional boxes that give data away are left for the user.
-  const optionalSharing = /third part|affiliate|partner|share my|sell my|retain|future/;
+  const optionalSharing = /third part|affiliate|partner|share my|sell my|retain|retention|additional \d+ years?|future/;
   const AGREE = ['Yes', 'I agree', 'Agree', 'I consent', 'I accept', 'Accept', 'I acknowledge', 'Acknowledge', 'I understand', 'True'];
   const consent = /agree|certif|acknowledg|consent|terms|attest|privacy|i understand|authori[sz]e (us|the company|.* to contact)|process (my |your )?personal (information|data)|data processing/;
   // Optional sign-ups that are never ticked, even with "agree to terms" on.
@@ -768,6 +768,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const salaryAsk = /salary|compensation|pay (expectation|requirement|rate|range)|desired (pay|rate|wage)|hourly rate|expected (pay|wage|rate)/;
   // Questions that want a few sentences, and boxes that are only for extra notes.
   const essayPrompt = /\b(describe|tell us|tell me|explain|share|discuss|what|how|why|example|a time|which of)\b/;
+  // A resume story answers these. "What do you hope to learn?" it doesn't, and a wrong draft is worse than a blank.
+  const storyPrompt = /\b(experience|project|a time|an example|built|worked on|challeng|proud|accomplish|achievement)\b/;
+  const CODE_LANGUAGE = /^(python|java|javascript|typescript|c\+\+|c#|c|go|golang|rust|kotlin|swift|ruby|php|sql|r|matlab|scala|bash)$/i;
   const sideNote = /additional (information|comments|details)|anything else|comments?$|notes?$|accommodat|if (yes|no|so|other|you (answered|selected))|^if\b.{0,80}(provide|specify|explain|elaborate)|more details/;
 
   // The job or project from the resume that fits an essay question best.
@@ -827,6 +830,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (want.source === 'neutral') return `No saved answer, so Apply Desk picked "${value}". Check it`;
     if (want.source === 'no_linkedin') return "You don't share LinkedIn, so this says N/A";
     if (want.key === 'gpa' && p.gpa_range && (want.floor || gpaBracket(norm(value)))) return 'From the GPA range in your Profile. Check it before you submit';
+    if (want.open && want.key !== 'location_preference') return /^yes\b/i.test(value) ? '' : "You said you're open to all locations. Change this if you'd rather not";
     if (want.key === 'location_preference') return want.open ? "You said you're open to all locations. Change this if you'd rather not" : '';
     if (want.browse && value && norm(value) !== norm(want.values[0])) return `Closest option to your answer: ${want.values[0]}`;
     if (want.date && want.date === plan.start && /today/i.test(plan.start.source || '')) return "Today's date: the posting gives no start date";
@@ -930,9 +934,15 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (draft) return { values: [el.tagName === 'TEXTAREA' ? draft.text : draft.short || draft.text], source: 'draft' };
     }
     if (otherPeople.test(q)) return null;
-    if (el.tagName === 'TEXTAREA' && !sideNote.test(q)) {
+    if (isText(el) && /(programming|coding) languages?/.test(q)) {
+      const languages = (plan.skills || []).filter(skill => CODE_LANGUAGE.test(skill.replace(/\s*\(.*\)/, '')));
+      if (languages.length) return { values: [languages.join(', ')], source: 'profile' };
+    }
+    // A one-line question in a big box ("What is your preferred name?") is still that question.
+    const contactInBigBox = el.tagName === 'TEXTAREA' && q.length < 60 && contact.some(([, pattern]) => pattern.test(q));
+    if (el.tagName === 'TEXTAREA' && !sideNote.test(q) && !contactInBigBox) {
       const skill = skillExperience(q);
-      const story = !skill && essayPrompt.test(q) ? storyFor(q) : '';
+      const story = !skill && essayPrompt.test(q) && storyPrompt.test(q) && !/not on your resume/.test(q) ? storyFor(q) : '';
       if (skill) return { values: [skill], source: 'draft' };
       if (story && holdDrafts) return null;
       if (story) return { values: [story], source: 'draft', loose: true };
@@ -1358,6 +1368,16 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const negated = /\b(not|never|no|cannot|without)\b|n.t\b/.test(q);
     return norm(want.values[0]) === (negated ? 'no' : 'yes');
   }
+  // "What type of opportunities are you interested in?" iOS, Backend, Android...: the one in this role's title.
+  function tickRole(group, question) {
+    const title = norm(plan.role && plan.role.title);
+    if (!title || group.some(box => box.checked) || !isRequired(group[0], question) || !/opportunit|area|interest|team|function|role|field/.test(norm(question))) return;
+    const match = group.filter(box => { const label = norm(choiceLabel(box)); return label.length > 1 && new RegExp(`(^| )${label.replace(/[^a-z0-9 ]/g, '')}( |$)`).test(title); });
+    current = { source: 'answer' };
+    match.forEach(press);
+    if (match.length) note(match[0], question, match.map(choiceLabel).join('; '));
+    current = null;
+  }
   function tickTrue(group, question) {
     for (const box of group) {
       const own = choiceLabel(box);
@@ -1411,7 +1431,11 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (checked.length) { remember(question, checked.map(choiceLabel).join('; ')); continue; }
       // Self-identification boxes (disability forms) are often known only by their options.
       const want = wanted(group[0], question) || disclosureFor(group.map(choiceLabel).join(' '));
-      if (!want || !want.values || want.source === 'draft') { tickTrue(group, question); continue; }
+      if (!want || !want.values || want.source === 'draft') {
+        tickTrue(group, question);
+        tickRole(group, question);
+        continue;
+      }
       current = want;
       if (want.source === 'disclosure') {
         const match = best(group, want.values, choiceLabel, 'prefix');
@@ -1728,6 +1752,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
                    'I do not wish to answer', "I don't wish to answer"];
   // A required text box that can take "N/A": not a link, contact detail, name, number, or date.
   const noAnswerNeeded = (el, question) => !['email', 'tel', 'url', 'number', 'date', 'password'].includes((el.type || '').toLowerCase())
+    && /^if\b|if applicable|please (enter|put|write) .?n.?a\b/.test(norm(question))
     && !/linkedin|url|link|website|twitter|e ?mail|phone|date|zip|postal|social security|\bssn\b|birth|password|gpa|name$|year|how many|number/.test(norm(question));
   // The user doesn't share LinkedIn: a required box says N/A (a URL-only box can't), an optional one stays out of the review.
   const noLinkedIn = question => !p.linkedin && /linkedin/.test(norm(question));
@@ -1833,7 +1858,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         if (options.length >= 2 && options.length <= 40) add('choice', label, options, { el });
       } else if (el.tagName === 'TEXTAREA') {
         const detail = detailOf(el);
-        if (!el.value.trim() && !sideNote.test(q)) add('essay', `${label}${detail ? ` ${detail}` : ''}`, [], { el });
+        // "Have you built an app? If yes, tell us about one" is a question of its own when the form requires it.
+        if (!el.value.trim() && (!sideNote.test(q) || (isRequired(el, asked) && /^(have|did|do|are|can|what|which)\b/.test(q)))) add('essay', `${label}${detail ? ` ${detail}` : ''}`, [], { el });
       } else if (isText(el) && !isPrompt(el) && !isDatePart(el) && !el.value.trim() && (isRequired(el, asked) || /\?\s*$/.test(label)) && noAnswerNeeded(el, asked)) {
         add('text', label, [], { el });
       }

@@ -104,7 +104,7 @@ DISCLOSURE_VARIANTS = {
     # Only the Hispanic or Latino question has Yes/No answers.
     "No": ["No", "Not Hispanic or Latino", "No, not Hispanic or Latino"], "Yes": ["Yes", "Hispanic or Latino", "Yes, Hispanic or Latino"],
     # The most specific race option a form has, else the broader one.
-    "Asian Indian": ["Asian Indian", "Indian", "Asian"],
+    "Asian Indian": ["Asian Indian", "Indian", "South Asian", "Asian"],
     "He/Him": ["He/Him", "He / Him", "He, Him", "He Him", "He"], "She/Her": ["She/Her", "She / Her", "She, Her", "She Her", "She"],
     "They/Them": ["They/Them", "They / Them", "They, Them", "They Them", "They"],
     "Male": ["Male", "Man"], "Female": ["Female", "Woman"], "Non-binary": ["Non-binary", "Nonbinary", "Non binary", "Genderqueer"],
@@ -133,7 +133,7 @@ def disclosure_answers(profile: dict) -> list[dict]:
 
 
 # Labels that never get a saved answer and are never learned.
-NEVER = r"race|ethnic|hispanic|latin[oax]|gender|sex\b|\bpronouns?\b|pronounc|pronunciation|disab|veteran|military status|social security|\bssn\b|date of birth|birth ?date|password|verification code|security code|one.?time (code|pass)|salary|compensation|pay expectation|signature|captcha"
+NEVER = r"race|ethnic|hispanic|latin[oax]|gender|sex\b|lgbt|sexual orientation|transgender|accommodat|\bpronouns?\b|pronounc|pronunciation|disab|veteran|military status|social security|\bssn\b|date of birth|birth ?date|password|verification code|security code|one.?time (code|pass)|salary|compensation|pay expectation|signature|captcha"
 
 ORG_WORDS = r"\b(university|college|institute|school|inc|llc|ltd|corp|corporation|company|co\.|labs?|laboratory|technologies|systems|group|foundation|department|library|center|centre|agency|bank|hospital)\b"
 TITLE_WORDS = r"\b(intern|engineer|developer|assistant|analyst|researcher|technician|lead|manager|associate|fellow|consultant|scientist|designer|tutor|instructor|specialist|coordinator|officer|president|founder|volunteer|representative|cashier|counselor)\b"
@@ -304,7 +304,7 @@ PRESUMED = [
     ("hours_per_week", r"how many hours (per|a|each) week|hours per week (are you|can you|you can)", "40", ["40", "40 hours", "Full time", "35 40", "40+"], True, None),
     ("degrees_completed", r"degrees? (have you|you have|you've) (already )?(completed|earned|obtained)|completed (any )?degrees?|already completed",
      "I have not yet completed a degree", ["I have not yet completed a degree", "None", "No degree", "N/A", "Not applicable", "High School"], False, ("degree_recent", "no")),
-    ("highest_education", r"highest (level of )?education|education level|highest degree (completed|obtained|earned|attained)|level of education",
+    ("highest_education", r"^(?!.*(once|after|upon|when) (you.ve |you have |you )?(graduat|complet)).*(highest (level of )?education|education level|highest degree (completed|obtained|earned|attained)|level of education)",
      "High School", ["High School Diploma", "High School", "High school or equivalent", "High School/GED", "Secondary", "Some College", "GED"], False, ("degree_recent", "no")),
 ]
 
@@ -324,6 +324,9 @@ def experience_months(experience: list[dict]) -> int:
 
 def presumed_answers(profile: dict, education: list[dict], experience: list[dict], applied_before: bool = False) -> list[dict]:
     out = []
+    if education and education[0].get("degree_options"):
+        out.append({"key": "degree_after_graduating", "pattern": r"(level of education|degree).{0,40}(once|after|upon|when) (you.ve |you have |you )?(graduat|complet)",
+                    "answer": education[0]["degree_options"][0], "options": education[0]["degree_options"], "assumed": False})
     if (profile.get("agreements_note") or "").strip():
         out.append({"key": "nda_signed", "pattern": r"(have|did) you (ever )?(signed|executed|entered|been party).{0,60}(non ?disclosure|\bnda\b|confidentiality)",
                     "answer": "Yes", "options": YES, "assumed": False})
@@ -737,7 +740,7 @@ DRAFT_QUESTIONS = [
     ("project", r"(a|one|your) (favorite |recent |personal |side |technical |past )?project|something you('ve| have)? (built|made|created)"),
     ("availability", r"dates? of (internship |co.?op )?availability|availability dates|(start|end) dates? .{0,30}availab|availab\w* .{0,40}(start|end) dates?|when (are|will) you (be )?available"),
     ("plans", r"plans? (after|following|post) ?graduat|after (you )?graduat|career (goals|plans|aspirations)|where do you see yourself|long.term goals|what are your (career )?goals"),
-    ("why", r"\bwhy\b.{0,60}(interest|want|work|join|apply|choose|chose|role|position|internship|company)|(what|that|which) (interests|interested|excites|excited|draws|drew|attracts|attracted|motivates|motivated) you|why are you interested"),
+    ("why", r"^(?!.*\b(development|programming|technolog\w*|frameworks?|languages?)\b).*(\bwhy\b.{0,60}(interest|want|work|join|apply|choose|chose|role|position|internship|company)|(what|that|which) (interests|interested|excites|excited|draws|drew|attracts|attracted|motivates|motivated) you|why are you interested)"),
 ]
 
 
@@ -858,7 +861,9 @@ def drafts(profile: dict, education: list[dict], experience: list[dict], skills:
     work = f"{jobs[0]['lead']}, {_lower_first(jobs[0]['sentences'][0])}" if jobs else ""
     side = f"Outside of work, {_lower_first(projects[0]['sentences'][0])}" if projects and jobs else (projects[0]["text"] if projects else "")
     done = " ".join(part for part in (work, side) if part)
-    reason = (f"the work is in {_join(themes)}, which is what I've spent most of my time on so far" if themes
+    # A reason only from the role's own title and the user's own work: a posting's passing mention isn't either.
+    mine = [name for (pattern, _), name in zip(tailoring.THEMES, THEME_NAMES) if re.search(pattern, title or "", re.I) and re.search(pattern, done, re.I)][:2]
+    reason = (f"the work is in {_join(mine)}, which is what I've spent most of my time on so far" if mine
               else "I want to spend my time building software that people actually use")
     if company:
         opening = f"{me}. I'm applying for the {title or 'open'} role at {company} because {reason}."
@@ -889,7 +894,9 @@ def drafts(profile: dict, education: list[dict], experience: list[dict], skills:
 
 MODEL_RULES = """You fill in a job application for one person. Use only the FACTS, RESUME, and JOB POSTING below. Reply with JSON only: one entry per question id.
 
-FACT QUESTIONS (about the person: GPA, licenses, clearances, memberships, dates, numbers, history):
+Every question has a "kind". A question of kind "essay" must get a written answer in "answer" unless it asks whether the person has done something and the resume doesn't show it. Only that case, and the fact questions below, may be left empty.
+
+FACT QUESTIONS (kinds "choice", "multi", and "text" about the person: GPA, licenses, clearances, memberships, dates, numbers, history):
 - Answer only when the facts or resume state it. Otherwise leave "answer" empty and "choices" empty. Never guess.
 
 PREFERENCE QUESTIONS (what they want, prefer, or are most interested in: a team, desk, area, location, shift):
@@ -898,7 +905,7 @@ PREFERENCE QUESTIONS (what they want, prefer, or are most interested in: a team,
 FORMAT:
 - "choice": "answer" is one option copied exactly. "multi": "choices" lists each option that applies, copied exactly. "text": a few words.
 
-ESSAYS are drafts the person will edit. Write like a college student writing quickly and honestly, not like an AI:
+ESSAYS are drafts the person will edit. Questions about interests, goals, reasons, or what they hope to learn are about what the person wants: tie the answer to the resume and the posting, and don't claim experience the resume lacks. A "have you done this" essay: if the resume shows it, say so and describe it in one to three sentences; if it doesn't, leave it empty. Write like a college student writing quickly and honestly, not like an AI:
 - First person, 70 to 120 words, plain words, mostly short sentences. Start by answering the question directly.
 - Use one or two specific things from the resume, and keep the resume's own wording for what was done. Do not upgrade it: "Team of 4 built" means "my team of 4 built", never "I led". Do not add results, numbers, tools, or feelings the resume doesn't state.
 - End on a concrete detail. No closing sentence that sums up, sells, or says what the experience shows or taught.
@@ -940,7 +947,7 @@ def model_prompt(facts: list[str], resume_text: str, posting: str, questions: li
             + "\n\nQUESTIONS\n" + json.dumps(questions, indent=1, ensure_ascii=False))
 
 
-def clean_essay(text: str, source: str) -> str:
+def clean_essay(text: str, source: str, shortest: int = 25) -> str:
     """A model's draft with the sentences that give it away or overstate
     removed: stock phrases, closing lines that sell, numbers the user's own
     material doesn't contain, and claims ("led", "improved") the resume
@@ -960,7 +967,7 @@ def clean_essay(text: str, source: str) -> str:
             continue
         kept.append(sentence.strip())
     result = " ".join(kept)
-    return result if len(kept) >= 2 and len(result.split()) >= 25 else ""
+    return result if (len(kept) >= 2 or shortest < 25) and len(result.split()) >= shortest else ""
 
 
 def check_answers(questions: list[dict], answers, source: str) -> list[dict]:
@@ -987,7 +994,8 @@ def check_answers(questions: list[dict], answers, source: str) -> list[dict]:
             if chosen:
                 out.append({"id": question["id"], "answer": "", "choices": chosen})
         elif question["kind"] == "essay":
-            draft = clean_essay(answer, source)
+            # "Have you built an app?" can be answered in a sentence.
+            draft = clean_essay(answer, source, 10 if re.match(r"\s*(have|did|do|are|can)\b", question["question"], re.I) else 25)
             if draft:
                 out.append({"id": question["id"], "answer": draft, "choices": []})
         elif answer and len(answer) <= 160 and not re.search(r"https?://|www\.|@", answer) \
@@ -1047,7 +1055,7 @@ def listing_pay(description: str) -> dict:
     found = re.search(rf"{amount}\s*(?:-|–|—|to)\s*{amount}{per_hour}", text, re.I)
     if found:
         low, high = float(found.group(1)), float(found.group(2))
-        return {"hourly": round((low + high) / 2, 2), "text": f"${low:g}–${high:g} an hour"}
+        return {"hourly": round((low + high) / 2, 2), "text": f"${low:g} an hour" if f"{low:g}" == f"{high:g}" else f"${low:g}–${high:g} an hour"}
     found = re.search(rf"{amount}{per_hour}", text, re.I)
     if found:
         return {"hourly": float(found.group(1)), "text": f"${float(found.group(1)):g} an hour"}
