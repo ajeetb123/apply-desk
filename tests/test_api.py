@@ -1105,6 +1105,10 @@ class ApplyDeskApiTests(unittest.TestCase):
             self.assertEqual(applying.standard_key(question), key, question)
         self.assertIsNone(applying.standard_key("Are you a dual citizen of the United States and another country?"))
         self.assertIsNone(applying.standard_key("What is your Current Degree Program?"))
+        credits = "How many credit hours towards your degree do you anticipate having completed by the time your internship begins?"
+        self.assertEqual(applying.standard_key(credits), "credits_by_start")
+        self.assertIsNone(applying.standard_key("How many credit hours have you completed?"))  # credits so far stay the user's
+        self.assertEqual(applying.option_variants("credits_by_start", "75"), ["75", "count 75"])
 
     def test_degree_program_length_and_college_start(self):
         applying = application.applying
