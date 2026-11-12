@@ -10,6 +10,9 @@
   .gone { display: none; }
   [data-automation-id="selectedItem"] { display: inline-block; background: #eef; padding: 2px 6px; margin: 2px; }
   .date input { width: 40px; }
+  .date > div { display: inline-block; position: relative; margin-right: 6px; }
+  .date .shown { display: inline-block; min-width: 34px; border: 1px solid #888; padding: 4px 6px; cursor: text; }
+  .date input.tiny { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; padding: 0; border: 0; }
   section { border-top: 2px solid #ccc; margin-top: 18px; padding-top: 6px; }
 </style></head>
 <body>
@@ -37,7 +40,7 @@
 <section data-automation-id="educationSection"><h3>Education</h3><div class="blocks"></div><button type="button" data-automation-id="Add" data-kind="edu">Add</button></section>
 <section data-automation-id="skillsSection"><h3>Skills</h3>
   <div data-automation-id="formField-skills"><label id="l-skills">Type to Add Skills</label>
-  <div data-automation-id="multiselectInputContainer" data-source="Python|Python (Programming Language)|SQL|Microsoft Power BI|Power BI|Git|Java|JavaScript|React.js|React|Node.js|Flask|Pandas|Go (Programming Language)|C (Programming Language)" data-multi="1"><input data-automation-id="searchBox" aria-labelledby="l-skills" type="text"></div></div></section>
+  <div data-automation-id="multiselectInputContainer" data-source="Biopython (Python Package)|NumPy (Python Package)|Python (Programming Language)|Python IDLE|SQL|Microsoft Excel|Microsoft Power BI|Power BI|Git|Java|JavaScript|React.js|React|Node.js|Flask|Pandas|Go (Programming Language)|C (Programming Language)" data-multi="1"><input data-automation-id="searchBox" aria-labelledby="l-skills" type="text"></div></div></section>
 <div data-automation-id="formField-resume"><label for="resume">Resume/CV</label><input type="file" id="resume" data-automation-id="file-upload-input-ref" accept=".pdf,.doc,.docx"></div>
 
 <h2>Application Questions</h2>
@@ -143,11 +146,36 @@ document.addEventListener('click', e => {
   const input = e.target.closest && e.target.closest('[data-automation-id="searchBox"]');
   if (input && !input.value) prompt(input, '');
 });
+// Like Workday's date boxes: a 1px input under the date it shows. Only digit
+// key presses change it (text set any other way is thrown away when the box
+// loses focus), and the shown date is what counts.
 function dateField(label, year, month) {
+  const part = (name, hint) => `<div data-automation-id="dateSection${name}"><div class="shown" data-automation-id="dateSection${name}-display">${hint}</div>` +
+    `<input type="text" class="tiny" role="spinbutton" data-automation-id="dateSection${name}-input" aria-label="${name}"></div>`;
   return `<div data-automation-id="formField-${label}"><label>${label}*</label><div class="date" data-automation-id="dateInputWrapper">` +
-    (month ? `<input type="text" data-automation-id="dateSectionMonth-input" aria-label="Month" placeholder="MM">` : '') +
-    `<input type="text" data-automation-id="dateSectionYear-input" aria-label="Year" placeholder="YYYY"></div></div>`;
+    (month ? part('Month', 'MM') : '') + part('Year', 'YYYY') + `</div></div>`;
 }
+const typedDate = new WeakMap();
+document.addEventListener('click', e => {
+  const shown = e.target.closest && e.target.closest('.date .shown');
+  if (shown) shown.parentElement.querySelector('input').focus();
+});
+document.addEventListener('keydown', e => {
+  const input = e.target.closest && e.target.closest('input[data-automation-id^="dateSection"]');
+  if (!input || !/^\d$/.test(e.key)) return;
+  e.preventDefault();
+  const size = /Year/.test(input.getAttribute('data-automation-id')) ? 4 : 2;
+  let now = (typedDate.get(input) || '') + e.key;
+  if (now.length > size) now = e.key;
+  typedDate.set(input, now);
+  input.value = now;
+  input.setAttribute('aria-valuenow', String(Number(now)));
+  input.parentElement.querySelector('.shown').textContent = now.padStart(size, '0');
+});
+document.addEventListener('focusout', e => {
+  const input = e.target.closest && e.target.closest('input[data-automation-id^="dateSection"]');
+  if (input) input.value = typedDate.get(input) || '';
+}, true);
 document.querySelectorAll('button[data-automation-id=Add]').forEach(add => add.addEventListener('click', () => {
   const blocks = add.parentElement.querySelector('.blocks'); const n = blocks.children.length + 1; uid += 1;
   const block = document.createElement('div'); block.setAttribute('role', 'group');

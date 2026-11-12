@@ -43,9 +43,9 @@ app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 
 CONTACT_FIELDS = [("name", "Full name"), ("email", "Email"), ("phone", "Mobile phone"), ("address", "Street address"),
                   ("city", "City"), ("state", "State"), ("postal_code", "ZIP code")]
-EDUCATION_FIELDS = [("school", "School"), ("degree", "Degree"), ("graduation", "Expected graduation"),
+EDUCATION_FIELDS = [("school", "School"), ("degree", "Degree"), ("college_start", "Started college"), ("graduation", "Expected graduation"),
                     ("preferred_start", "Preferred internship start date"), ("gpa", "GPA"),
-                    ("gpa_range", "GPA range for forms with no N/A"),
+                    ("gpa_range", "GPA range for required lists with no N/A"),
                     ("work_authorization", "Work authorization")]
 LINK_FIELDS = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("website", "Portfolio or website")]
 # Values the Mac app may type into clearly labeled, empty application fields.
@@ -105,7 +105,7 @@ def init_db():
             "skills": "",
             "career_goals": "",
             "role_campaigns": "Wave 1, Wave 2, Defense, Seed-stage startups",
-            "larp": "2", "gpa": "", "gpa_range": "", "preferred_start": "",
+            "larp": "2", "gpa": "", "gpa_range": "", "preferred_start": "", "college_start": "",
         }
         defaults.update({spec["key"]: spec["default"] for spec in applying.STANDARD_QUESTIONS if spec["key"] not in defaults})
         for key, value in defaults.items():
@@ -192,6 +192,57 @@ def log_activity(kind: str, summary: str):
         conn.execute("INSERT INTO activity(kind,summary,created) VALUES(?,?,?)", (kind, summary[:300], datetime.now().isoformat(timespec="minutes")))
 
 
+# Profile facts a resume states. A new resume replaces them; everything else in
+# Profile (screening answers like clearance and citizenship, self-identification,
+# the home address) stays as the user set it. LinkedIn is never taken from a
+# resume: the user doesn't share it.
+RESUME_FACTS = [("name", "Name"), ("email", "Email"), ("phone", "Phone"), ("github", "GitHub"), ("website", "Website"),
+                ("school", "School"), ("degree", "Degree"), ("college_start", "Started college"), ("graduation", "Graduation")]
+
+
+def month_year(parsed) -> str:
+    return f"{date(2000, parsed[1], 1):%B} {parsed[0]}" if parsed and parsed[1] else str(parsed[0]) if parsed else ""
+
+
+def resume_facts(text: str) -> dict:
+    """Name, contact links, and the first school's degree and dates, as the resume states them."""
+    preamble, sections = resume_outline(text)
+    lines = [line.strip() for line in preamble if line.strip()]
+    facts = {}
+    if lines and re.fullmatch(r"[A-Za-z][A-Za-z.'\- ]{2,60}", lines[0]) and 2 <= len(lines[0].split()) <= 4:
+        facts["name"] = lines.pop(0)
+    contact = " | ".join(lines)
+    email = re.search(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", contact)
+    phone = re.search(r"(?<![\d-])(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?![\d-])", contact)
+    github = re.search(r"(?:https?://)?(?:www\.)?github\.com/[\w.-]+", contact, re.I)
+    sites = [token for token in re.split(r"[|\s]+", contact) if re.fullmatch(r"(?:https?://)?(?:www\.)?[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}(?:/\S*)?", token, re.I)
+             and "@" not in token and not re.search(r"github\.com|linkedin\.com", token, re.I)]
+    facts.update({"email": email.group(0) if email else "", "phone": phone.group(0).strip() if phone else "",
+                  "github": github.group(0) if github else "", "website": sites[0] if sites else ""})
+    school = next((entry for section in sections if section["kind"] == "education" for entry in section["entries"] if entry["header"]), None)
+    if school:
+        first = applying.split_columns(school["header"][0])
+        second = applying.split_columns(school["header"][1]) if len(school["header"]) > 1 else ("", "")
+        dated = next((col for col in (second[1], first[1]) if re.search(r"\b(19|20)\d{2}\b", col)), "")
+        start, end, current = applying.date_range(dated)
+        if start and not end and not current and not re.search(r"–|—|-|\bto\b", dated):
+            start, end = None, start  # "Expected December 2028" alone is the graduation date
+        facts.update({"school": first[0], "degree": second[0], "college_start": month_year(start), "graduation": month_year(end)})
+    return {key: value for key, value in facts.items() if value}
+
+
+def apply_resume_facts(text: str) -> list[str]:
+    """Replace the Profile facts this resume states; returns what changed."""
+    p, facts, changed = profile(), resume_facts(text), []
+    with db() as conn:
+        for key, label in RESUME_FACTS:
+            value = facts.get(key, "").strip()
+            if value and value != (p.get(key) or "").strip():
+                conn.execute("INSERT INTO profile(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+                changed.append(label)
+    return changed
+
+
 def sync_watched_resume_once() -> bool:
     """Import a changed resume only when its exact path was configured."""
     p = profile()
@@ -215,6 +266,9 @@ def sync_watched_resume_once() -> bool:
             conn.execute("INSERT INTO resume(filename,text,uploaded) VALUES(?,?,?)", (path.name, text, datetime.now().isoformat(timespec="minutes")))
             conn.execute("INSERT INTO profile(key,value) VALUES('watch_hash',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (digest,))
             conn.execute("INSERT INTO activity(kind,summary,created) VALUES(?,?,?)", ("Resume updated", f"A saved change to {path.name} was recorded locally.", datetime.now().isoformat(timespec="minutes")))
+        changed = apply_resume_facts(text)
+        if changed:
+            log_activity("Profile updated", f"From {path.name}: {', '.join(changed)}.")
         return True
     except Exception:
         return False
@@ -515,23 +569,6 @@ def tuning_terms(description: str, title: str = "") -> list[str]:
     return list(dict.fromkeys(terms + term_hits(body, skills)))
 
 
-def reorder_list_items(items: str, terms) -> tuple[str, list[str]]:
-    parts = [part.strip() for part in items.split(",") if part.strip()]
-    if len(parts) < 2:
-        return items, []
-    lead = [part for part in parts if term_hits(part, terms)]
-    if not lead or parts[:len(lead)] == lead:
-        return items, []
-    return ", ".join(lead + [part for part in parts if part not in lead]), lead
-
-
-def relevance_sort(lines, terms):
-    """Stable sort by matched job terms; returns new order and whether it moved."""
-    scored = sorted(enumerate(lines), key=lambda pair: -len(term_hits(pair[1], terms)))
-    order = [line for _, line in scored]
-    return order, order != list(lines)
-
-
 def entry_label(entry) -> str:
     first = entry["header"][0] if entry["header"] else ""
     return re.split(r"\s{2,}| \| | · |\s+(?:[A-Z][a-z]{2}\.? )?(?:19|20)\d{2}\b", first)[0].strip()[:60]
@@ -550,75 +587,45 @@ def latex_escape(text: str) -> str:
     return re.sub(r"([#$%&_{}])", r"\\\1", text)
 
 
-def tailor_skill_lists(lists, terms, rules, resume_text: str, changes, spell, escape=lambda text: text):
-    """Spell, reorder, and extend skill lists given as (label or None, items)."""
-    labeled = [i for i, (label, _) in enumerate(lists) if label]
-    additions = rules.skills_to_add(resume_text) if labeled else []
-    placed = tailoring.place_skills([lists[i][0] for i in labeled], additions)
-    out = []
-    for i, (label, items) in enumerate(lists):
-        name = label or "Skills"
-        spelled = spell(items)
-        if spelled != items:
-            changes.append(change("wording", name, "Matched the posting's spelling.", latex_plain(items), latex_plain(spelled)))
-        ordered, lead = reorder_list_items(spelled, terms)
-        extra = placed.get(labeled.index(i), []) if i in labeled else []
-        if extra:
-            parts = [part.strip() for part in ordered.split(",") if part.strip()]
-            parts[len(lead):len(lead)] = [escape(skill) for skill in extra]
-            ordered = ", ".join(parts)
-            changes.append(change("skills", name, f"Added {', '.join(extra)} from your profile; the posting asks for {'it' if len(extra) == 1 else 'them'}."))
-        if lead:
-            changes.append(change("order", name, f"Led with {', '.join(latex_plain(x) for x in lead[:4])}."))
-        out.append(ordered)
-    return out
+def order_items(items: str, kind: str, posting: str, escape=lambda text: text) -> tuple[str, list[str]]:
+    """One skills line's items, most important first for this kind of job."""
+    parts = [part.strip() for part in items.split(",") if part.strip()]
+    ordered = tailoring.order_skills(parts, kind, posting)
+    if ordered == parts:
+        return items, []
+    return ", ".join(ordered), ordered
 
 
-def tune_text_resume(text: str, terms, rules):
+def project_order(projects: list[str], kind: str, posting_terms: list[str]) -> list[int]:
+    """Projects most relevant first (a stable sort, so ties keep the resume's order)."""
+    scores = [tailoring.project_score(text, kind, posting_terms) for text in projects]
+    return sorted(range(len(projects)), key=lambda i: -scores[i])
+
+
+def tune_text_resume(text: str, kind: str, posting: str, terms):
     preamble, sections = text_outline(text)
     changes = []
-    style = tailoring.period_style([b for s in sections if s["kind"] in {"experience", "projects"} for e in s["entries"] for b in e["bullets"]])
     for section in sections:
-        if section["kind"] in {"education", "summary"}:
-            continue
         if section["kind"] == "skills":
-            slots = [(entry, key, index) for entry in section["entries"] for key in ("header", "bullets") for index in range(len(entry[key]))]
-            lists = []
-            for entry, key, index in slots:
-                label, colon, items = entry[key][index].partition(":")
-                lists.append((label.strip(), items) if colon else (None, entry[key][index]))
-            tuned = tailor_skill_lists(lists, terms, rules, text, changes, rules.spell)
-            for (entry, key, index), (label, _), items in zip(slots, lists, tuned):
-                entry[key][index] = f"{label}: {items.strip()}" if label else items
-            continue
-        for entry in section["entries"]:
-            label = entry_label(entry) or section_name(section)
-            if section["kind"] == "experience":
-                titled = [tailoring.expand_title(line) for line in entry["header"]]
-                for before, after in zip(entry["header"], titled):
-                    if before != after:
-                        changes.append(change("title", label, "Spelled out the job title.", before.split("    ")[0], after.split("    ")[0]))
-                entry["header"] = titled
-            if section["kind"] == "projects" and entry["header"]:
-                name, bar, rest = entry["header"][0].partition(" | ")
-                if bar and rules.spell(rest) != rest:
-                    changes.append(change("wording", name.strip(), "Matched the posting's spelling.", rest.split("    ")[0], rules.spell(rest).split("    ")[0]))
-                    entry["header"][0] = name + bar + rules.spell(rest)
-            edited = []
-            for bullet in entry["bullets"]:
-                after, reasons = tailoring.reword(bullet, rules, style)
-                if reasons:
-                    changes.append(change("wording", label, tailoring.describe(reasons), bullet, after))
-                edited.append(after)
-            entry["bullets"], moved = relevance_sort(edited, terms)
-            if moved:
-                lead = term_hits(entry["bullets"][0], terms)[:3]
-                changes.append(change("order", label, f"Opened with the bullet on {', '.join(lead)}."))
+            for entry in section["entries"]:
+                for key in ("header", "bullets"):
+                    for index, line in enumerate(entry[key]):
+                        label, colon, items = line.partition(":")
+                        ordered, lead = order_items(items if colon else line, kind, posting)
+                        if lead:
+                            entry[key][index] = f"{label}: {ordered.strip()}" if colon else ordered
+                            changes.append(change("order", label.strip() if colon else "Skills", f"Led with {', '.join(lead[:4])}."))
+        elif section["kind"] == "projects" and len(section["entries"]) > 1:
+            entries = section["entries"]
+            order = project_order(["\n".join(e["header"] + e["bullets"]) for e in entries], kind, terms)
+            if order != list(range(len(entries))):
+                section["entries"] = [entries[i] for i in order]
+                changes.append(change("order", section_name(section), f"Led with {entry_label(entries[order[0]])}, the most {tailoring.TYPE_NAMES[kind]} project."))
     return outline_text(preamble, sections), changes
 
 
 def latex_section_at(source: str, index: int) -> str:
-    """Kind of the \section that contains position `index`."""
+    """Kind of the \\section that contains position `index`."""
     start = source.rfind("\\section{", 0, index)
     if start < 0:
         return "other"
@@ -626,124 +633,53 @@ def latex_section_at(source: str, index: int) -> str:
     return heading_kind(latex_plain(groups[0])) if groups else "other"
 
 
-def tune_latex_resume(source: str, terms, rules):
+def tune_latex_resume(source: str, kind: str, posting: str, terms):
     changes = []
-    body_start = source.find("\\begin{document}")
-    items = [read_groups(source, m.end(), 1)[0] for m in re.finditer(r"\\resume(?:Sub)?Item\b", source) if m.start() > body_start]
-    style = tailoring.period_style([latex_plain(item[0]) for item in items if item])
-
-    def reword_items(body: str, label: str) -> str:
-        pos = 0
-        pattern = re.compile(r"\\resume(?:Sub)?Item\b")
-        rebuilt, last = [], 0
-        while True:
-            item = pattern.search(body, pos)
-            if not item:
-                break
-            groups, end = read_groups(body, item.end(), 1)
-            if groups is None:
-                return body
-            brace = body.index("{", item.end())
-            edited, reasons = tailoring.edit_latex_bullet(groups[0], rules, style)
-            if reasons:
-                changes.append(change("wording", label or "Bullet", tailoring.describe(reasons), latex_plain(groups[0]), latex_plain(edited)))
-            rebuilt.append(body[last:brace + 1] + edited + "}")
-            last = pos = end
-        rebuilt.append(body[last:])
-        return "".join(rebuilt)
-
-    def heading_label(before: str) -> str:
-        heading = max(before.rfind("\\resumeSubheading"), before.rfind("\\resumeProjectHeading"))
-        if heading < 0:
-            return ""
-        groups, _ = read_groups(before, before.index("{", heading), 1)
-        return latex_plain(groups[0]).split("|")[0].strip() if groups else ""
-
-    def tune_block(match):
-        if latex_section_at(source, match.start()) in {"education", "summary"}:
-            return match.group(0)
-        label = heading_label(source[:match.start()])
-        body = reword_items(match.group(2), label)
-        spans, pos = [], 0
-        while True:
-            item = re.compile(r"\\resume(?:Sub)?Item\b").search(body, pos)
-            if not item:
-                break
-            groups, end = read_groups(body, item.end(), 1)
-            if groups is None:
-                return match.group(1) + body + match.group(3)
-            spans.append((item.start(), end))
-            pos = end
-        gaps = [body[spans[i][1]:spans[i + 1][0]] for i in range(len(spans) - 1)]
-        if len(spans) < 2 or any(gap.strip() for gap in gaps):
-            return match.group(1) + body + match.group(3)
-        ordered, moved = relevance_sort([body[start:end] for start, end in spans], terms)
-        if moved:
-            lead = term_hits(latex_plain(ordered[0]), terms)[:3]
-            changes.append(change("order", label or "Bullet list", f"Opened with the bullet on {', '.join(lead)}."))
-            body = body[:spans[0][0]] + "".join(ordered[i] + (gaps[i] if i < len(gaps) else "") for i in range(len(ordered))) + body[spans[-1][1]:]
-        return match.group(1) + body + match.group(3)
-
-    def tune_heading(match):
-        kind = latex_section_at(source, match.start())
-        count = 4 if match.group(1) == "Subheading" else 2
-        groups, end = read_groups(source, match.end(), count)
-        if groups is None or kind == "education":
-            return None
-        if match.group(1) == "Subheading":
-            edited = [tailoring.expand_title(g) if i in (0, 2) else g for i, g in enumerate(groups)]
-            note = "Spelled out the job title."
-            kind_name = "title"
-        else:
-            edited = [tailoring.map_latex_text(groups[0], rules.spell, protect=("href", "url", "textbf"))] + groups[1:]
-            note = "Matched the posting's spelling."
-            kind_name = "wording"
-        for before, after in zip(groups, edited):
-            if before != after:
-                changes.append(change(kind_name, latex_plain(groups[0]).split("|")[0].strip(), note, latex_plain(before), latex_plain(after)))
-        return end, edited
-
-    # Headings first (titles, project tech lists), editing only their arguments.
-    out, pos = [], 0
-    for match in re.finditer(r"\\resume(Subheading|ProjectHeading)\b", source):
-        if match.start() < body_start or match.start() < pos:
+    skills = [m for m in re.finditer(r"\\textbf\{([^{}]*)\}\{:\s*([^{}]*)\}", source) if latex_section_at(source, m.start()) == "skills"]
+    pieces, last = [], 0
+    for m in skills:
+        ordered, lead = order_items(m.group(2), kind, posting)
+        if lead:
+            changes.append(change("order", latex_plain(m.group(1)), f"Led with {', '.join(latex_plain(x) for x in lead[:4])}."))
+        pieces.append(source[last:m.start()] + "\\textbf{" + m.group(1) + "}{: " + ordered.strip() + "}")
+        last = m.end()
+    pieces.append(source[last:])
+    tuned = "".join(pieces)
+    # Projects: each runs from its \resumeProjectHeading to the next one or the list's end.
+    for section in re.finditer(r"\\section\{([^{}]*)\}", tuned):
+        if heading_kind(latex_plain(section.group(1))) != "projects":
             continue
-        result = tune_heading(match)
-        if not result:
-            continue
-        end, edited = result
-        out.append(source[pos:match.end()] + "".join("{" + g + "}" for g in edited))
-        pos = end
-    out.append(source[pos:])
-    tuned = "".join(out)
-
-    source = tuned  # section lookups below read the heading-edited text
-    tuned = re.sub(r"(\\resumeItemListStart)(.*?)(\\resumeItemListEnd)", tune_block, tuned, flags=re.S)
-
-    skills = [m for m in re.finditer(r"\\textbf\{([^{}]*)\}\{:\s*([^{}]*)\}", tuned) if latex_section_at(tuned, m.start()) == "skills"]
-    if skills:
-        lists = [(latex_plain(m.group(1)), m.group(2)) for m in skills]
-        new_items = tailor_skill_lists(lists, terms, rules, latex_plain(tuned), changes,
-                                       lambda items: tailoring.map_latex_text(items, rules.spell), latex_escape)
-        pieces, last = [], 0
-        for m, items in zip(skills, new_items):
-            pieces.append(tuned[last:m.start()] + "\\textbf{" + m.group(1) + "}{: " + items.strip() + "}")
-            last = m.end()
-        pieces.append(tuned[last:])
-        tuned = "".join(pieces)
+        following = re.compile(r"\\section\{|\\end\{document\}").search(tuned, section.end())
+        stop = following.start() if following else len(tuned)
+        heads = [m.start() for m in re.finditer(r"\\resumeProjectHeading\b", tuned[section.end():stop])]
+        if len(heads) < 2:
+            break
+        base = section.end()
+        close = tuned.rfind("\\resumeSubHeadingListEnd", base, stop)
+        end = close if close > base + heads[-1] else stop
+        chunks = [tuned[base + start:base + (heads[i + 1] if i + 1 < len(heads) else end - base)] for i, start in enumerate(heads)]
+        bodies = [chunk.rstrip() for chunk in chunks]
+        gap = chunks[0][len(bodies[0]):] or "\n"
+        tail = chunks[-1][len(bodies[-1]):]
+        order = project_order([latex_plain(body) for body in bodies], kind, terms)
+        if order != list(range(len(bodies))):
+            tuned = tuned[:base + heads[0]] + gap.join(bodies[i] for i in order) + tail + tuned[end:]
+            name = latex_plain(bodies[order[0]]).split("|")[0].strip()[:60]
+            changes.append(change("order", latex_plain(section.group(1)), f"Led with {name}, the most {tailoring.TYPE_NAMES[kind]} project."))
+        break
     return tuned, changes
 
 
 def tune_resume(text: str, description: str, title: str = ""):
-    """Tune the user's own resume for one role without touching its layout:
-    relevant bullets lead, wording mirrors the posting's spelling and opens
-    with an action, and skills the posting asks for (that the user listed in
-    their profile) are added to the skills section."""
+    """Tune the user's own resume for one kind of job without touching its
+    layout or words: the posting picks the job type (frontend, backend, ML...),
+    and skills and projects are ordered most important first for that type.
+    Experience keeps the resume's order and every line stays as written."""
+    kind = tailoring.job_type(title, description)
+    posting = f"{title}\n{description}"
     terms = tuning_terms(description, title)
-    declared = [x.strip() for x in re.split(r"[,;\n]", profile().get("skills", "")) if x.strip()]
-    rules = tailoring.Rules(f"{title}\n{description}", declared)
     latex = is_latex(text)
-    tuned, changes = tune_latex_resume(text, terms, rules) if latex else tune_text_resume(text, terms, rules)
+    tuned, changes = tune_latex_resume(text, kind, posting, terms) if latex else tune_text_resume(text, kind, posting, terms)
     preamble, sections = resume_outline(tuned)
     plain = outline_text(preamble, sections)
     present = term_hits(plain, terms)
@@ -751,7 +687,7 @@ def tune_resume(text: str, description: str, title: str = ""):
         for entry in section["entries"]:
             entry["bullets"] = [{"text": bullet, "hits": len(term_hits(bullet, present))} for bullet in entry["bullets"]]
     return {"text": tuned, "extension": "tex" if latex else "txt", "preamble": preamble, "sections": sections,
-            "changes": changes, "terms": present}
+            "changes": changes, "terms": present, "kind": kind, "kind_name": tailoring.TYPE_NAMES[kind]}
 
 
 def highlight(text: str, terms) -> Markup:
@@ -1094,7 +1030,11 @@ def save_resume_upload():
     with db() as conn:
         conn.execute("INSERT INTO resume(filename,text,uploaded) VALUES(?,?,?)", (filename, text, datetime.now().isoformat(timespec="minutes")))
     log_activity("Resume imported", f"Imported {filename}")
-    flash("Resume imported. It stays on this Mac.", "success")
+    changed = apply_resume_facts(text)
+    if changed:
+        log_activity("Profile updated", f"From {filename}: {', '.join(changed)}.")
+    flash("Resume imported. It stays on this Mac. " + (f"Profile now uses its {', '.join(changed)}. " if changed else "")
+          + "Every application uses it from now on; your answers to questions like clearance and citizenship stay as they are.", "success")
     return redirect(url_for("resume_page"))
 
 
@@ -1480,25 +1420,49 @@ def api_role_for_url():
     return {"job_id": row["id"], "title": row["title"]} if row else {"job_id": None}
 
 
-def tailored_skills(sections, posting: str, declared: list[str], limit: int = 10) -> list[str]:
-    """Skills for an application's skills field: the resume's and profile's,
-    the ones the posting asks for first."""
-    names = []
-    for section in sections:
-        if section["kind"] != "skills":
-            continue
+def resume_skills(sections) -> list[str]:
+    """Every skill the resume names, in its order: the Skills section's items,
+    each project's tech list, then tools named in the projects and jobs
+    ("SQL and Excel"). Nothing the resume doesn't say."""
+    names, text = [], []
+    # The Skills section first, wherever it sits on the page.
+    for section in sorted(sections, key=lambda section: section["kind"] != "skills"):
         for entry in section["entries"]:
-            for line in entry["header"] + [b["text"] if isinstance(b, dict) else b for b in entry["bullets"]]:
-                items = line.partition(":")[2] if ":" in line else line
-                names += [re.sub(r"\s*\(.*?\)", "", item).strip() for item in items.split(",")]
+            lines = entry["header"] + [b["text"] if isinstance(b, dict) else b for b in entry["bullets"]]
+            if section["kind"] == "skills":
+                for line in lines:
+                    items = line.partition(":")[2] if ":" in line else line
+                    names += [re.sub(r"\s*\(.*?\)", "", item).strip() for item in items.split(",")]
+                continue
+            if section["kind"] == "projects" and entry["header"]:
+                # "Name | TypeScript, React, Express | Sept. 2026": the middle part is the tech list
+                # (an award the PDF ran into it, "Supabase 1st Place", is cut off).
+                for part in entry["header"][0].split(" | ")[1:]:
+                    for item in part.split("    ")[0].split(","):
+                        item = re.split(r"\s+\d+(?:st|nd|rd|th)\b", item.strip())[0].strip()
+                        if item and len(item.split()) <= 3 and not re.search(r"\d|\b(place|track|award|winner|prize|finalist)\b", item, re.I):
+                            names.append(item)
+            if section["kind"] in {"projects", "experience"}:
+                text += lines
+    body = re.sub(r"(?<=\w)/(?=\w)", " / ", "\n".join(text))  # "React/Vite" names two tools
+    found = [(match.start(), match.group(0)) for tool in tailoring.known_tools() for match in [tailoring.names_pattern([tool]).search(body)] if match]
+    names += [name for _, name in sorted(found)]
     seen, unique = set(), []
-    for name in names + declared:
-        if name and len(name) <= 40 and name.lower() not in seen:
-            seen.add(name.lower())
+    for name in names:
+        key = tailoring.skill_key(name)
+        if name and len(name) <= 40 and key and key not in seen:
+            seen.add(key)
             unique.append(name)
-    if posting:
-        unique.sort(key=lambda name: tailoring.skill_relevance(name, posting))
-    return unique[:limit]
+    return unique
+
+
+def tailored_skills(sections, posting: str, declared: list[str], kind: str = "general", limit: int = 40) -> list[str]:
+    """Skills for an application's skills field: everything the resume names,
+    then the profile's, most important first for this kind of job."""
+    names = resume_skills(sections)
+    keys = {tailoring.skill_key(name) for name in names}
+    names += [name for name in declared if tailoring.skill_key(name) not in keys]
+    return tailoring.order_skills(names, kind, posting)[:limit]
 
 
 @app.get("/api/fill-plan")
@@ -1533,7 +1497,7 @@ def api_fill_plan():
     experience = applying.experience_entries(sections)
     role = {"id": row["id"], "title": row["title"], "company": row["company"]} if row else None
     # Answers the resume already gives: enrollment status from the degree, and
-    # the current job ("Procedura", employed: Yes). Profile answers win.
+    # the current job ("Example Labs", employed: Yes). Profile answers win.
     derived = {"degree": education[0]["degree"]} if education and not p.get("enrollment_status") else {}
     current = next((entry for entry in experience if entry.get("current")), None)
     if current:
@@ -1543,7 +1507,8 @@ def api_fill_plan():
     hints = {**p, **{key: value for key, value in derived.items() if not p.get(key) or key == "previously_employed" or key == "degree"}}
     today = date.today()
     # All of them, best first: the form adds them in order up to any limit it states.
-    skills = tailored_skills(sections, posting, declared, limit=20)
+    kind = tailoring.job_type(row["title"] or "", row["description"] or "") if row else "general"
+    skills = tailored_skills(sections, posting, declared, kind)
     # The listing answers some questions itself, and gives "open to all" its places.
     facts = applying.listing_facts(row["title"], row["description"], row["url"]) if row else {"locations": []}
     answers = applying.follow_up_answers(hints) + applying.standard_answers(hints) + (applying.listing_answers(facts) if row else [])

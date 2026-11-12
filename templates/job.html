@@ -84,7 +84,7 @@
 {% set kinds = {'order': 'Order', 'wording': 'Wording', 'title': 'Title', 'skills': 'Skills'} %}
 <section class="panel tuned" id="tuned" data-reveal style="--i:6">
   <header class="panel-head">
-    <div><p class="eyebrow">{{ ui.icon('sparkle') }} Tuned for this role</p><h2>Your resume, sharpened for {{ job.company or 'this role' }}</h2><p class="sub">Same template, same facts. Wording mirrors the posting, the most relevant bullets lead, and skills from your profile that the posting asks for join your skills section.</p></div>
+    <div><p class="eyebrow">{{ ui.icon('sparkle') }} Tuned for this role</p><h2>Your {{ tuned.kind_name if tuned else '' }} resume for {{ job.company or 'this role' }}</h2><p class="sub">Same template, same words. Apply Desk read this posting as a {{ tuned.kind_name if tuned else 'software engineering' }} job and put your skills and projects in order for it, most important first. Experience keeps your order, and nothing is reworded or added.</p></div>
     {% if tuned %}<div class="head-actions">
       <button class="button ghost" type="button" data-copy="tuned-source">{{ ui.icon('copy') }}<span>Copy</span></button>
       <a class="button ghost" href="/job/{{ job.id }}/tuned">{{ ui.icon('download') }}<span>.{{ tuned.extension }}</span></a>
@@ -106,11 +106,11 @@
     <ol class="edits">{% for change in tuned.changes %}{% if change.before %}{% set was, now = word_diff(change.before, change.after) %}{% endif %}
       <li class="edit edit-{{ change.kind }}" style="--i: {{ loop.index0 }}"><span class="edit-kind">{{ kinds[change.kind] }}</span>
         <div><b>{{ change.label }}</b><span>{{ change.note }}</span>{% if change.before %}<p class="was">{{ was }}</p><p class="now">{{ now }}</p>{% endif %}</div></li>
-    {% else %}<li class="edit"><div><b>Nothing to change</b><span>Your resume already leads with the most relevant evidence for this role.</span></div></li>{% endfor %}</ol>
+    {% else %}<li class="edit"><div><b>Nothing to change</b><span>Your resume's order already fits this kind of job.</span></div></li>{% endfor %}</ol>
   </div>
   <textarea id="tuned-source" hidden readonly>{{ tuned.text }}</textarea>
   {% else %}
-  {{ ui.empty('Add your resume to tune it', 'Apply Desk will tune your own bullets and skills so what matters for this role comes first.', '/resume', 'Add resume') }}
+  {{ ui.empty('Add your resume to tune it', 'Apply Desk will put your skills and projects in order for this kind of job, most important first.', '/resume', 'Add resume') }}
   {% endif %}
 </section>
 

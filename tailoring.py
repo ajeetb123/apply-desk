@@ -1,19 +1,16 @@
-"""Light-touch, truthful wording and skills edits for a role-tuned resume.
+"""How a resume is tuned for one kind of job, and the technology names it knows.
 
-Every edit keeps the user's facts. It mirrors the posting's spelling of a
-technology the resume already names, fixes weak openers, keeps bullet
-punctuation consistent, spells out title abbreviations, and adds a skill to
-the skills section only when the user listed it in their own profile. The
-layout and section structure are never touched. Rule sources are listed in
-README.md ("Resume-writing choices").
+Tuning only puts things in order: the posting picks the job type (frontend,
+backend, ML...), and that type orders the skills and projects, most important
+first. No line is reworded, nothing is added, and experience keeps the
+resume's own order. Rule sources are listed in README.md ("Resume-writing choices").
 """
 from __future__ import annotations
 
 import re
 
-# Spellings of the same technology. When the posting uses one, the resume uses
-# the same one, because ATS keyword matching is often literal. Entries that
-# differ only by letter case are always fixed to the first spelling.
+# Spellings of the same technology, so "Postgres" in a resume and "PostgreSQL"
+# in a posting count as one skill.
 SPELLINGS = [
     ["PostgreSQL", "Postgres", "Postgresql"],
     ["JavaScript", "JS"],
@@ -73,7 +70,7 @@ SPELLINGS = [
     ["Jira", "JIRA"],
 ]
 
-# Where an added skill goes in Jake's "Technical Skills" block.
+# Technology names by kind, for finding tools named in a resume.
 LANGUAGES = {"python", "java", "c", "c++", "c#", "go", "golang", "rust", "javascript", "typescript", "sql", "kotlin", "swift",
              "ruby", "php", "scala", "r", "bash", "shell", "html", "css", "html/css", "matlab", "dart", "haskell", "lua", "perl",
              "objective-c", "solidity", "verilog", "vhdl", "assembly", "elixir", "julia"}
@@ -117,25 +114,6 @@ def skill_relevance(skill: str, posting: str) -> float:
     return 2 if name in LANGUAGES else 3
 
 
-# Gerunds that follow "Responsible for" and their past-tense verbs.
-PAST = {"building": "Built", "developing": "Developed", "designing": "Designed", "creating": "Created", "implementing": "Implemented",
-        "maintaining": "Maintained", "managing": "Managed", "leading": "Led", "writing": "Wrote", "testing": "Tested",
-        "deploying": "Deployed", "automating": "Automated", "improving": "Improved", "optimizing": "Optimized",
-        "analyzing": "Analyzed", "migrating": "Migrated", "integrating": "Integrated", "debugging": "Debugged",
-        "refactoring": "Refactored", "documenting": "Documented", "training": "Trained", "mentoring": "Mentored",
-        "researching": "Researched", "coordinating": "Coordinated", "organizing": "Organized", "running": "Ran",
-        "monitoring": "Monitored", "scaling": "Scaled", "configuring": "Configured", "reviewing": "Reviewed",
-        "supporting": "Supported", "teaching": "Taught", "presenting": "Presented", "launching": "Launched",
-        "shipping": "Shipped", "owning": "Owned", "establishing": "Established", "prototyping": "Prototyped",
-        "evaluating": "Evaluated", "collecting": "Collected", "processing": "Processed", "handling": "Handled",
-        "troubleshooting": "Troubleshot", "modeling": "Modeled", "modelling": "Modelled", "architecting": "Architected"}
-
-# Title abbreviations, expanded so the title reads like the posting's.
-TITLES = [(r"\bSWE(?= Intern)", "Software Engineering"), (r"\bSWE\b", "Software Engineer"),
-          (r"\bSDE\b", "Software Development Engineer"), (r"\bSRE(?= Intern)", "Site Reliability Engineering"),
-          (r"\bSRE\b", "Site Reliability Engineer"), (r"\bMLE\b", "Machine Learning Engineer"), (r"\bTA\b", "Teaching Assistant")]
-
-
 def case_sensitive(variant: str) -> bool:
     # Acronyms ("JS", "AWS") and capitalized single words ("React", "Swift",
     # "Flask") only count as technology names when written that way, so
@@ -158,196 +136,125 @@ def group_for(skill: str):
 
 
 class Rules:
-    """What a posting asks for, and which of the user's declared skills fit it."""
+    """What a posting names."""
 
-    def __init__(self, posting: str, declared_skills: list[str]):
+    def __init__(self, posting: str, declared_skills: list[str] | None = None):
         self.posting = posting
-        self.declared = [skill.strip() for skill in declared_skills if skill.strip()]
-        self.targets: dict[int, str] = {}
-        for index, (group, pattern) in enumerate(GROUPS):
-            match = pattern.search(posting)
-            if match:
-                seen = match.group(0)
-                # The posting's spelling, with the canonical capitals when it
-                # is the same name ("GITHUB" → "GitHub").
-                self.targets[index] = group[0] if seen.lower() == group[0].lower() else next(n for n in group if n.lower() == seen.lower())
-
-    def spell(self, text: str) -> str:
-        for index, (group, pattern) in enumerate(GROUPS):
-            target = self.targets.get(index)
-            if target:
-                text = pattern.sub(target, text)
-            elif any(ch.isupper() for ch in group[0][1:]):
-                # Fix casing only for names with inner capitals: "Github" → "GitHub".
-                text = pattern.sub(lambda m: group[0] if m.group(0).lower() == group[0].lower() else m.group(0), text)
-        return text
 
     def mentions(self, text: str, skill: str) -> bool:
         entry = group_for(skill)
         pattern = entry[1] if entry else names_pattern([skill])
         return bool(pattern.search(text))
 
-    def posting_spelling(self, skill: str) -> str:
-        entry = group_for(skill)
-        if entry:
-            return self.targets.get(GROUPS.index(entry), entry[0][0])
-        return skill
 
-    def skills_to_add(self, resume_text: str, limit: int = 4) -> list[str]:
-        """Profile skills the posting asks for that the resume doesn't show yet."""
-        added: list[str] = []
-        for skill in self.declared:
-            if self.mentions(self.posting, skill) and not self.mentions(resume_text, skill):
-                spelled = self.posting_spelling(skill)
-                if spelled.lower() not in (a.lower() for a in added):
-                    added.append(spelled)
-        return added[:limit]
+# ---------------------------------------------------------------------------
+# Tailoring by job type: like keeping a frontend, a backend, and an ML version
+# of one resume. The posting picks the type, and the type puts the skills and
+# projects in order, most important first. Nothing is reworded or added, and
+# experience keeps the resume's own order.
 
-
-def fix_opener(text: str) -> str:
-    """'Responsible for building X' → 'Built X'; 'Utilized' → 'Used'."""
-    stripped = text.lstrip()
-    lead = text[:len(text) - len(stripped)]
-    match = re.match(r"(?:was\s+|were\s+)?responsible for\s+(\w+ing)\b", stripped, re.IGNORECASE) \
-        or re.match(r"worked on\s+(\w+ing)\b", stripped, re.IGNORECASE)
-    if match and match.group(1).lower() in PAST:
-        return lead + PAST[match.group(1).lower()] + stripped[match.end():]
-    for weak, strong in (("utilized", "Used"), ("utilised", "Used"), ("helped to", "Helped")):
-        if stripped.lower().startswith(weak + " "):
-            return lead + strong + stripped[len(weak):]
-    match = re.match(r"I\s+([a-z]+)\b", stripped)
-    if match and (match.group(1).endswith("ed") or match.group(1).capitalize() in PAST.values()):
-        return lead + match.group(1).capitalize() + stripped[match.end():]
-    return text
-
-
-def expand_title(text: str) -> str:
-    for pattern, replacement in TITLES:
-        text = re.sub(pattern, replacement, text)
-    return text
-
-
-def period_style(bullets: list[str]) -> str | None:
-    """The resume's own majority style for bullet endings, if it is clear."""
-    endings = [b.rstrip().endswith(".") for b in bullets if b.strip()]
-    if len(endings) < 3:
-        return None
-    share = sum(endings) / len(endings)
-    return "period" if share >= .7 else "none" if share <= .3 else None
+# (type, title pattern, skills most important first, project words)
+JOB_TYPES = [
+    ("mobile", r"\b(ios|android|mobile)\b",
+     ["swift", "swiftui", "kotlin", "java", "objective-c", "react native", "flutter", "dart", "typescript", "javascript", "react", "firebase", "sql", "git"],
+     r"\b(ios|android|mobile|app store|swift|kotlin)\b"),
+    ("ml", r"machine learning|\bml\b|\bai\b|artificial intelligence|deep learning|\bllms?\b|computer vision|\bnlp\b|data scien|(applied|research) scien",
+     ["python", "pytorch", "tensorflow", "scikit-learn", "jax", "keras", "pandas", "numpy", "statsmodels", "scipy", "langchain", "hugging face",
+      "transformers", "opencv", "sql", "r", "matlab", "fastapi", "pytest", "jupyter", "yfinance", "java", "c++"],
+     r"\b(models?|machine learning|ml|ai|llms?|agents?|eval\w*|predict\w*|train\w*|neural|regression|classif\w*|statistic\w*|signal)\b"),
+    ("data", r"\bdata\b|analytics|\banalyst\b|business intelligence",
+     ["python", "sql", "pandas", "numpy", "statsmodels", "r", "excel", "tableau", "power bi", "postgresql", "mysql", "spark", "airflow",
+      "snowflake", "scipy", "matplotlib", "yfinance", "jupyter"],
+     r"\b(data|datasets?|analy\w+|statistic\w*|sql|dashboards?|reports?|correlation\w*|regression)\b"),
+    ("fullstack", r"full[ -]?stack",
+     ["typescript", "javascript", "react", "next.js", "node.js", "express", "python", "fastapi", "django", "flask", "sql", "postgresql",
+      "supabase", "mongodb", "html/css", "vite", "docker", "git"],
+     r"\b(web app|frontend|front end|backend|back end|apis?|database|full stack|react|express)\b"),
+    ("frontend", r"front[ -]?end|\bui\b|\bux\b|web (developer|engineer)|user interface",
+     ["typescript", "javascript", "react", "next.js", "vue.js", "angular", "html/css", "html", "css", "tailwind css", "vite", "node.js",
+      "express", "mapbox", "deck.gl", "figma", "jest", "git"],
+     r"\b(web app|frontend|front end|ui|interface|react|maps?|render\w*|browser|vite)\b"),
+    ("backend", r"back[ -]?end|\bapis?\b|platform|infrastructure|distributed|server|cloud|devops|\bsre\b|site reliability",
+     ["python", "java", "go", "c#", "sql", "postgresql", "mysql", "fastapi", "flask", "django", "spring boot", "node.js", "express", "typescript",
+      "javascript", "supabase", "redis", "docker", "kubernetes", "aws", "git", "pytest", "unittest", "linux"],
+     r"\b(apis?|endpoints?|servers?|database|backend|back end|services?|schema|postgres\w*|express|fastapi|json)\b"),
+    ("systems", r"embedded|firmware|\bsystems?\b|hardware|kernel|robotics|\brtos\b",
+     ["c", "c++", "rust", "assembly", "python", "java", "linux", "bash", "git", "matlab", "verilog"],
+     r"\b(embedded|firmware|hardware|kernel|memory|performance|real.time|c\+\+)\b"),
+]
+TYPE_NAMES = {"mobile": "mobile", "ml": "machine learning and AI", "data": "data", "fullstack": "full-stack", "frontend": "frontend",
+              "backend": "backend", "systems": "systems", "general": "general software engineering"}
 
 
-def apply_period(text: str, style: str | None) -> str:
-    stripped = text.rstrip()
-    tail = text[len(stripped):]
-    if style == "none" and stripped.endswith(".") and not stripped.endswith(("etc.", "...")):
-        return stripped[:-1] + tail
-    if style == "period" and stripped and not stripped.endswith((".", "!", "?", ":")):
-        return stripped + "." + tail
-    return text
+def skill_key(name: str) -> str:
+    """One spelling per skill: "Express.js" and "Express", "Postgres" and "PostgreSQL" match."""
+    entry = group_for(name.strip())
+    key = re.sub(r"[^a-z0-9+#]", "", (entry[0][0] if entry else name).lower())
+    return "postgresql" if key == "postgres" else re.sub(r"^(.{2,})js$", r"\1", key)
 
 
-def skill_category(skill: str) -> str:
-    name = skill.lower()
-    return "languages" if name in LANGUAGES else "frameworks" if name in FRAMEWORKS else "libraries" if name in LIBRARIES else "tools"
+def job_type(title: str, description: str = "") -> str:
+    """The kind of job: the title decides when it names one, else the posting's
+    most frequent kind (named at least twice), else general."""
+    for kind, pattern, _, _ in JOB_TYPES:
+        if re.search(pattern, title or "", re.I):
+            return kind
+    counts = [(len(re.findall(pattern, description or "", re.I)), -i, kind) for i, (kind, pattern, _, _) in enumerate(JOB_TYPES)]
+    hits, _, kind = max(counts)
+    return kind if hits >= 2 else "general"
 
 
-def line_category(label: str) -> str | None:
-    label = label.lower()
-    if "language" in label:
-        return "languages"
-    if "librar" in label:
-        return "libraries"
-    if "framework" in label:
-        return "frameworks"
-    if any(word in label for word in ("tool", "technolog", "platform", "database", "cloud", "devops", "software")):
-        return "tools"
-    return None
+def type_rank(skill: str, kind: str) -> int:
+    ranked = next((skills for name, _, skills, _ in JOB_TYPES if name == kind), [])
+    keys = [skill_key(name) for name in ranked]
+    key = skill_key(skill)
+    return keys.index(key) if key in keys else len(keys)
 
 
-def place_skills(labels: list[str], additions: list[str]) -> dict[int, list[str]]:
-    """Pick the skills line each addition belongs on; returns line index → skills."""
-    placed: dict[int, list[str]] = {}
-    categories = [line_category(label) for label in labels]
-    for skill in additions:
-        wanted = skill_category(skill)
-        options = [i for i, category in enumerate(categories) if category == wanted]
-        if not options and wanted == "libraries":
-            options = [i for i, category in enumerate(categories) if category == "frameworks"]
-        if not options and wanted == "frameworks":
-            options = [i for i, category in enumerate(categories) if category == "libraries"]
-        if not options:
-            options = [i for i, category in enumerate(categories) if category == "tools"] or [len(labels) - 1]
-        placed.setdefault(options[0], []).append(skill)
-    return placed
+def order_skills(items: list[str], kind: str, posting: str) -> list[str]:
+    """Most important first for this kind of job; the posting's own skills
+    break ties, then the resume's order."""
+    rules = Rules(posting, [])
+    return [item for _, item in sorted(enumerate(items), key=lambda pair: (
+        type_rank(pair[1], kind), 0 if posting and rules.mentions(posting, re.sub(r"\s*\(.*?\)", "", pair[1]).strip() or pair[1]) else 1, pair[0]))]
 
 
-LATEX_TOKEN = re.compile(r"\\[a-zA-Z]+\*?|\\.|[{}$]|[^\\{}$]+")
+def project_score(text: str, kind: str, posting_terms: list[str]) -> float:
+    """How much one project shows this kind of work: the kind of work it
+    describes and the posting's own terms count most, then the type's skills
+    it uses (the more important, the more; capped, so a long tech list alone
+    can't win)."""
+    spec = next((entry for entry in JOB_TYPES if entry[0] == kind), None)
+    score = 0.0
+    if spec:
+        _, _, skills, words = spec
+        used = sum(2 * (len(skills) - rank) / len(skills) for rank, skill in enumerate(skills)
+                   if Rules("").mentions(text, skill) or (skill == "postgresql" and re.search(r"postgres", text, re.I)))
+        score += min(used, 4)
+        # "predict" and "predictive" are one kind of work.
+        score += 1.5 * len({match.lower()[:5] for match in re.findall(words, text, re.I)})
+    lower = text.lower()
+    score += sum(1 for term in posting_terms if re.search(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", lower))
+    return score
 
 
-def map_latex_text(source: str, edit, protect=("href", "url")) -> str:
-    """Apply `edit` to the plain-text runs of a LaTeX fragment, leaving commands,
-    math, and the first argument of protected commands (such as URLs) alone."""
-    out, depth, pending, protected, math = [], 0, False, None, False
-    for token in LATEX_TOKEN.findall(source):
-        if token == "$":
-            math = not math
-        elif token.startswith("\\") and len(token) > 1 and token[1].isalpha():
-            pending = token[1:].rstrip("*") in protect
-        elif token == "{":
-            depth += 1
-            if pending and protected is None:
-                protected = depth
-            pending = False
-        elif token == "}":
-            if protected == depth:
-                protected = None
-            depth -= 1
-        elif not token.startswith("\\") and not math and protected is None:
-            token = edit(token)
-        out.append(token)
-    return "".join(out)
+# Tools named in a resume's projects and bullets that count as skills for a
+# form's skills field (the Skills section's own items always count).
+EXTRA_TOOLS = ["Excel", "Vite", "Mapbox", "deck.gl", "Supabase", "yfinance", "statsmodels", "unittest", "pytest", "Tableau", "Power BI",
+               "Figma", "Firebase", "Vercel", "Jupyter", "LaTeX", "Postman", "Selenium", "Playwright", "Jest", "Next.js", "Express",
+               "SQL", "Pandas", "NumPy", "Matplotlib", "SciPy", "OpenCV", "Swift", "Kotlin", "C++", "HTML", "CSS", "Spring Boot"]
 
 
-REASONS = {"spelling": "matched the posting's spelling", "opener": "opened with an action verb", "period": "kept bullet punctuation consistent"}
+# Names that are also everyday words ("swift delivery", "bootstrap a team")
+# count only in the Skills section or a project's tech list.
+EVERYDAY = {"swift", "rust", "go", "golang", "dart", "shell", "assembly", "spring", "bootstrap", "flutter", "julia", "rails", "ruby", "perl",
+            "elixir", "scala", "lua", "haskell", "r", "c", "jax", "solidity"}
 
 
-def describe(reasons: list[str]) -> str:
-    text = "; ".join(REASONS[r] for r in reasons)
-    return text[:1].upper() + text[1:] + "."
-
-
-def reword(text: str, rules: Rules, style: str | None) -> tuple[str, list[str]]:
-    """Edit one plain-text bullet; returns the new text and why it changed."""
-    reasons = []
-    spelled = rules.spell(text)
-    if spelled != text:
-        reasons.append("spelling")
-    opened = fix_opener(spelled)
-    if opened != spelled:
-        reasons.append("opener")
-    ended = apply_period(opened, style)
-    if ended != opened:
-        reasons.append("period")
-    return ended, reasons
-
-
-def edit_latex_bullet(source: str, rules: Rules, style: str | None) -> tuple[str, list[str]]:
-    """Edit one \\resumeItem argument in place; commands and URLs are untouched."""
-    reasons = []
-    edited = map_latex_text(source, rules.spell)
-    if edited != source:
-        reasons.append("spelling")
-    leading = re.match(r"\s*", edited).end()
-    if leading < len(edited) and edited[leading] not in "\\{$":
-        first = re.match(r"[^\\{}$]+", edited[leading:]).group(0)
-        if fix_opener(first) != first:
-            edited = edited[:leading] + fix_opener(first) + edited[leading + len(first):]
-            reasons.append("opener")
-    stripped = edited.rstrip()
-    if style == "none" and stripped.endswith(".") and not stripped.endswith("\\."):
-        edited = stripped[:-1] + edited[len(stripped):]
-        reasons.append("period")
-    elif style == "period" and stripped and stripped[-1] not in ".!?:":
-        edited = stripped + "." + edited[len(stripped):]
-        reasons.append("period")
-    return edited, reasons
+def known_tools() -> list[str]:
+    """Tool names to look for in a resume's text, one spelling each."""
+    names = {}
+    for name in [group[0] for group in SPELLINGS] + EXTRA_TOOLS + sorted(LANGUAGES | FRAMEWORKS | LIBRARIES):
+        if name.lower() not in EVERYDAY and len(name) > 1:
+            names.setdefault(name.lower(), name)
+    return list(names.values())
