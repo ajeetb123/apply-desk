@@ -665,6 +665,37 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const part = name => field.querySelector(`input[data-automation-id*="dateSection${name}"]`);
     return { month: part('Month'), day: part('Day'), year: part('Year') };
   }
+  // Workday shows each part's value in a "-display" element over the input.
+  const partDisplay = part => (part.closest('[data-automation-id="dateInputWrapper"]') || part.parentElement)
+    .querySelector(`[data-automation-id="${(part.getAttribute('data-automation-id') || '').replace(/-input$/, '-display')}"]`);
+  const datePartValue = part => {
+    const display = partDisplay(part);
+    const shown = display ? textOf(display) : '';
+    return String(part.value || part.getAttribute('aria-valuenow') || (/^\d+$/.test(shown) ? shown : '')).trim();
+  };
+  // One part of a Workday date, typed the way a person types: click the date,
+  // press each digit (its boxes take key presses), and only if that didn't
+  // take, insert the text.
+  async function typeDatePart(part, value) {
+    const display = partDisplay(part);
+    press(display && visible(display) ? display : part);
+    focusedOn(part);
+    for (const digit of value) {
+      const code = 48 + Number(digit);
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        const event = new KeyboardEvent(type, { key: digit, code: `Digit${digit}`, keyCode: code, which: code, charCode: type === 'keypress' ? code : 0, bubbles: true, cancelable: true });
+        for (const name of ['keyCode', 'which']) if (event[name] !== code) Object.defineProperty(event, name, { get: () => code });
+        part.dispatchEvent(event);
+      }
+    }
+    await sleep(60);
+    if (Number(datePartValue(part)) === Number(value)) return;
+    if (!insertText(part, value) || Number(part.value) !== Number(value)) {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(part, value);
+      part.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    part.dispatchEvent(new Event('change', { bubbles: true }));
+  }
 
   // `fix` also corrects parts that hold a different date (Workday's resume reader).
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -688,15 +719,27 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     }
     if (isDatePart(el)) {
       const parts = datePartsNear(el);
+      const names = ['month', 'day', 'year'].filter(name => parts[name]);
+      const wantedDate = names.map(name => formats[name]).join('/');
       let any = false;
-      for (const [name, value] of [['month', formats.month], ['day', formats.day], ['year', formats.year]]) {
-        const part = parts[name];
-        if (!part || !value || (part.value && (!fix || Number(part.value) === Number(value)))) continue;
-        if (part.value) current = { ...current, replace: true };
-        typeInto(part, value); handled.add(part); any = true;
+      for (const name of names) {
+        const part = parts[name], value = formats[name], now = datePartValue(part);
+        handled.add(part);
+        if (!value || (now && (!fix || Number(now) === Number(value)))) continue;
+        if (now) current = { ...current, replace: true };
+        await typeDatePart(part, value);
+        any = true;
       }
-      if (any) note(el, question, ['month', 'day', 'year'].filter(name => parts[name]).map(name => formats[name]).join('/'));
-      return any;
+      if (!any) return false;
+      // Commit it the way leaving the field does, then read back what the page shows.
+      const last = parts[names[names.length - 1]];
+      last.dispatchEvent(new FocusEvent('blur', { bubbles: false }));
+      last.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      if (document.activeElement && isDatePart(document.activeElement)) document.activeElement.blur();
+      await sleep(250);
+      if (names.every(name => Number(datePartValue(parts[name])) === Number(formats[name]))) note(el, question, wantedDate);
+      else record({ page: pageNow, question: String(question).replace(/[*✱]\s*$/, '').trim().slice(0, 160), value: '', flag: `The date box didn't take ${wantedDate}. Type it in` });
+      return true;
     }
     const type = (el.type || '').toLowerCase();
     // A format the question spells out ("Please answer in MM/YYYY format") wins.
@@ -966,7 +1009,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     current = want;
     try {
       if (want.date) return fillDate(el, want.date, question, want.fix);
-      const values = want.values.filter(Boolean);
+      // The Profile's GPA range answers only a required GPA list with no N/A; an optional one stays blank.
+      const optionalGpa = want.key === 'gpa' && !want.floor && !isRequired(el, question);
+      const values = want.values.filter(value => value && !(optionalGpa && GPA_RANGE.test(norm(value))));
       if (!values.length) return false;
       if (el.tagName === 'SELECT') return pickSelect(el, values, question, want.strict);
       if (isListbox(el)) return await pickListbox(el, { ...want, values }, question);
@@ -997,8 +1042,11 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     || (rect => rect.right + scrollX <= 0 || rect.bottom + scrollY <= 0 || rect.left + scrollX >= document.documentElement.scrollWidth + 500
       || (rect.width <= 2 && rect.height <= 2))(el.getBoundingClientRect())
     || el.getAttribute('tabindex') === '-1' && el.getAttribute('aria-hidden') === 'true');
+  // Workday draws its date boxes (month, day, year) as tiny inputs under the date
+  // it shows, so they're judged by that shown date, never taken for bot traps.
+  const dateWrapper = el => el.closest('[data-automation-id="dateInputWrapper"]') || el.parentElement;
   const controlsIn = root => [...root.querySelectorAll('input:not([type=hidden]):not([type=file]), select, textarea, button[aria-haspopup="listbox"]')]
-    .filter(el => visible(el) && !el.disabled && !el.readOnly && !isTrap(el));
+    .filter(el => !el.disabled && !el.readOnly && (isDatePart(el) ? visible(dateWrapper(el)) : visible(el) && !isTrap(el)));
 
   function sectionFor(pattern) {
     const heads = [...document.querySelectorAll('h1, h2, h3, h4, h5, legend, [role="heading"], [data-automation-id$="Header"]')]
@@ -1116,7 +1164,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
           const stale = typed && !isEmpty && reader && clean(el.value) !== clean(want.values[0]);
           if (isEmpty || isDatePart(el) || stale) await fillControl(el, label, stale ? { ...want, replace: true } : { ...want, fix: reader });
           if ((typed && clean(el.value) === clean(want.values[0])) || (want.date && isDatePart(el))) { run.wrote[label] = true; saveRun(); }
-          else if (typed && !isEmpty && !stale) record({ page: pageNow, question: label, value: clean(el.value).slice(0, 300), flag: 'Your edit. Left as you wrote it' });
+          // (A search box empties once its pick shows as a tag: that's no edit.)
+          else if (typed && !isEmpty && !stale && clean(el.value)) record({ page: pageNow, question: label, value: clean(el.value).slice(0, 300), flag: 'Your edit. Left as you wrote it' });
         }
       }
       state.blocks += 1;
@@ -1139,14 +1188,22 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // (picking one again would remove it). A skill the list doesn't have is
   // skipped, never swapped for a different one.
   // "Python (Programming Language)" is Python; "Python IDLE" and "IronPython" aren't.
+  // "Microsoft Excel" is Excel and "Apache Kafka" is Kafka.
   const skillKey = name => String(name || '').toLowerCase().replace(/\([^)]*\)/g, ' ')
+    .replace(/^\s*(microsoft|apache|adobe)\s+(?=\S)/, '')
     .replace(/\b(programming|language|framework|library|package|software)\b/g, ' ')
     .replace(/[^a-z0-9+#]/g, '').replace(/^(.{2,})js$/, '$1').replace(/^postgres$/, 'postgresql');
-  const skillOption = (options, skill) => options.find(o => norm(optionLabel(o)) === norm(skill)) || options.find(o => {
-    const label = optionLabel(o);
-    const named = [label, ...(label.match(/\(([^)]*)\)/g) || []).map(part => part.slice(1, -1))];  // "Structured Query Language (SQL)"
-    return named.some(name => skillKey(name) === skillKey(skill));
-  }) || null;
+  // A note in parentheses is another name ("Structured Query Language (SQL)")
+  // only when it isn't a category: "Biopython (Python Package)" is never Python.
+  const CATEGORY = /\b(programming|language|framework|library|package|software|tool|platform|database|module)s?\b/i;
+  const skillOption = (options, skill) => {
+    const key = skillKey(skill);
+    return options.find(o => norm(optionLabel(o)) === norm(skill))
+      || options.find(o => skillKey(optionLabel(o)) === key)
+      || options.find(o => (optionLabel(o).match(/\(([^)]*)\)/g) || []).map(part => part.slice(1, -1))
+        .some(alias => !CATEGORY.test(alias) && skillKey(alias) === key))
+      || null;
+  };
   const ticked = o => !!((o.closest('[role="option"], [data-automation-id="menuItem"]') || o).querySelector('input[type=checkbox]:checked'));
   const skillsMissed = new Set();
   const skillsDoneBefore = !!run.wrote.Skills;
@@ -1174,7 +1231,16 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (!input.isConnected) break;
       handled.add(input);
       search(input, skill);
-      const options = await freshOptions(input, before, previous, 2500);
+      // Big tenants search slowly: wait longer, and search once more when nothing came back.
+      let options = await freshOptions(input, before, previous, 6000);
+      if (!options) {
+        await closeLists();
+        input = findInput() || input;
+        if (!input.isConnected) break;
+        search(input, '');
+        search(input, skill);
+        options = await freshOptions(input, before, previous, 6000);
+      }
       previous = options ? options.map(optionLabel).join('|') : previous;
       const match = options && skillOption(options, skill);
       if (!match) skillsMissed.add(skill);  // the form's list doesn't have it; don't search again on the second pass
@@ -1584,7 +1650,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (el.type === 'radio' || el.type === 'checkbox') {
         const group = controls.filter(o => o.type === el.type && (el.type === 'radio' && el.name ? o.name === el.name : questionOf(o) === question));
         empty = !group.some(o => o.checked);
-      } else if (el.tagName === 'TEXTAREA' || isDatePart(el)) {
+      } else if (isDatePart(el)) {
+        empty = !datePartValue(el);
+      } else if (el.tagName === 'TEXTAREA') {
         empty = !el.value.trim();
       } else {
         empty = !answeredValue(el);
@@ -1782,7 +1850,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const pressed = el => el.getAttribute('aria-pressed') === 'true' || el.getAttribute('aria-checked') === 'true';
   const holdsValue = el => (el.type === 'radio' || el.type === 'checkbox' ? el.checked
     : el.hasAttribute('aria-pressed') || el.getAttribute('role') === 'radio' ? pressed(el)
-    : el.tagName === 'TEXTAREA' || isDatePart(el) ? !!el.value.trim() : !!answeredValue(el));
+    : isDatePart(el) ? !!datePartValue(el) : el.tagName === 'TEXTAREA' ? !!el.value.trim() : !!answeredValue(el));
   function setValue(el, value) {
     const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     el.focus({ preventScroll: true });

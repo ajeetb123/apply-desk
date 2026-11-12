@@ -24,7 +24,7 @@ MONTHS = {name: i for i, names in enumerate([("jan", "january"), ("feb", "februa
 # answered for the user.
 STANDARD_QUESTIONS = [
     {"key": "us_citizen", "label": "U.S. citizen", "default": "",
-     "pattern": r"are you (a |an )?(u\.? ?s\.?|united states) citizen|citizenship status|^(u\.? ?s\.? |united states )?citizen(ship)?$"},
+     "pattern": r"are you (a |an )?(u\.? ?s\.?|united states) citizen|citizenship status|^(u\.? ?s\.? |united states )?citizen(ship)?$|^(?!.*\b(dual|other|another|additional|second|multiple)\b).*\bcitizen of (the )?(u\.? ?s\b|united states|usa\b|america)"},
     {"key": "authorized_us", "label": "Authorized to work in the U.S.", "default": "",
      "pattern": r"^(?!.*\b(uk|u\.k\.|united kingdom|britain|england|canada|canadian|europe|european|eu|eea|india|australia|germany|france|ireland|singapore|japan|china|mexico|netherlands|israel|switzerland|poland|spain|italy|brazil|korea)\b)(?!.{0,90}\b(require|requires|need|needs)\b.{0,40}sponsor).*(?:authori[sz]ed to work|eligib\w* (to work|for employment)|right to work|legally (able|permitted|eligible|entitled) to work|entitled to work|work authori[sz]ation)"},
     {"key": "needs_sponsorship", "label": "Will need visa sponsorship", "default": "",
@@ -41,11 +41,11 @@ STANDARD_QUESTIONS = [
     {"key": "dod_official", "label": "Current or former DoD official", "default": "",
      "pattern": r"\bdod\b|department of defen[cs]e"},
     {"key": "government_employee", "label": "Ever employed by the U.S. government", "default": "",
-     "pattern": r"post.?government|(employed|worked) (by|for|with) (the |a )?(u\.? ?s\.? |united states |federal )?government|government employ|federal (government )?(employ|service)|civil servant"},
+     "pattern": r"post.?government|(employed|worked) (by|for|with) (the |a )?(u\.? ?s\.? |united states |federal )?government|government employ|federal (government )?(employ|service)|civil servant|\b(current|former|currently|formerly)\b.{0,20}\b(u\.? ?s\.? )?federal\b.{0,80}\bemployee"},
     {"key": "heard_about", "label": "How you heard about roles", "default": "",
      "pattern": r"how did you (hear|learn|find)|how you (heard|learned|found)|hear about (us|this)|where did you (hear|find|learn)|referral source|^source$|candidate source"},
     {"key": "previously_employed", "label": "Previously worked for the employer", "default": "",
-     "pattern": r"former .{0,40}(employee|contractor|intern)\b|(held|had|completed) (a |an |any )?(prior|previous|past) internship|^(?!.*\bapplied\b).*((previously|ever|formerly) (worked|interned|been employed|employed)|former employee)|worked (for|at) (this|our|the) (organization|company)|current or former (employee|intern)|(currently|presently) (employed|working) (by|for|at|with)"},
+     "pattern": r"former .{0,40}(employee|contractor|intern)\b|(held|had|completed) (a |an |any )?(prior|previous|past) internship|^(?!.*\bapplied\b).*((previously|ever|formerly) (worked|interned|been employed|employed|work (for|at))|former employee)|worked (for|at) (this|our|the) (organization|company)|current or former (employee|intern)|(currently|presently) (employed|working) (by|for|at|with)"},
     {"key": "currently_employed", "label": "Currently employed", "default": "",
      "pattern": r"^(are you )?(currently|presently) (employed|working)$|^(current )?employment status$"},
     {"key": "current_employer", "label": "Current employer", "default": "",
@@ -322,8 +322,31 @@ def experience_months(experience: list[dict]) -> int:
     return total
 
 
+def program_years(school: dict) -> float:
+    """A degree's length in years, counted in fall and spring semesters from the
+    start through graduation: August 2026 to December 2028 is 5 semesters, 2.5 years."""
+    start, end = school.get("start") or {}, school.get("end") or {}
+    if not start.get("year") or not end.get("year"):
+        return 0
+    term = lambda d: int(d["year"]) * 2 + (1 if int(d.get("month") or 1) >= 7 else 0)
+    semesters = term(end) - term(start) + 1
+    return semesters / 2 if semesters > 0 else 0
+
+
 def presumed_answers(profile: dict, education: list[dict], experience: list[dict], applied_before: bool = False) -> list[dict]:
     out = []
+    school = education[0] if education else {}
+    if school.get("degree_options"):
+        # "What is your Current Degree Program?": the degree and field ("Bachelor of Science in Computer Science").
+        program = f"{school['degree_options'][0]} in {school['field']}" if school.get("field") else school["degree_options"][0]
+        out.append({"key": "degree_program", "answer": program, "options": [program] + school["degree_options"] + ["Undergraduate"], "assumed": False,
+                    "pattern": r"^(what is )?(your )?current (degree|program)( program)?$|(what|which) (degree|degree program|program) are you (currently )?(enrolled in|pursuing|in)\b|^(current )?degree program$"})
+    length = program_years(school)
+    if length:
+        # "How long is your degree program?": fall and spring semesters from the start to graduation, two to a year.
+        text = f"{length:g} years"
+        out.append({"key": "program_length", "answer": text, "options": [text, f"{length:g}"], "assumed": False,
+                    "pattern": r"(how long|length|duration) (is |of )?(your )?(degree|program|course of study|studies|academic program)|(how many|number of) years? (is|will|does) your (degree|program)|years? (to|until you) (complete|finish) your (degree|program)"})
     if education and education[0].get("degree_options"):
         out.append({"key": "degree_after_graduating", "pattern": r"(level of education|degree).{0,40}(once|after|upon|when) (you.ve |you have |you )?(graduat|complet)",
                     "answer": education[0]["degree_options"][0], "options": education[0]["degree_options"], "assumed": False})
@@ -632,8 +655,12 @@ def education_entries(sections, profile: dict) -> list[dict]:
             out[0]["end"] = graduation or out[0]["end"]
         else:
             out.append({"school": profile.get("school", ""), "location": "", "degree": profile.get("degree", ""), "start": {}, "end": graduation})
-    # No start date on the resume: the fall they started, from their year in
+    # No start date on the resume: Profile's "Started college" (a bare year is
+    # that year's August), else the fall they started, from their year in
     # school (a first-year student in November 2026 started in August 2026).
+    started = parse_month_year(profile.get("college_start", ""))
+    if out and not out[0]["start"] and started:
+        out[0]["start"] = date_formats((started[0], started[1] or 8, started[2]))
     years_in = {"freshman": 0, "sophomore": 1, "junior": 2, "senior": 3}.get((profile.get("class_year") or "").strip().lower())
     if out and not out[0]["start"] and years_in is not None:
         today = date.today()

@@ -291,7 +291,8 @@ class ApplyDeskApiTests(unittest.TestCase):
                   "• Wrote a Python script with Flask and PostgreSQL\nTECHNICAL SKILLS\nLanguages: Java, Python, SQL")
         tuned = application.tune_resume(resume, "Python Flask PostgreSQL backend internship. " * 4, "Backend Intern")
         lines = tuned["text"].splitlines()
-        self.assertLess(lines.index("• Wrote a Python script with Flask and PostgreSQL"), lines.index("• Resolved weekly tickets"))
+        # Bullets stay in the resume's order; only skills and projects move.
+        self.assertLess(lines.index("• Resolved weekly tickets"), lines.index("• Wrote a Python script with Flask and PostgreSQL"))
         self.assertIn("Languages: Python, Java, SQL", lines)
         source_words = sorted(re.findall(r"\w+", resume.lower()))
         tuned_words = sorted(w for w in re.findall(r"\w+", tuned["text"].lower()))
@@ -302,9 +303,9 @@ class ApplyDeskApiTests(unittest.TestCase):
         source = (r"\begin{document}\section{Experience}\resumeSubheading{Lab}{2024}{Assistant}{Austin}"
                   "\n\\resumeItemListStart\n  \\resumeItem{Answered tickets}\n  \\resumeItem{Built \\textbf{Python} Flask APIs}\n\\resumeItemListEnd\n"
                   r"\section{Technical Skills}\textbf{Languages}{: Java, Python}\end{document}")
-        tuned = application.tune_resume(source, "Python Flask API internship. " * 4)
+        tuned = application.tune_resume(source, "Python Flask API internship. " * 4, "Backend Intern")
         self.assertEqual(tuned["extension"], "tex")
-        self.assertLess(tuned["text"].index("Flask APIs"), tuned["text"].index("Answered tickets"))
+        self.assertLess(tuned["text"].index("Answered tickets"), tuned["text"].index("Flask APIs"))
         self.assertIn(r"\textbf{Languages}{: Python, Java}", tuned["text"])
         self.assertEqual(len(tuned["text"]), len(source) + 0)
 
@@ -314,7 +315,7 @@ class ApplyDeskApiTests(unittest.TestCase):
         response = self.client.get(f"/job/{created.json['saved_job_id']}/tuned")
         self.assertEqual(response.status_code, 200)
         self.assertIn("attachment", response.headers["Content-Disposition"])
-        self.assertLess(response.data.index(b"Built Python APIs"), response.data.index(b"Answered tickets"))
+        self.assertLess(response.data.index(b"Answered tickets"), response.data.index(b"Built Python APIs"))
 
     def test_repeated_graduation_year_is_not_a_window(self):
         self.add_resume("Python software engineering intern project")
@@ -359,33 +360,57 @@ class ApplyDeskApiTests(unittest.TestCase):
             r"\end{document}")
     POSTING = "Backend intern building PostgreSQL APIs in Python on Kubernetes. Terraform a plus. Engineers react quickly to incidents. " * 3
 
-    def test_tailoring_keeps_the_latex_template_and_edits_wording_and_skills(self):
+    def test_tailoring_keeps_the_latex_template_and_every_word(self):
         self.client.post("/profile", data={"skills": "Python, Kubernetes, React, Rust"})
         tuned = application.tune_resume(self.JAKE, self.POSTING, "Backend Intern")
         text = tuned["text"]
+        self.assertEqual(tuned["kind"], "backend")
         self.assertEqual(text.split(r"\begin{document}")[0], self.JAKE.split(r"\begin{document}")[0])
-        self.assertEqual(sorted(re.findall(r"\\[a-zA-Z]+", text)), sorted(re.findall(r"\\[a-zA-Z]+", self.JAKE)))
-        self.assertEqual(text.count("{"), text.count("}"))
-        self.assertIn(r"\resumeItem{Built a PostgreSQL API with \textbf{Python}}", text)
-        self.assertLess(text.index("Built a PostgreSQL API"), text.index("Answered support tickets"))
-        self.assertIn("{Software Engineering Intern}", text)
-        self.assertIn(r"\textbf{Developer Tools}{: Kubernetes, Git, Docker}", text)
-        self.assertNotIn("React", text)  # "react quickly" is not the framework
-        self.assertNotIn("Rust", text)   # declared, but the posting doesn't ask for it
-        education = lambda t: t[t.index(r"\section{Education}"):t.index(r"\section{Experience}")]
-        self.assertEqual(education(text), education(self.JAKE))
-        kinds = {change["kind"] for change in tuned["changes"]}
-        self.assertTrue({"wording", "title", "skills", "order"} <= kinds)
+        self.assertEqual(sorted(text), sorted(self.JAKE))  # the same characters, only moved
+        self.assertIn(r"\resumeItem{Responsible for building a Postgres API with \textbf{Python}}", text)
+        self.assertLess(text.index("Answered support tickets"), text.index("Responsible for building"))
+        self.assertIn("{SWE Intern}", text)
+        self.assertIn(r"\textbf{Languages}{: Python, Java}", text)
+        self.assertIn(r"\textbf{Developer Tools}{: Docker, Git}", text)
+        for added in ("Kubernetes", "React", "Rust"):
+            self.assertNotIn(added, text)  # profile skills are never added
+        self.assertEqual({change["kind"] for change in tuned["changes"]}, {"order"})
 
-    def test_tailoring_text_resume_rewords_without_inventing(self):
-        resume = ("Riley Chen\nEXPERIENCE\nSWE Intern    2025\n• Responsible for building a Postgres API.\n• Answered tickets.\n• Wrote docs.\n"
-                  "TECHNICAL SKILLS\nLanguages: Java, Python")
-        self.client.post("/profile", data={"skills": "Go, Rust"})
-        tuned = application.tune_resume(resume, "Backend intern using PostgreSQL and Go. " * 4, "Backend Intern")
-        self.assertIn("• Built a PostgreSQL API.", tuned["text"])
-        self.assertIn("Software Engineering Intern    2025", tuned["text"])
-        self.assertIn("Languages: Go, Java, Python", tuned["text"])
-        self.assertNotIn("Rust", tuned["text"])
+    def test_tailoring_orders_skills_and_projects_by_job_type(self):
+        resume = ("Riley Chen\nEXPERIENCE\nExample Labs    2026 – Present\nSWE Intern    Remote\n• Answered tickets\n"
+                  "Acme    2025\nResearch Assistant    Austin, TX\n• Analyzed survey data in SQL\n"
+                  "PROJECTS\nTrail Map | TypeScript, React, Mapbox | 2026\n• Built a web app that draws hiking trails on a map\n"
+                  "Churn Model | Python, pandas, scikit-learn | 2026\n• Trained a model that predicts customer churn\n"
+                  "Ticket API | Python, FastAPI, PostgreSQL | 2025\n• Built a REST API with endpoints for support tickets\n"
+                  "TECHNICAL SKILLS\nLanguages: SQL, TypeScript, Python\nFrameworks: React, FastAPI, pandas")
+
+        def order(title, description):
+            sections = application.resume_outline(application.tune_resume(resume, description, title)["text"])[1]
+            named = lambda kind: [application.entry_label(e) for s in sections if s["kind"] == kind for e in s["entries"]]
+            skills = [line for s in sections if s["kind"] == "skills" for e in s["entries"] for line in e["header"]]
+            return named("projects"), named("experience"), skills
+        projects, experience, skills = order("Frontend Engineer Intern", "Build web UI in React. " * 3)
+        self.assertEqual(projects[0], "Trail Map")
+        self.assertEqual(skills, ["Languages: TypeScript, SQL, Python", "Frameworks: React, FastAPI, pandas"])  # the rest keep the resume's order
+        projects, experience, skills = order("Machine Learning Intern", "Train models in Python. " * 3)
+        self.assertEqual(projects[0], "Churn Model")
+        self.assertEqual(skills[1], "Frameworks: pandas, FastAPI, React")
+        projects, experience, skills = order("Backend Engineer Intern", "Build REST APIs with PostgreSQL. " * 3)
+        self.assertEqual(projects[0], "Ticket API")
+        self.assertEqual(experience, ["Example Labs", "Acme"])  # experience keeps the resume's order
+        self.assertEqual(application.tailoring.job_type("Software Engineering Intern", "Build REST APIs and backend services. " * 2), "backend")
+        self.assertEqual(application.tailoring.job_type("Software Engineering Intern", "Join our team."), "general")
+
+    def test_fill_plan_skills_come_from_the_whole_resume(self):
+        resume = ("Riley Chen\nEXPERIENCE\nExample Labs    2026 – Present\nSWE Intern    Remote\n• Cleaned data in SQL and Excel\n"
+                  "PROJECTS\nTrail Map | TypeScript, React, Mapbox, Supabase 1st Place, Example Track | 2026\n• Built a React/Vite web app\n"
+                  "TECHNICAL SKILLS\nLanguages: Python, TypeScript\nTools: Git, Postgres")
+        names = application.resume_skills(application.resume_outline(resume)[1])
+        self.assertEqual(names[:4], ["Python", "TypeScript", "Git", "Postgres"])  # the Skills section first
+        for name in ("React", "Mapbox", "Supabase", "SQL", "Excel", "Vite"):
+            self.assertIn(name, names)
+        self.assertNotIn("Example Track", names)
+        self.assertEqual(len(names), len({application.tailoring.skill_key(name) for name in names}))  # one spelling each
 
     def test_print_pages_render_jakes_layout(self):
         self.assertEqual(self.client.get("/resume/print").status_code, 404)
@@ -478,7 +503,7 @@ class ApplyDeskApiTests(unittest.TestCase):
         answers = {a["key"]: a for a in self.client.get(f"/api/fill-plan?job_id={job_id}").json["answers"]}
         self.assertEqual(answers["relatives"]["options"][:2], ["None", "No"])  # "None" in a text box, "No" in a Yes/No list
         self.assertEqual(answers["polygraph"]["options"][0], "No")
-        self.assertEqual((answers["current_employer"]["answer"], answers["current_title"]["answer"]), ("Acme", "Software Engineering Intern"))  # from the tuned resume
+        self.assertEqual((answers["current_employer"]["answer"], answers["current_title"]["answer"]), ("Acme", "SWE Intern"))  # the resume's own words
         self.assertEqual(answers["currently_employed"]["answer"], "Yes")
         self.assertEqual(answers["previously_employed"]["answer"], "")  # Northwind isn't where they work
         same = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme Corp", "description": self.POSTING}).json["saved_job_id"]
@@ -521,7 +546,7 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(saved.status_code, 200)
         copy_id = saved.json["id"]
         self.assertEqual(self.client.get(f"/job/{job_id}/applications/{copy_id}.pdf").data, pdf)
-        self.assertIn(b"Software Engineering Intern", self.client.get(f"/job/{job_id}/applications/{copy_id}.tex").data)
+        self.assertIn(b"SWE Intern", self.client.get(f"/job/{job_id}/applications/{copy_id}.tex").data)
         self.assertNotIn(b"\\resumeItem", self.client.get(f"/job/{job_id}/applications/{copy_id}.txt").data)
         self.assertEqual(self.client.get(f"/job/{job_id + 1}/applications/{copy_id}.pdf").status_code, 404)
         page = self.client.get(f"/job/{job_id}").data
@@ -583,9 +608,10 @@ class ApplyDeskApiTests(unittest.TestCase):
         plan = self.client.get(f"/api/fill-plan?job_id={job_id}").json
         self.assertEqual(plan["profile"]["state_options"], ["Virginia", "VA"])
         experience = plan["experience"][0]
-        self.assertEqual((experience["title"], experience["company"]), ("Software Engineering Intern", "Acme"))
-        self.assertIn("Built a PostgreSQL API", experience["description"])
-        self.assertEqual(plan["skills"][:2], ["Python", "Kubernetes"])
+        self.assertEqual((experience["title"], experience["company"]), ("SWE Intern", "Acme"))
+        self.assertIn("Responsible for building a Postgres API", experience["description"])  # the resume's own words
+        self.assertEqual(plan["skills"][:3], ["Python", "Java", "Docker"])  # backend's order, then profile skills
+        self.assertIn("Kubernetes", plan["skills"])
         self.assertNotIn("Rust", plan["skills"][:2])
         answers = {a["key"]: a["options"] for a in plan["answers"]}
         self.assertEqual(answers["needs_sponsorship"][0], "No")
@@ -1051,6 +1077,46 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(set(ranked[-3:]), {"Vite", "deck.gl", "Mapbox"})
         web = "Build web app features in React with TypeScript."
         self.assertEqual(sorted(skills, key=lambda s: application.tailoring.skill_relevance(s, web))[:2], ["TypeScript", "React"])
+
+    def test_new_resume_replaces_profile_facts_but_not_answers(self):
+        self.client.post("/profile", data={"name": "Old Name", "email": "old@example.com", "degree": "Intended: Computer Science",
+                                           "us_citizen": "Yes", "has_clearance": "No", "city": "Springfield", "linkedin": ""})
+        resume = ("Riley Chen\nAustin, TX | 555-010-0100 | riley@example.com | github.com/rileyc | riley.dev | linkedin.com/in/rileyc\n"
+                  "EDUCATION\nState University    Austin, TX\nB.S. in Computer Science    Aug. 2026 – Dec. 2028\n"
+                  "EXPERIENCE\nExample Labs    2026 – Present\nSWE Intern    Remote\n• Answered tickets")
+        response = self.client.post("/resume", data={"resume": (io.BytesIO(resume.encode()), "resume.txt")},
+                                    content_type="multipart/form-data", follow_redirects=True)
+        self.assertIn(b"Profile now uses its Name, Email", response.data)
+        p = application.profile()
+        self.assertEqual((p["name"], p["email"], p["phone"], p["github"], p["website"]),
+                         ("Riley Chen", "riley@example.com", "555-010-0100", "github.com/rileyc", "riley.dev"))
+        self.assertEqual((p["school"], p["degree"], p["college_start"], p["graduation"]),
+                         ("State University", "B.S. in Computer Science", "August 2026", "December 2028"))
+        # Screening answers, the home address, and LinkedIn are never taken from a resume.
+        self.assertEqual((p["us_citizen"], p["has_clearance"], p["city"], p["linkedin"]), ("Yes", "No", "Springfield", ""))
+
+    def test_questions_real_runs_left_to_the_model_have_rules(self):
+        applying = application.applying
+        owners = {"Are you a citizen of the United States?": "us_citizen",
+                  "Did you previously work for Example Corp (including its predecessors or any of its businesses) in any capacity?": "previously_employed",
+                  "Are you a CURRENT U.S. federal government civilian or military (active duty or reserves) employee?": "government_employee",
+                  "Are you a FORMER U.S. federal government civilian or military (active duty or reserves) employee?": "government_employee"}
+        for question, key in owners.items():
+            self.assertEqual(applying.standard_key(question), key, question)
+        self.assertIsNone(applying.standard_key("Are you a dual citizen of the United States and another country?"))
+        self.assertIsNone(applying.standard_key("What is your Current Degree Program?"))
+
+    def test_degree_program_length_and_college_start(self):
+        applying = application.applying
+        sections = application.resume_outline("Riley Chen\nEDUCATION\nState University    Austin, TX\nB.S. in Computer Science    Expected December 2028")[1]
+        profile = {"college_start": "2026", "graduation": "December 2028", "school": "State University", "degree": "B.S. in Computer Science"}
+        education = applying.education_entries(sections, profile)
+        self.assertEqual((education[0]["start"]["year"], education[0]["start"]["month"]), ("2026", "08"))  # a bare year starts in August
+        presumed = applying.presumed_answers(profile, education, [])
+        owner = lambda question: next(a for a in presumed if re.search(a["pattern"], applying.normalize_question(question)))
+        self.assertEqual(owner("What is your Current Degree Program?")["answer"], "Bachelor of Science in Computer Science")
+        self.assertEqual(owner("How long is your degree program?")["answer"], "2.5 years")  # 5 semesters
+        self.assertEqual(applying.program_years({"start": {"year": "2026", "month": "08"}, "end": {"year": "2030", "month": "05"}}), 4)
 
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})
