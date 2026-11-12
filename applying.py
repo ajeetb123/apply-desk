@@ -64,6 +64,9 @@ STANDARD_QUESTIONS = [
     {"key": "high_school_year", "label": "Year you finished high school", "default": "", "pattern": r"(year|date) of high school graduation|high school graduation (year|date)|(when|what year) did you graduate (from )?high school"},
     # Before class_year and currently_student: "If you are currently enrolled..., what is your GPA?" is about GPA.
     {"key": "gpa", "label": "GPA", "default": "", "pattern": r"^(?!.*comment).*(\bgpa\b|grade point|overall result)"},
+    # Credits by the time the internship starts ("by the time your internship begins"); credits done so far stay the user's.
+    {"key": "credits_by_start", "label": "Credit hours you'll have when an internship starts", "default": "",
+     "pattern": r"credit(s| hours?| units?)\b.{0,120}\b(by the time|before|by|prior to|when)\b.{0,60}\b(internship|co.?op|position|program|job)\b.{0,30}\b(begins?|starts?)|(by the time|before|prior to) .{0,60}(internship|co.?op).{0,30}(begins?|starts?).{0,120}credit(s| hours?| units?)\b"},
     {"key": "class_year", "label": "Year in school", "default": "",
      "pattern": r"year in (school|college|university)|class (standing|year|level)|academic (year|standing|classification)|current year of (study|school)|what year are you|year of study|grade level"},
     {"key": "currently_student", "label": "Currently a student", "default": "",
@@ -191,6 +194,8 @@ def option_variants(key: str, answer: str) -> list[str]:
         years = {"freshman": ["Freshman", "First Year", "First-year", "1st Year", "Year 1"], "sophomore": ["Sophomore", "Second Year", "Second-year", "2nd Year", "Year 2"],
                  "junior": ["Junior", "Third Year", "Third-year", "3rd Year", "Year 3"], "senior": ["Senior", "Fourth Year", "Fourth-year", "4th Year", "Year 4"]}
         return years.get(lower, [answer])
+    if key == "credits_by_start" and answer.isdigit():
+        return [answer, f"count {answer}"]  # "count 99" picks a bracket like "90 or more" from a list
     if key == "gpa" and lower in {"n/a", "na", "none"}:
         return ["N/A", "NA", "Not applicable", "No GPA", "I do not have", "I don't have", "None", "0"]
     if yes:

@@ -381,6 +381,24 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return top && top[1] ? top[0] : null;
   }
   const DATE_VARIANT = /^month of (\d{4}) (\d{2})$/;
+  // A whole number against a list of ranges ("count 99": "90 or more", "90 - 119",
+  // "Senior (90+ credits)"): the narrowest range that holds it.
+  const COUNT_VARIANT = /^count (\d+)$/;
+  function countRange(text) {
+    const found = (text.match(/\b\d+\b/g) || []).map(Number);
+    if (!found.length || /\d\.\d/.test(text)) return null;
+    if (found.length > 1) return [Math.min(...found), Math.max(...found)];
+    const [a] = found;
+    if (/fewer|less than|under|below|up to|or (fewer|less)|</.test(text)) return [0, /up to|or (fewer|less)/.test(text) ? a : a - 1];
+    if (/\+|more than|over|above|or more|at least|greater|>/.test(text)) return [/more than|over|above|greater|>/.test(text) ? a + 1 : a, Infinity];
+    return [a, a];
+  }
+  function closestCount(texts, n) {
+    const ranked = texts.map(([candidate, t]) => ({ candidate, range: countRange(t) }))
+      .filter(o => o.range && o.range[0] <= n && n <= o.range[1])
+      .sort((a, b) => (a.range[1] - a.range[0]) - (b.range[1] - b.range[0]));
+    return ranked.length ? ranked[0].candidate : null;
+  }
   // "Did not obtain high school diploma" never answers "High School Diploma".
   const saysNo = t => /^(did not|didn.t|do not|don.t|not |no |never |without |none)/.test(t);
 
@@ -396,6 +414,12 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (range) {
         const bracket = closestBracket(texts, Number(range[1]), Number(range[2]));
         if (bracket) return bracket;
+        continue;
+      }
+      const counted = variant.match(COUNT_VARIANT);
+      if (counted) {
+        const option = closestCount(texts, Number(counted[1]));
+        if (option) return option;
         continue;
       }
       const dated = variant.match(DATE_VARIANT);

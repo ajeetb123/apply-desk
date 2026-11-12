@@ -43,7 +43,7 @@ with sqlite3.connect(application.DB) as conn:
 client.post("/profile", data={"name": "Riley Test", "email": "riley@example.com", "phone": "555-010-0100", "address": "1 Example Way",
                               "city": "Austin", "state": "TX", "postal_code": "78701", "school": "Texas State University",
                               "degree": "B.S. in Computer Science", "graduation": "December 2028", "college_start": "August 2026",
-                              "gpa": "N/A", "gpa_range": "3.5-4.0", "class_year": "Freshman", "currently_student": "Yes",
+                              "gpa": "N/A", "gpa_range": "3.5-4.0", "credits_by_start": "75", "class_year": "Freshman", "currently_student": "Yes",
                               "authorized_us": "Yes", "needs_sponsorship": "No", "us_citizen": "Yes", "has_clearance": "No",
                               "government_employee": "No", "previously_employed": "No", "heard_about": "LinkedIn"})
 posting = ("Backend Engineer Intern, Summer 2027. Build REST APIs and services in Python and Java with PostgreSQL. "

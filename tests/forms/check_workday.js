@@ -8,5 +8,6 @@
   const skills = [...document.querySelectorAll('[data-automation-id="formField-skills"] [data-automation-id="selectedItem"]')].map(text);
   const gpa = [...document.querySelectorAll('[data-automation-id="formField-gpa"] input')].map(i => i.value);
   const current = [...document.querySelectorAll('[data-automation-id="formField-currentlyWorkHere"] input')].map(i => i.checked);
-  return { dates, skills, gpa, current };
+  const credits = (s => s && s.selectedIndex > 0 ? s.options[s.selectedIndex].text : '')(document.getElementById('credits'));
+  return { dates, skills, gpa, current, credits };
 })()
