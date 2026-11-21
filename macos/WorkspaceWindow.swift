@@ -93,7 +93,12 @@ final class WorkspaceWindow: NSObject, NSWindowDelegate, WKNavigationDelegate, W
     func serviceFailed(retry: @escaping () -> Void) {
         ready = false
         splashModel.retry = retry
-        splashModel.phase = .failed("The local service didn't respond. Your data is safe in ~/Library/Application Support/Apply Desk. Details are in app.log there.")
+        // A download macOS still marks as from the internet: its built-in Python
+        // can't run until the mark is removed (README → Download and install).
+        let quarantined = getxattr(Bundle.main.bundlePath, "com.apple.quarantine", nil, 0, 0, 0) >= 0
+        splashModel.phase = .failed(quarantined
+            ? "macOS hasn't cleared this download, so it won't let Apply Desk's built-in Python run. In Terminal, run this, then press Try Again:\n\nxattr -dr com.apple.quarantine \"\(Bundle.main.bundlePath)\""
+            : "The local service didn't respond. Your data is safe in ~/Library/Application Support/Apply Desk. Details are in app.log there.")
         splash.isHidden = false
         splash.alphaValue = 1
     }
@@ -271,7 +276,7 @@ private struct SplashView: View {
             case .failed(let message):
                 Text("Apply Desk couldn't start").font(.system(size: 20, weight: .bold))
                 Text(message).font(.system(size: 13)).foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center).frame(maxWidth: 380)
+                    .multilineTextAlignment(.center).frame(maxWidth: 380).textSelection(.enabled)
                 Button("Try Again") {
                     model.phase = .starting
                     model.retry()

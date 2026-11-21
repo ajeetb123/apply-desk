@@ -2,11 +2,29 @@
 
 Apply Desk is a native Mac app that runs quietly in the background. It knows only what you give it — your resume and your details — and keeps all of it on this Mac. While you browse jobs in Chrome, it notices listings, scores each one against your resume and goals, fills applications on a keyboard shortcut, and builds a tuned version of your resume for every role.
 
-## Install and open
+## Download and install
 
-Double-click **Build Apply Desk App.command** once. It builds **Apply Desk.app**, installs it in `/Applications` (or `~/Applications`), and carries over any data from earlier versions. After that, open Apply Desk like any other app — from Launchpad, Spotlight, or the Dock. **Start Apply Desk.command** rebuilds first when the source has changed, then opens the app.
+**You need:** a Mac with Apple Silicon (M1 or newer), macOS 14 Sonoma or newer, and Google Chrome. Nothing else: Apply Desk carries its own Python, so there are no developer tools to install.
 
-Apply Desk opens at login by default and lives in the menu bar. Closing the window leaves it running in the background; quit it from the menu bar icon or with ⌘Q. Turn off **Open at Login** in the Apply Desk menu or the menu bar icon.
+1. **Download** `Apply-Desk-2.1-mac-arm64.zip` (about 30 MB) from the [latest release](https://github.com/ajeetb123/apply-desk/releases/latest).
+2. **Unzip it** (double-click the zip) and drag **Apply Desk** into **Applications**.
+3. **Clear the download mark, once.** Apply Desk isn't notarized by Apple (that takes a paid Apple Developer account), so macOS blocks it, and the Python inside it, until you allow it. Open **Terminal** (⌘Space, type "Terminal"), paste this line, and press Return:
+
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Apply Desk.app"
+   ```
+
+   It only removes the "downloaded from the internet" mark from Apply Desk's own files. If you skip it, macOS says *"Apple could not verify 'Apply Desk' is free of malware"*, and even after **Open Anyway** (System Settings → Privacy & Security) it still stops the built-in Python; Apply Desk then shows this same command to copy.
+4. **Open Apply Desk** from Applications. It lives in the menu bar and opens at login (turn that off with **Open at Login** in its menu). Closing the window leaves it running; quit from the menu bar icon or with ⌘Q.
+5. **Let it use Chrome.** The first time it reads a listing or you press `, macOS asks *"Apply Desk wants access to control Google Chrome"*: choose **OK**. Then in Chrome choose **View → Developer → Allow JavaScript from Apple Events**. Details are under [First-time Chrome setup](#first-time-chrome-setup).
+6. **Add your resume, then your Profile** ([Setup](#setup)). Drop your resume on the Resume page; Profile fills in its name, contact details, school, and dates. Then answer the common questions in Profile (work authorization, sponsorship, and so on). A question you leave blank is left for you on every form; nothing is guessed.
+7. **Optional: essay drafts from a model on your Mac.** Install [Ollama](https://ollama.com), run `ollama pull gemma4:12b` in Terminal (a download of several GB), and turn on Profile → **A model on this Mac**. It never leaves your computer.
+
+Press ` (top left, under Esc) on any application open in Chrome, review what it filled, and submit it yourself.
+
+- **Check the download (optional):** the release lists a SHA-256; `shasum -a 256 ~/Downloads/Apply-Desk-2.1-mac-arm64.zip` should print the same.
+- **Update:** quit Apply Desk, download the new zip, replace the app in Applications, and run the step 3 line again. Your data stays where it is.
+- **Uninstall:** quit Apply Desk, delete it from Applications, and delete `~/Library/Application Support/Apply Desk` to erase your resume, profile, roles, and answers.
 
 ## What it does
 
@@ -17,7 +35,7 @@ Apply Desk opens at login by default and lives in the menu bar. Closing the wind
   - on sign-in pages (it never types passwords), or when a page doesn't change after Continue.
 
   Press ` while it's running to stop right there, and press it again whenever you like: it continues, fills only what's still blank, and never changes what's already in a field. What you change by hand is learned for that exact question, and Apply Desk uses your answer from then on. On each page it fills every empty field it can answer truthfully:
-  - contact details, school, degree, GPA (Profile's GPA range only for a required list with no N/A; optional ones stay blank), when you started college (Profile → Started college) and graduate, "Current Degree Program", program length ("2.5 years": fall and spring semesters from start to graduation), and the credit hours you'll have when an internship starts (as a number, or the range holding it, like "90 or more"), in text boxes, dropdowns, Workday-style pop-up lists, type-to-search pickers, Yes/No buttons, and date boxes. Schools are matched by their official name ("Virginia Tech" → "Virginia Polytechnic Institute and State University"), and schools, majors, and states only take a close match ("Computer Science", never "Computer Science and Engineering Technology"; "Virginia", never "West Virginia");
+  - contact details, school, degree, GPA (Profile's GPA range only for a required list with no N/A; optional ones stay blank), when you started college (Profile → Started college) and graduate, "Current Degree Program", program length ("4 years": fall and spring semesters from start to graduation), and the credit hours you'll have when an internship starts (as a number, or the range holding it, like "90 or more"), in text boxes, dropdowns, Workday-style pop-up lists, type-to-search pickers, Yes/No buttons, and date boxes. Schools are matched by their official name ("Georgia Tech" → "Georgia Institute of Technology"), and schools, majors, and states only take a close match ("Computer Science", never "Computer Science and Engineering Technology"; "Virginia", never "West Virginia");
   - your **application answers** from Profile: work authorization, citizenship, sponsorship, clearance (held, or eligible to obtain), polygraph, U.S. government and DoD employment, foreign-official ties, current student, year in school, recent degree, how you heard, whether you worked there before (or work there now), current employment, other or outside employment, phone type, country, enrollment status, relatives employed, relocation, location preference, and working on-site. Your current employer and job title come from your resume's current job, so they stay up to date. A question you haven't answered in Profile is left for you. When "How did you hear about us?" has no option matching yours, it picks the closest one (career center, campus, university, career fair, job board…), opening categories when the list has them;
   - **links**: your GitHub goes in GitHub fields and in any website, portfolio, or URL field when you have no personal site (with `https://`). Workday's empty "Websites" section gets one entry for it;
   - **work experience and education** blocks, adding as many as your resume has, with each role description taken from your resume tuned for this job. When Workday has already filled them by reading your resume itself (its copy often runs words together, like "returnsJSON", or gets dates wrong), the text and dates are replaced with your resume's exact ones and marked in the review. Entries Workday added that aren't jobs or schools on your resume (a project read as a job) are listed in the review for you to delete;
@@ -44,7 +62,7 @@ Apply Desk opens at login by default and lives in the menu bar. Closing the wind
 
   **A resume always goes with it.** If you open an application without having looked at its listing first, Apply Desk finds the posting from the application page (Workday, Lever) so the resume is still tuned for it. If it can't find the posting, it attaches your resume as it is and says so.
 
-  Search boxes (school, skills, how you heard) are searched the way you would: type the name, press Enter. Schools are searched by their everyday name first ("Virginia Tech"), then the official one.
+  Search boxes (school, skills, how you heard) are searched the way you would: type the name, press Enter. Schools are searched by their everyday name first ("Georgia Tech"), then the official one.
 
   **The review panel** lists, page by page, everything Apply Desk filled, and puts first what deserves a second look: drafts it wrote, neutral picks, decline answers it chose for you, closest-option picks (like "How did you hear"), today's date used as a start date, answers reused from earlier applications, and any value that isn't shown beside its label on the review page (a pick that didn't take). Click a line to jump to it. Each question appears once, even if you press ` again. The same review is saved with the role under **What you sent**: one entry per role, so redoing an application updates it and keeps the answers from both runs.
 
@@ -108,6 +126,22 @@ Tuning follows these rules. It only puts your own lines in order; wording is you
 - [Jake's Resume on Overleaf](https://www.overleaf.com/latex/templates/jakes-resume/syzfjbzwjncs)
 - [r/EngineeringResumes](https://www.reddit.com/r/EngineeringResumes/) — XYZ/STAR/CAR bullets and Bitstream Charter as a font; useful peer feedback, not a representative hiring study.
 
+## Build from source
+
+For changing Apply Desk itself. You need the Xcode Command Line Tools (`xcode-select --install`). Double-click **Build Apply Desk App.command** once. It builds **Apply Desk.app** with the project's `.venv` Python, installs it in `/Applications` (or `~/Applications`), and carries over any data from earlier versions. **Start Apply Desk.command** rebuilds first when the source has changed, then opens the app.
+
+### Make a release
+
+1. Raise `VERSION` and `BUILD` at the top of **Build Apply Desk App.command**.
+2. Double-click **Package Apply Desk.command** (or run `./"Package Apply Desk.command"`). It builds the downloadable copy into `dist/`: a pinned standalone Python 3.12 ([python-build-standalone](https://github.com/astral-sh/python-build-standalone), checked against its SHA-256 and cached in `.cache/`) with Flask, pypdf, and python-docx inside, every program in it signed, and the zip's SHA-256 beside it. It installs nothing.
+3. Publish it: `gh release create v2.1 dist/Apply-Desk-2.1-mac-arm64.zip dist/Apply-Desk-2.1-mac-arm64.zip.sha256 --title "Apply Desk 2.1"`, with the SHA-256 in the notes.
+
+The package holds only the app's code: no profile, resume, or answers (those live in `~/Library/Application Support/Apply Desk`). It's signed ad hoc, so macOS asks the step 3 question above; signing with a Developer ID and notarizing (`notarytool`) would make it open with no warning.
+
 ## Tests
 
-Run `.venv/bin/python -m unittest discover -s tests -v` for the local API, profile, upload, matcher, role-review, and resume-tuning tests. Run **Build Apply Desk App.command** to compile and install the Mac app.
+Run `.venv/bin/python -m unittest discover -s tests -v` for the local API, profile, upload, matcher, role-review, and resume-tuning tests. Run **Build Apply Desk App.command** to compile and install the Mac app, and **Package Apply Desk.command** for the downloadable copy.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

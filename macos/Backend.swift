@@ -94,7 +94,11 @@ final class Backend {
     private func launch() -> Bool {
         guard let resources = Bundle.main.resourceURL else { return false }
         let backend = resources.appendingPathComponent("backend", isDirectory: true)
-        let python = Bundle.main.object(forInfoDictionaryKey: "ApplyDeskPython") as? String ?? "/usr/bin/python3"
+        // A downloaded build carries its own Python (Resources/python); a build
+        // made on this Mac names the Python it was built with.
+        let bundled = resources.appendingPathComponent("python/bin/python3")
+        let python = FileManager.default.isExecutableFile(atPath: bundled.path) ? bundled.path
+            : Bundle.main.object(forInfoDictionaryKey: "ApplyDeskPython") as? String ?? "/usr/bin/python3"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: python)
         process.arguments = ["-s", backend.appendingPathComponent("app.py").path]
@@ -105,6 +109,7 @@ final class Backend {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         environment["PYTHONPYCACHEPREFIX"] = caches.appendingPathComponent("Apply Desk/pycache").path
         environment.removeValue(forKey: "PYTHONDONTWRITEBYTECODE")
+        environment.removeValue(forKey: "PYTHONHOME")   // only the chosen Python's own library
         environment["PYTHONUNBUFFERED"] = "1"
         environment["APPLY_DESK_DATA"] = dataDirectory.path
         environment["APPLY_DESK_TOKEN"] = token
