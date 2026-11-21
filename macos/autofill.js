@@ -982,9 +982,11 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (norm(learned.question) === q || similar(learned.question, q) >= 0.8) return { values: learned.answer.split(/;\s*/), source: 'learned' };
     }
     if (claimed) return null;
-    // Screening questions with one sensible answer for the user's profile.
+    // Screening questions: the user's own background answers (blank: left for
+    // them, and nothing else may answer it) and answers that follow from Profile.
     for (const answer of plan.presumed || []) {
       if (!new RegExp(answer.pattern, 'i').test(q)) continue;
+      if (!answer.answer) return null;
       const number = answer.number && isText(el) && (el.type === 'number' || /^how many|number of years/.test(q));
       return { values: number ? [answer.number] : answer.options, source: answer.assumed ? 'presumed' : 'answer', key: answer.key };
     }
@@ -1847,7 +1849,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     && /^if\b|if applicable|please (enter|put|write) .?n.?a\b/.test(norm(question))
     && !/linkedin|url|link|website|twitter|e ?mail|phone|date|zip|postal|social security|\bssn\b|birth|password|gpa|name$|year|how many|number/.test(norm(question));
   // The user doesn't share LinkedIn: a required box says N/A (a URL-only box can't), an optional one stays out of the review.
-  const noLinkedIn = question => !p.linkedin && /linkedin/.test(norm(question));
+  // Profile → "I don't share LinkedIn": its fields get N/A or stay out of the review. Otherwise a blank one is the user's to fill.
+  const noLinkedIn = question => p.no_linkedin === 'Yes' && !p.linkedin && /linkedin/.test(norm(question));
   async function fillNeutral(needs) {
     for (const need of needs) {
       stopCheck();

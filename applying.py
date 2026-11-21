@@ -254,18 +254,21 @@ def follow_up_answers(profile: dict) -> list[dict]:
     return out
 
 
-# Screening questions with one sensible answer for someone with the user's
-# profile (a student who told Apply Desk: U.S. citizen, never in government or
-# the military, nothing else on file). `assumed` ones are a standard answer
-# rather than something the user said, and the filler flags them in the
-# review. They come after the user's own answers, which always win.
+# Screening questions, in the order the filler tries them. Entries with a
+# profile condition follow from another Profile answer (born in the U.S. →
+# never naturalized). Entries in BACKGROUND (condition None) are facts about
+# the person ("Have you ever been terminated?"): each user's own answer, from
+# Profile → Background questions or learned from what they answer on a form
+# (`background_key()`), blank on a new install so the form leaves them for the
+# user. The answer in the tuple is only the seed an install that was in use
+# before 2.2 keeps (`init_db`). They come after the user's exact answers.
 YES, NO = ["Yes"], ["No"]
 PRESUMED = [
     # (key, question pattern, answer, option labels, assumed, profile condition)
     ("criminal", r"convicted|felony|misdemeanor|criminal (record|history|offen[cs]e|charge)|plead(ed)? guilty|no contest", "No", NO, True, None),
-    # The user won't disclose an employer's confidential information and isn't held back by any agreement.
+    # A promise not to use a former employer's secrets: a certification, ticked with Profile → Terms and signatures.
     ("confidentiality_promise", r"^(?=.*(confidential|proprietary|trade secret|(former|previous|prior|past) employer)).*\bnot\b.{0,60}(disclose|use|bring|share|reveal|retain)|(willing|agree|able) to (sign|execute|enter).{0,60}(non ?disclosure|\bnda\b|confidentiality)",
-     "Yes", ["Yes", "I agree", "Agree", "I accept", "Accept", "I acknowledge", "Acknowledge", "I understand", "True"], False, None),
+     "Yes", ["Yes", "I agree", "Agree", "I accept", "Accept", "I acknowledge", "Acknowledge", "I understand", "True"], False, ("agree_terms", "yes")),
     ("noncompete", r"^(?!.*(willing|able) to sign).*(non ?compete|non ?solicit|non ?disclosure|\bnda\b|confidentiality (agreement|obligation)|restrictive covenant|(agreement|contract|obligation)s? .{0,80}(restrict|prevent|limit|prohibit|conflict)|bound by (any|an) )", "No", NO + ["N/A", "None"], False, None),
     ("terminated", r"(terminated|discharged|fired|dismissed|asked to resign|involuntarily (separated|terminated))", "No", NO, True, None),
     ("discipline", r"disciplinary action|academic (misconduct|probation|dishonesty)|been (suspended|expelled)", "No", NO, True, None),
@@ -302,7 +305,6 @@ PRESUMED = [
     ("under_18", r"under (the age of )?18|are you a minor", "No", NO, False, ("over_18", "yes")),
     ("english", r"fluent in english|english (proficiency|fluency|language)|proficien\w+ in english|speak(ing)? english|read,? write,? and speak english",
      "Yes", ["Yes", "Fluent", "Native", "Native or bilingual", "Native / Bilingual", "Advanced", "Full professional"], False, None),
-    # English is the only language the user speaks.
     ("other_languages", r"languages? other than english|(other|additional|second|foreign|another) languages?|bilingual|multilingual", "No", NO + ["None", "N/A"], False, None),
     ("languages", r"(what|which) languages? (do you|are you|can you)|languages? (spoken|you speak|fluent|proficiency)|language skills?|^languages?$", "English", ["English"], False, None),
     ("notice", r"notice period|how much notice", "N/A", ["N/A", "None", "Not applicable", "Immediately", "No notice", "2 weeks", "Two weeks"], True, None),
@@ -312,6 +314,59 @@ PRESUMED = [
     ("highest_education", r"^(?!.*(once|after|upon|when) (you.ve |you have |you )?(graduat|complet)).*(highest (level of )?education|education level|highest degree (completed|obtained|earned|attained)|level of education)",
      "High School", ["High School Diploma", "High School", "High school or equivalent", "High School/GED", "Secondary", "Some College", "GED"], False, ("degree_recent", "no")),
 ]
+
+
+# Background questions: (key, how Profile asks it, "yesno" or "text"). Each is a
+# fact about the person, so a new install starts blank and learns the user's
+# own answer; see PRESUMED for the patterns and the old seeds.
+BACKGROUND = [
+    ("criminal", "Ever convicted of a crime", "yesno"), ("terminated", "Ever fired or asked to resign", "yesno"),
+    ("discipline", "Ever disciplined, suspended, or on academic probation", "yesno"),
+    ("debarred", "Ever barred from government programs or contracts", "yesno"),
+    ("noncompete", "Bound by a non-compete, NDA, or similar agreement", "yesno"),
+    ("military_service", "Served in the military", "yesno"), ("military_spouse", "A military spouse", "yesno"),
+    ("unable_contribute", "Anything that would keep you from doing the job", "yesno"),
+    ("verify_identity", "Can show proof of identity and work eligibility", "yesno"),
+    ("offer_deadline", "Holding a competing offer with a deadline", "yesno"),
+    ("background_check", "Willing to take a background check or drug test", "yesno"),
+    ("essential_functions", "Can perform the job's essential functions", "yesno"),
+    ("full_availability", "Available for the whole internship or program", "yesno"),
+    ("referred", "Referred by an employee", "yesno"), ("travel", "Willing to travel", "yesno"),
+    ("transportation", "Have reliable transportation", "yesno"),
+    ("flexible_hours", "Willing to work overtime, weekends, or shifts", "yesno"),
+    ("meets_requirements", "Meet a posting's minimum requirements", "yesno"),
+    ("english", "Fluent in English", "yesno"), ("other_languages", "Speak a language other than English", "yesno"),
+    ("languages", "Languages you speak", "text"), ("notice", "Notice you'd give a current employer", "text"),
+    ("hours_per_week", "Hours a week you can work", "text"),
+]
+BACKGROUND_KEYS = [key for key, _, _ in BACKGROUND]
+# What an install in use before 2.2 answered: the PRESUMED tuple's answer.
+BACKGROUND_SEEDS = {key: answer for key, _, answer, _, _, condition in PRESUMED if condition is None}
+
+
+def background_key(question: str) -> str | None:
+    """The background fact a form question asks about, when no follow-up or
+    standard question owns it: the first PRESUMED pattern that matches, as in the filler."""
+    q = normalize_question(question)
+    if not q or standard_key(question) or any(re.search(pattern, q) for _, pattern, *_ in FOLLOW_UPS):
+        return None
+    for key, pattern, *_ in PRESUMED:
+        if re.search(pattern, q):
+            return key if key in BACKGROUND_KEYS else None
+    return None
+
+
+def background_value(key: str, answer: str) -> str:
+    """A form's option as the Profile answer: "No, I have never been convicted" is No."""
+    answer = re.sub(r"\s+", " ", answer or "").strip()
+    if dict((k, kind) for k, _, kind in BACKGROUND).get(key) == "text":
+        return answer
+    lower = answer.lower()
+    if re.match(r"(no|none|never|not)\b|i (have|do|am|will|did|was|would|could) not\b|i (haven.t|don.t|won.t|wasn.t|didn.t|can.t|cannot)\b", lower):
+        return "No"
+    if re.match(r"(yes|true)\b|i (have|do|am|will|did|was|would|can|agree)\b", lower):
+        return "Yes"
+    return answer
 
 
 def experience_months(experience: list[dict]) -> int:
@@ -359,6 +414,13 @@ def presumed_answers(profile: dict, education: list[dict], experience: list[dict
         out.append({"key": "nda_signed", "pattern": r"(have|did) you (ever )?(signed|executed|entered|been party).{0,60}(non ?disclosure|\bnda\b|confidentiality)",
                     "answer": "Yes", "options": YES, "assumed": False})
     for key, pattern, answer, options, assumed, condition in PRESUMED:
+        if key in BACKGROUND_KEYS:
+            # The user's own answer. Blank still claims the question, so nothing
+            # else (a draft, the model) answers it: the form leaves it for the user.
+            own = (profile.get(key) or "").strip()
+            choices = options if own and own.lower() == answer.lower() else [own] if own else []
+            out.append({"key": key, "pattern": pattern, "answer": own, "options": choices, "assumed": False})
+            continue
         if condition and (profile.get(condition[0]) or "").strip().lower() != condition[1]:
             continue
         out.append({"key": key, "pattern": pattern, "answer": answer, "options": options, "assumed": assumed})
@@ -968,7 +1030,7 @@ def model_questions(questions) -> list[dict]:
             number = int(item.get("id"))
         except (TypeError, ValueError):
             continue
-        if not question or not kind or re.search(MODEL_NEVER, question, re.I) or (kind in {"choice", "multi"} and len(options) < 2):
+        if not question or not kind or re.search(MODEL_NEVER, question, re.I) or background_key(question) or (kind in {"choice", "multi"} and len(options) < 2):
             continue
         out.append({"id": number, "kind": kind, "question": question, **({"options": options} if kind in {"choice", "multi"} else {})})
     return out

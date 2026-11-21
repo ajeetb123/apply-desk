@@ -6,7 +6,7 @@ Apply Desk is a native Mac app that runs quietly in the background. It knows onl
 
 **You need:** a Mac with Apple Silicon (M1 or newer), macOS 14 Sonoma or newer, and Google Chrome. Nothing else: Apply Desk carries its own Python, so there are no developer tools to install.
 
-1. **Download** `Apply-Desk-2.1-mac-arm64.zip` (about 30 MB) from the [latest release](https://github.com/ajeetb123/apply-desk/releases/latest).
+1. **Download** the `Apply-Desk-<version>-mac-arm64.zip` file (about 30 MB) from the [latest release](https://github.com/ajeetb123/apply-desk/releases/latest).
 2. **Unzip it** (double-click the zip) and drag **Apply Desk** into **Applications**.
 3. **Clear the download mark, once.** Apply Desk isn't notarized by Apple (that takes a paid Apple Developer account), so macOS blocks it, and the Python inside it, until you allow it. Open **Terminal** (⌘Space, type "Terminal"), paste this line, and press Return:
 
@@ -17,12 +17,12 @@ Apply Desk is a native Mac app that runs quietly in the background. It knows onl
    It only removes the "downloaded from the internet" mark from Apply Desk's own files. If you skip it, macOS says *"Apple could not verify 'Apply Desk' is free of malware"*, and even after **Open Anyway** (System Settings → Privacy & Security) it still stops the built-in Python; Apply Desk then shows this same command to copy.
 4. **Open Apply Desk** from Applications. It lives in the menu bar and opens at login (turn that off with **Open at Login** in its menu). Closing the window leaves it running; quit from the menu bar icon or with ⌘Q.
 5. **Let it use Chrome.** The first time it reads a listing or you press `, macOS asks *"Apply Desk wants access to control Google Chrome"*: choose **OK**. Then in Chrome choose **View → Developer → Allow JavaScript from Apple Events**. Details are under [First-time Chrome setup](#first-time-chrome-setup).
-6. **Add your resume, then your Profile** ([Setup](#setup)). Drop your resume on the Resume page; Profile fills in its name, contact details, school, and dates. Then answer the common questions in Profile (work authorization, sponsorship, and so on). A question you leave blank is left for you on every form; nothing is guessed.
+6. **Add your resume, then your Profile** ([Setup](#setup)). Drop your resume on the Resume page; Profile fills in its name, contact details, school, and dates. Then answer the common questions in Profile (work authorization, sponsorship, and so on). A question you leave blank is left for you on every form, and nothing is guessed; answer it once and Apply Desk remembers it. If you don't share LinkedIn, set Profile → Links → **LinkedIn on forms**.
 7. **Optional: essay drafts from a model on your Mac.** Install [Ollama](https://ollama.com), run `ollama pull gemma4:12b` in Terminal (a download of several GB), and turn on Profile → **A model on this Mac**. It never leaves your computer.
 
 Press ` (top left, under Esc) on any application open in Chrome, review what it filled, and submit it yourself.
 
-- **Check the download (optional):** the release lists a SHA-256; `shasum -a 256 ~/Downloads/Apply-Desk-2.1-mac-arm64.zip` should print the same.
+- **Check the download (optional):** the release lists a SHA-256; `shasum -a 256 ~/Downloads/Apply-Desk-*-mac-arm64.zip` should print the same.
 - **Update:** quit Apply Desk, download the new zip, replace the app in Applications, and run the step 3 line again. Your data stays where it is.
 - **Uninstall:** quit Apply Desk, delete it from Applications, and delete `~/Library/Application Support/Apply Desk` to erase your resume, profile, roles, and answers.
 
@@ -50,7 +50,8 @@ Press ` (top left, under Esc) on any application open in Chrome, review what it 
 
   It works on Workday, Greenhouse (including its searchable dropdowns), Lever, Ashby (Yes/No buttons), Jobvite, JazzHR, Pinpoint, Paylocity, and Oracle's first step. On BambooHR and Rippling it opens the application from the listing and fills the text fields, but their custom dropdowns are still yours. Hidden spam-trap fields are never filled. Dell's Oracle site emails you a code, and iCIMS and Workday need you signed in, so those steps are yours.
 
-  - **standard screening answers**, each marked in the review so you can change it: no criminal record, non-compete, or prior termination; no military service; yes to a background check, the full program dates, and returning to school; languages (English); degrees completed (none yet); years of experience (from your resume's dates). Your own Profile answers and answers you gave on earlier forms always win;
+  - **background questions**, only with your own answers: criminal record, non-compete or NDA, ever fired, military service, background checks, travel, hours, the languages you speak, and the rest under Profile → Background questions. A new install answers none of them, so a form leaves them for you; answer one once, on any form or in Profile, and Apply Desk uses it for every wording of that question ("Ever been terminated?", "Were you ever discharged?"). Nothing about you is guessed, and the local model is never asked these;
+  - **answers that follow from your Profile**, each marked in the review: born in the U.S. means never naturalized, a student returns to school after the internship, a first-year's internship isn't their last, degrees completed (none yet), years of experience (from your resume's dates). Your own Profile answers and answers you gave on earlier forms always win;
   - **salary**: "Negotiable", or the posting's own stated pay when it gives one. A number is typed only when the posting states it;
   - **essay questions get a draft, not a finished answer**: why this role, about yourself, your strongest accomplishments, a project, a cover letter, and "describe your X experience" (honestly: "I haven't used C++ in a project yet" when your resume doesn't show it). Drafts are your resume's own lines in plain first person. A prompt Apply Desk doesn't recognize gets the closest story from your resume, marked as a starting point to rewrite.
 
@@ -134,7 +135,7 @@ For changing Apply Desk itself. You need the Xcode Command Line Tools (`xcode-se
 
 1. Raise `VERSION` and `BUILD` at the top of **Build Apply Desk App.command**.
 2. Double-click **Package Apply Desk.command** (or run `./"Package Apply Desk.command"`). It builds the downloadable copy into `dist/`: a pinned standalone Python 3.12 ([python-build-standalone](https://github.com/astral-sh/python-build-standalone), checked against its SHA-256 and cached in `.cache/`) with Flask, pypdf, and python-docx inside, every program in it signed, and the zip's SHA-256 beside it. It installs nothing.
-3. Publish it: `gh release create v2.1 dist/Apply-Desk-2.1-mac-arm64.zip dist/Apply-Desk-2.1-mac-arm64.zip.sha256 --title "Apply Desk 2.1"`, with the SHA-256 in the notes.
+3. Publish it: `gh release create v<VERSION> dist/Apply-Desk-<VERSION>-mac-arm64.zip dist/Apply-Desk-<VERSION>-mac-arm64.zip.sha256 --title "Apply Desk <VERSION>"`, with the SHA-256 in the notes.
 
 The package holds only the app's code: no profile, resume, or answers (those live in `~/Library/Application Support/Apply Desk`). It's signed ad hoc, so macOS asks the step 3 question above; signing with a Developer ID and notarizing (`notarytool`) would make it open with no warning.
 

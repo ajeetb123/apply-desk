@@ -704,7 +704,9 @@ class ApplyDeskApiTests(unittest.TestCase):
 
     def test_real_form_questions_get_the_right_owner(self):
         self.client.post("/profile", data={"us_citizen": "Yes", "authorized_us": "Yes", "needs_sponsorship": "No", "born_in_us": "Yes", "class_year": "Freshman", "relatives": "None",
-                                           "currently_student": "Yes", "previously_employed": "No", "agreements_note": "I signed an NDA with Example Labs. It doesn't restrict this work."})
+                                           "currently_student": "Yes", "previously_employed": "No", "agreements_note": "I signed an NDA with Example Labs. It doesn't restrict this work.",
+                                           # This user's own background answers and Terms setting.
+                                           "agree_terms": "Yes", "other_languages": "No", "languages": "English", "noncompete": "No", "offer_deadline": "No", "verify_identity": "Yes"})
         plan = self.client.get("/api/fill-plan").json
         everything = plan["answers"] + plan["presumed"]
         for question, key, value in [
@@ -882,7 +884,7 @@ class ApplyDeskApiTests(unittest.TestCase):
         import re as regex
         applying = application.applying
         answers = {a["key"]: a for a in applying.presumed_answers(
-            {"us_citizen": "Yes", "currently_student": "Yes", "over_18": "Yes", "degree_recent": "No"}, [{"field": "Computer Science"}],
+            {"us_citizen": "Yes", "currently_student": "Yes", "over_18": "Yes", "degree_recent": "No", "criminal": "No"}, [{"field": "Computer Science"}],
             [{"start": {"year": "2026", "month": "05"}, "end": {"year": "2026", "month": "11"}}])}
         def claims(question):
             return next((key for key, a in answers.items() if regex.search(a["pattern"], question, regex.I)), None)
@@ -892,8 +894,9 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(claims("which degrees have you already completed, if any"), "degrees_completed")
         self.assertEqual(claims("do you have the right to work in the uk without sponsorship"), "other_country_work")
         self.assertEqual(claims("have you previously interned or worked at acme, or applied before"), "applied_before")
-        self.assertEqual(answers["criminal"]["answer"], "No")
-        self.assertTrue(answers["criminal"]["assumed"])
+        self.assertEqual(answers["criminal"]["answer"], "No")  # the user's own background answer
+        self.assertFalse(answers["criminal"]["assumed"])
+        self.assertEqual(answers["noncompete"]["answer"], "")  # not answered yet: claims its question, left for the user
         self.assertFalse(answers["degrees_completed"]["assumed"])  # follows from what the user said
         self.assertEqual((answers["years_experience"]["answer"], answers["years_experience"]["number"]), ("Less than 1 year", "1"))
         self.assertNotIn("other_citizenship", {a["key"] for a in applying.presumed_answers({}, [], [])})  # only for a stated citizen
@@ -1121,6 +1124,39 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(owner("What is your Current Degree Program?")["answer"], "Bachelor of Science in Computer Science")
         self.assertEqual(owner("How long is your degree program?")["answer"], "2.5 years")  # 5 semesters
         self.assertEqual(applying.program_years({"start": {"year": "2026", "month": "08"}, "end": {"year": "2030", "month": "05"}}), 4)
+
+    def test_background_answers_are_each_users_own_and_learned_by_topic(self):
+        applying = application.applying
+        # A new install answers none of them, and LinkedIn questions stay the user's.
+        p = application.profile()
+        self.assertEqual([p[key] for key in applying.BACKGROUND_KEYS], [""] * len(applying.BACKGROUND_KEYS))
+        self.assertEqual((p["no_linkedin"], p["target_roles"], p["role_campaigns"]), ("", "", ""))
+        plan = self.client.get("/api/fill-plan").json
+        criminal = next(a for a in plan["presumed"] if a["key"] == "criminal")
+        self.assertEqual((criminal["answer"], criminal["options"]), ("", []))
+        self.assertEqual(plan["profile"]["no_linkedin"], "")
+        # Nobody asks the model about them either.
+        self.assertEqual(applying.model_questions([{"id": 1, "kind": "choice", "question": "Have you ever been convicted of a felony?", "options": ["Yes", "No"]}]), [])
+        # One answer on a form becomes the answer for every wording of that question.
+        self.client.post("/api/answers", json={"answers": [{"question": "Have you ever been convicted of a felony or misdemeanor?", "answer": "No, I have never been convicted"},
+                                                           {"question": "What languages do you speak?", "answer": "English, Spanish"}]})
+        p = application.profile()
+        self.assertEqual((p["criminal"], p["languages"]), ("No", "English, Spanish"))
+        plan = self.client.get("/api/fill-plan").json
+        owner = lambda question: next(a for a in plan["presumed"] if re.search(a["pattern"], applying.normalize_question(question)))
+        self.assertEqual(owner("Do you have a criminal record?")["answer"], "No")
+        self.assertEqual(owner("Which languages are you fluent in?")["answer"], "English, Spanish")
+        self.assertIn('id="background"', self.client.get("/profile").get_data(as_text=True))
+
+    def test_an_install_in_use_keeps_its_answers_when_updated(self):
+        import sqlite3
+        self.add_resume("Riley Chen\nEXPERIENCE\nExample Labs    2026 – Present\nSWE Intern    Remote\n• Answered tickets")
+        with sqlite3.connect(application.DB) as conn:  # as if made by a version before background answers
+            conn.execute("DELETE FROM profile WHERE key IN (%s)" % ",".join("?" * len(application.applying.BACKGROUND_KEYS + ["no_linkedin"])),
+                         application.applying.BACKGROUND_KEYS + ["no_linkedin"])
+        application.init_db()
+        p = application.profile()
+        self.assertEqual((p["criminal"], p["languages"], p["travel"], p["no_linkedin"]), ("No", "English", "Yes", "Yes"))
 
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})

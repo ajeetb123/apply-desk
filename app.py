@@ -51,7 +51,7 @@ LINK_FIELDS = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("website", "Port
 # Values the Mac app may type into clearly labeled, empty application fields.
 AUTOFILL_FIELDS = [key for key, _ in CONTACT_FIELDS + EDUCATION_FIELDS + LINK_FIELDS]
 PROFILE_FIELDS = AUTOFILL_FIELDS + ["target_roles", "skills", "career_goals", "role_campaigns", "larp"] + [
-    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS] + applying.DISCLOSURE_KEYS + ["agree_terms", "use_model"]
+    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS] + applying.DISCLOSURE_KEYS + ["agree_terms", "use_model", "no_linkedin"] + applying.BACKGROUND_KEYS
 # A model running on this Mac (Ollama). Only this address is ever used, so
 # nothing the user has entered leaves the computer.
 OLLAMA = "http://127.0.0.1:11434"
@@ -101,13 +101,25 @@ def init_db():
             "postal_code": "", "address": "", "work_authorization": "",
             "linkedin": "", "github": "", "website": "",
             "watch_path": "", "watch_hash": "",
-            "target_roles": "Software Engineering Intern, Backend Engineer Intern",
+            "target_roles": "",
             "skills": "",
             "career_goals": "",
-            "role_campaigns": "Wave 1, Wave 2, Defense, Seed-stage startups",
+            "role_campaigns": "",
             "larp": "2", "gpa": "", "gpa_range": "", "preferred_start": "", "college_start": "",
         }
         defaults.update({spec["key"]: spec["default"] for spec in applying.STANDARD_QUESTIONS if spec["key"] not in defaults})
+        # 2.2: background answers ("Ever convicted?", "Languages you speak") and
+        # "I don't share LinkedIn" became each user's own. An install already in
+        # use keeps what it answered until now; a new one starts blank, so forms
+        # leave those questions for the user, and learns their answers.
+        known = {row[0] for row in conn.execute("SELECT key FROM profile")}
+        in_use = conn.execute("SELECT EXISTS(SELECT 1 FROM resume) OR EXISTS(SELECT 1 FROM applications)").fetchone()[0]
+        for key in applying.BACKGROUND_KEYS:
+            if key not in known:
+                conn.execute("INSERT INTO profile(key,value) VALUES(?,?)", (key, applying.BACKGROUND_SEEDS[key] if in_use else ""))
+        if "no_linkedin" not in known:
+            linkedin = conn.execute("SELECT value FROM profile WHERE key='linkedin'").fetchone()
+            conn.execute("INSERT INTO profile(key,value) VALUES('no_linkedin',?)", ("Yes" if in_use and not (linkedin and linkedin[0].strip()) else "",))
         for key, value in defaults.items():
             conn.execute("INSERT OR IGNORE INTO profile(key,value) VALUES(?,?)", (key, value))
         # Additive migration for databases created by earlier Apply Desk versions.
@@ -1104,7 +1116,7 @@ def profile_page():
         with db() as conn:
             learned = [dict(r) for r in conn.execute("SELECT id, label, answer, updated FROM answers ORDER BY updated DESC")]
         return render_template("profile.html", page="profile", title="Profile", profile=profile(), learned=learned, local_models=local_models(),
-                               standard=applying.STANDARD_QUESTIONS, disclosures=applying.DISCLOSURE_QUESTIONS,
+                               standard=applying.STANDARD_QUESTIONS, disclosures=applying.DISCLOSURE_QUESTIONS, background=applying.BACKGROUND,
                                groups=[("Contact", "Used to fill application forms.", CONTACT_FIELDS),
                                        ("Education", "Checked against graduation windows.", EDUCATION_FIELDS),
                                        ("Links", "Filled into LinkedIn, GitHub, and portfolio fields.", LINK_FIELDS)],
@@ -1492,6 +1504,7 @@ def api_fill_plan():
         learned = [{"question": r["question"], "answer": r["answer"]} for r in conn.execute("SELECT question, answer FROM answers")]
     contact = {key: p.get(key, "") for key in AUTOFILL_FIELDS}
     contact["state_options"] = applying.state_options(p.get("state", ""))
+    contact["no_linkedin"] = p.get("no_linkedin", "")
     contact["graduation_dates"] = applying.date_formats(applying.parse_month_year(p.get("graduation", "")))
     education = applying.education_entries(sections, p)
     experience = applying.experience_entries(sections)
@@ -1642,6 +1655,16 @@ def api_learn_answers():
     with db() as conn:
         for item in items[:60]:
             question, answer = str(item.get("question", ""))[:300], str(item.get("answer", "")).strip()[:160]
+            # A background question ("Have you ever been convicted? If yes, explain"): the answer
+            # becomes the user's Profile answer for that topic, used for every wording of it.
+            topic = applying.background_key(question)
+            if topic and not item.get("corrected") and len(answer) <= 80 and not re.search(applying.NEVER, applying.normalize_question(question)):
+                if not p.get(topic):
+                    value = applying.background_value(topic, answer)
+                    conn.execute("INSERT INTO profile(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (topic, value))
+                    p[topic] = value
+                    saved += 1
+                continue
             if not applying.learnable(question, answer):
                 continue
             # The user changed this on a form: their word for this exact question, over any rule.

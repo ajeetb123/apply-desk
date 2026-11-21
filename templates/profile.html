@@ -23,6 +23,7 @@
         <header class="panel-head"><div><h2>{{ title }}</h2><p class="sub">{{ note }}</p></div></header>
         <div class="fields">
           {% for key, label in fields %}<label class="{{ 'wide' if key in wide }}"><span>{{ label }}</span><input name="{{ key }}" value="{{ profile.get(key, '') }}" placeholder="{{ placeholders.get(key, '') }}" autocomplete="off" spellcheck="false" data-fill-source="{{ key }}"></label>{% endfor %}
+          {% if title == 'Links' %}<label class="wide"><span>LinkedIn on forms</span><select name="no_linkedin"><option value="">Leave LinkedIn questions for me when it's blank</option><option{{ ' selected' if profile.get('no_linkedin') == 'Yes' }} value="Yes">I don't share LinkedIn: type N/A where a form requires it</option></select></label>{% endif %}
         </div>
       </section>
       {% endfor %}
@@ -35,6 +36,18 @@
             {% if q.key in yesno %}<select name="{{ q.key }}"><option value="">Ask me each time</option>{% for option in ('Yes', 'No') %}<option{{ ' selected' if profile.get(q.key) == option }}>{{ option }}</option>{% endfor %}</select>
             {% elif q.key == 'class_year' %}<select name="{{ q.key }}"><option value="">Ask me each time</option>{% for option in ('Freshman', 'Sophomore', 'Junior', 'Senior', 'Graduate student') %}<option{{ ' selected' if profile.get(q.key) == option }}>{{ option }}</option>{% endfor %}</select>
             {% else %}<input name="{{ q.key }}" value="{{ profile.get(q.key, '') }}" placeholder="{{ hints.get(q.key, '') }}" autocomplete="off">{% endif %}
+          </label>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel" id="background" data-reveal style="--i:6">
+        <header class="panel-head"><div><h2>Background questions</h2><p class="sub">Facts about you that forms ask in many wordings. Leave one on "Ask me each time" and Apply Desk leaves it for you; answer it once on any form and it's saved here and used for every wording of that question.</p></div></header>
+        <div class="fields">
+          {% for key, label, kind in background %}
+          <label class="{{ '' if kind == 'yesno' else 'wide' }}"><span>{{ label }}</span>
+            {% if kind == 'yesno' %}<select name="{{ key }}"><option value="">Ask me each time</option>{% for option in ('Yes', 'No') %}<option{{ ' selected' if profile.get(key) == option }}>{{ option }}</option>{% endfor %}</select>
+            {% else %}<input name="{{ key }}" value="{{ profile.get(key, '') }}" placeholder="Ask me each time" autocomplete="off">{% endif %}
           </label>
           {% endfor %}
         </div>
