@@ -394,7 +394,8 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(skills, ["Languages: TypeScript, SQL, Python", "Frameworks: React, FastAPI, pandas"])  # the rest keep the resume's order
         projects, experience, skills = order("Machine Learning Intern", "Train models in Python. " * 3)
         self.assertEqual(projects[0], "Churn Model")
-        self.assertEqual(skills[1], "Frameworks: pandas, FastAPI, React")
+        self.assertTrue(skills[1].startswith("Frameworks: pandas, FastAPI, React"))
+        self.assertIn("Machine learning", skills[1])  # the churn model shows it; the resume never named it
         projects, experience, skills = order("Backend Engineer Intern", "Build REST APIs with PostgreSQL. " * 3)
         self.assertEqual(projects[0], "Ticket API")
         self.assertEqual(experience, ["Example Labs", "Acme"])  # experience keeps the resume's order
@@ -1103,7 +1104,8 @@ class ApplyDeskApiTests(unittest.TestCase):
         owners = {"Are you a citizen of the United States?": "us_citizen",
                   "Did you previously work for Example Corp (including its predecessors or any of its businesses) in any capacity?": "previously_employed",
                   "Are you a CURRENT U.S. federal government civilian or military (active duty or reserves) employee?": "government_employee",
-                  "Are you a FORMER U.S. federal government civilian or military (active duty or reserves) employee?": "government_employee"}
+                  "Are you a FORMER U.S. federal government civilian or military (active duty or reserves) employee?": "government_employee",
+                  "Please provide the name/s of any relatives currently employed at Example Corp.": "relatives"}
         for question, key in owners.items():
             self.assertEqual(applying.standard_key(question), key, question)
         self.assertIsNone(applying.standard_key("Are you a dual citizen of the United States and another country?"))
@@ -1157,6 +1159,51 @@ class ApplyDeskApiTests(unittest.TestCase):
         application.init_db()
         p = application.profile()
         self.assertEqual((p["criminal"], p["languages"], p["travel"], p["no_linkedin"]), ("No", "English", "Yes", "Yes"))
+
+    KEYWORD_RESUME = ("Riley Chen\nEXPERIENCE\nExample Labs    2026 – Present\nSWE Intern    Remote\n"
+                      "• Built a Python/FastAPI endpoint that returns JSON\n• Added 20 unittest cases for the endpoint\n"
+                      "PROJECTS\nTrail Map | TypeScript, React, Express | 2026\n• Built a web app with an Express API that draws trails\n"
+                      "TECHNICAL SKILLS\nLanguages: Python, TypeScript, SQL\nTools: Git, pytest")
+    KEYWORD_POSTING = ("About the role\nJoin the rest of our team.\nBasic Qualifications\nExperience building RESTful APIs\nFamiliarity with unit testing\n"
+                       "Preferred Qualifications:\nExperience with Node.js\nExperience with AWS\n")
+
+    def test_posting_skills_are_matched_and_at_most_two_believable_ones_added(self):
+        tuned = application.tune_resume(self.KEYWORD_RESUME, self.KEYWORD_POSTING, "Backend Engineer Intern")
+        status = {s["name"]: s for s in tuned["skills"]}
+        self.assertEqual(status["REST APIs"]["asked"], "required")
+        self.assertEqual(status["AWS"]["status"], "missing")  # nothing shows it: never added
+        self.assertNotIn("AWS", tuned["text"])
+        self.assertEqual(len(tuned["added"]), 2)
+        added = {a["name"]: a for a in tuned["added"]}
+        self.assertEqual(set(added), {"REST APIs", "Unit testing"})  # required ones first; Node.js waits
+        self.assertEqual(added["REST APIs"]["entry"], "Trail Map")
+        self.assertIn("Tools: Git, pytest, REST APIs, Unit testing", tuned["text"])
+        # Nothing else changes: every original line is still there, word for word.
+        for line in ("• Built a Python/FastAPI endpoint that returns JSON", "• Added 20 unittest cases for the endpoint"):
+            self.assertIn(line, tuned["text"])
+        self.assertTrue(any(c["kind"] == "skills" and "REST APIs" in c["note"] for c in tuned["changes"]))
+        # "the rest of our team" isn't REST.
+        self.assertNotIn("REST APIs", {s["name"] for s in application.tailoring.posting_skills("Intern", "Join the rest of our team.")})
+
+    def test_a_tool_goes_in_the_tech_list_of_the_project_that_shows_it(self):
+        posting = "Preferred Qualifications:\nExperience with Node.js\nExperience with Kubernetes\n"
+        tuned = application.tune_resume(self.KEYWORD_RESUME, posting, "Software Engineering Intern")
+        self.assertIn("Trail Map | TypeScript, React, Express, Node.js | 2026", tuned["text"])
+        self.assertNotIn("Kubernetes", tuned["text"])
+        latex = (r"\begin{document}\section{Projects}\resumeSubHeadingListStart" "\n"
+                 r"\resumeProjectHeading{\textbf{Trail Map} $|$ \emph{TypeScript, React, Express}}{2026}" "\n"
+                 r"\resumeItemListStart\resumeItem{Built a web app with an Express API}\resumeItemListEnd\resumeSubHeadingListEnd" "\n"
+                 r"\section{Technical Skills}\textbf{Languages}{: Python, SQL}\end{document}")
+        tuned = application.tune_resume(latex, posting, "Software Engineering Intern")
+        self.assertIn(r"\emph{TypeScript, React, Express, Node.js}", tuned["text"])
+
+    def test_role_page_lists_the_posting_skills(self):
+        self.add_resume(self.KEYWORD_RESUME)
+        job_id = self.client.post("/api/evaluate", json={"title": "Backend Engineer Intern", "company": "Acme", "description": self.KEYWORD_POSTING * 2}).json["saved_job_id"]
+        page = self.client.get(f"/job/{job_id}").get_data(as_text=True)
+        self.assertIn("Skills, matched to your work", page)
+        self.assertIn("Nothing on your resume shows it", page)  # AWS
+        self.assertIn("Added to your Skills", page)
 
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})

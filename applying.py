@@ -44,6 +44,8 @@ STANDARD_QUESTIONS = [
      "pattern": r"post.?government|(employed|worked) (by|for|with) (the |a )?(u\.? ?s\.? |united states |federal )?government|government employ|federal (government )?(employ|service)|civil servant|\b(current|former|currently|formerly)\b.{0,20}\b(u\.? ?s\.? )?federal\b.{0,80}\bemployee"},
     {"key": "heard_about", "label": "How you heard about roles", "default": "",
      "pattern": r"how did you (hear|learn|find)|how you (heard|learned|found)|hear about (us|this)|where did you (hear|find|learn)|referral source|^source$|candidate source"},
+    # Before previously_employed: "relatives currently employed at Acme" is about relatives.
+    {"key": "relatives", "label": "Relatives employed there", "default": "", "pattern": r"relative|family members?|close personal relationship"},
     {"key": "previously_employed", "label": "Previously worked for the employer", "default": "",
      "pattern": r"former .{0,40}(employee|contractor|intern)\b|(held|had|completed) (a |an |any )?(prior|previous|past) internship|^(?!.*\bapplied\b).*((previously|ever|formerly) (worked|interned|been employed|employed|work (for|at))|former employee)|worked (for|at) (this|our|the) (organization|company)|current or former (employee|intern)|(currently|presently) (employed|working) (by|for|at|with)"},
     {"key": "currently_employed", "label": "Currently employed", "default": "",
@@ -74,7 +76,6 @@ STANDARD_QUESTIONS = [
     {"key": "degree_recent", "label": "Earned a degree in the last 2 years", "default": "",
      "pattern": r"(obtain|obtained|earn|earned|receive|received|complete|completed|graduate|graduated)( this| your| a)?( degree)? (with)?in the (last|past) \d+ (months|years)|recent graduate"},
     {"key": "over_18", "label": "18 or older", "default": "", "pattern": r"(18|eighteen) (years|or older)|at least 18|over (the age of )?18"},
-    {"key": "relatives", "label": "Relatives employed there", "default": "", "pattern": r"relative|family members?|close personal relationship"},
     {"key": "location_preference", "label": "Work locations you'd take", "default": "",
      "pattern": r"location preference|preferred (work )?locations?|(which|what) (of (our|these|the following) )?(locations?|offices?|sites?)|where would you (like|prefer|want) to (work|be located|be based)|indicate your location|desired (work )?locations?"},
     {"key": "relocate", "label": "Willing to relocate", "default": "", "pattern": r"relocat"},

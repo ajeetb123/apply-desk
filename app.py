@@ -614,6 +614,90 @@ def project_order(projects: list[str], kind: str, posting_terms: list[str]) -> l
     return sorted(range(len(projects)), key=lambda i: -scores[i])
 
 
+def resume_entries(sections) -> list[dict]:
+    """Experiences, projects, and coursework as {label, kind, text}: the work a
+    posting's skills are matched against (awards and certifications aren't work)."""
+    out = []
+    for section in sections:
+        if section["kind"] == "education":
+            text = "\n".join(line for entry in section["entries"] for line in entry["header"] + [b["text"] if isinstance(b, dict) else b for b in entry["bullets"]])
+            if re.search(r"coursework|courses", text, re.I):
+                out.append({"label": "Coursework", "kind": "education", "text": text})
+            continue
+        if section["kind"] == "skills":
+            # Shows a related tool ("Git" for GitHub, TypeScript for JavaScript), counted after any experience or project.
+            out.append({"label": "Skills", "kind": "skills", "text": "\n".join(line for entry in section["entries"] for line in entry["header"] + [b["text"] if isinstance(b, dict) else b for b in entry["bullets"]])})
+            continue
+        if section["kind"] not in {"experience", "projects"} or re.search(r"award|honou?r|competition|certif|publication", section["title"], re.I):
+            continue
+        for entry in section["entries"]:
+            if entry["header"]:
+                lines = entry["header"] + [b["text"] if isinstance(b, dict) else b for b in entry["bullets"]]
+                out.append({"label": entry_label(entry), "kind": section["kind"], "text": "\n".join(lines)})
+    return out
+
+
+SKILL_LINES = {"languages": r"language", "frameworks": r"framework|librar", "tools": r"tool|technolog|database|platform|developer|other"}
+
+
+def skill_line(lines: list[str], category: str) -> int:
+    """Which "Label: items" line a skill of this category belongs on (the last line when none fits)."""
+    for wanted in (category, "tools"):
+        for index, line in enumerate(lines):
+            if re.search(SKILL_LINES[wanted], line.partition(":")[0], re.I):
+                return index
+    return len(lines) - 1
+
+
+def add_skill_text(sections, add: dict) -> str:
+    """Put one skill on a plain-text resume: a tool in the tech list of the project
+    that shows it, anything else on the matching Skills line. Returns where it went ("" if nowhere)."""
+    if add["entry_kind"] == "projects" and add.get("tool"):
+        for section in sections:
+            for entry in section["entries"] if section["kind"] == "projects" else []:
+                if not entry["header"] or entry_label(entry) != add["entry"]:
+                    continue
+                name, bar, rest = entry["header"][0].partition(" | ")
+                if not bar:
+                    break
+                ends = [i for i in (rest.find(" | "), rest.find("    ")) if i >= 0]
+                cut = min(ends) if ends else len(rest)
+                tech, tail = rest[:cut], rest[cut:]
+                award = re.search(r"\s+\d+(?:st|nd|rd|th)\b.*$", tech)  # an award the PDF ran into the list
+                core, award_text = (tech[:award.start()], tech[award.start():]) if award else (tech, "")
+                entry["header"][0] = f"{name}{bar}{core.rstrip(' ,')}, {add['name']}{award_text}{tail}"
+                return f"{add['entry']}'s tech list"
+    slots = [(entry, key, index) for section in sections if section["kind"] == "skills" for entry in section["entries"]
+             for key in ("header", "bullets") for index in range(len(entry[key])) if ":" in entry[key][index]]
+    if not slots:
+        return ""
+    entry, key, index = slots[skill_line([e[k][i] for e, k, i in slots], add["category"])]
+    label, _, items = entry[key][index].partition(":")
+    entry[key][index] = f"{label}: {items.strip().rstrip(',')}, {add['name']}"
+    return f"your Skills ({label.strip()})"
+
+
+def add_skill_latex(source: str, add: dict) -> tuple[str, str]:
+    """add_skill_text for a Jake's LaTeX resume: the project's \\emph tech list, else a \\textbf{Label}{: ...} line."""
+    skill = latex_escape(add["name"])
+    if add["entry_kind"] == "projects" and add.get("tool"):
+        for match in re.finditer(r"\\resumeProjectHeading\b", source):
+            groups, end = read_groups(source, match.end(), 1)
+            if not groups or not latex_plain(groups[0]).startswith(add["entry"]):
+                continue
+            emph = re.search(r"\\emph\{([^{}]*)\}", groups[0])
+            if not emph:
+                break
+            start = source.index("{", match.end()) + 1
+            heading = groups[0][:emph.start(1)] + emph.group(1).rstrip(" ,") + ", " + skill + groups[0][emph.end(1):]
+            return source[:start] + heading + source[start + len(groups[0]):], f"{add['entry']}'s tech list"
+    lines = [m for m in re.finditer(r"\\textbf\{([^{}]*)\}\{:\s*([^{}]*)\}", source) if latex_section_at(source, m.start()) == "skills"]
+    if not lines:
+        return source, ""
+    m = lines[skill_line([f"{latex_plain(x.group(1))}: x" for x in lines], add["category"])]
+    return source[:m.end(2)].rstrip(" ,") + ", " + skill + source[m.end(2):], f"your Skills ({latex_plain(m.group(1))})"
+
+
 def tune_text_resume(text: str, kind: str, posting: str, terms):
     preamble, sections = text_outline(text)
     changes = []
@@ -692,6 +776,22 @@ def tune_resume(text: str, description: str, title: str = ""):
     terms = tuning_terms(description, title)
     latex = is_latex(text)
     tuned, changes = tune_latex_resume(text, kind, posting, terms) if latex else tune_text_resume(text, kind, posting, terms)
+    # The posting's skills, each matched to the experience or project that shows it
+    # best; the one or two most important ones the user's work shows but the
+    # resume never names are added there. Far-fetched ones are only listed.
+    matches = tailoring.match_skills(tailoring.posting_skills(title, description), resume_entries(resume_outline(text)[1]), resume_plain(text))
+    added = []
+    for add in tailoring.skills_to_add(matches):
+        if latex:
+            tuned, where = add_skill_latex(tuned, add)
+        else:
+            preamble, sections = text_outline(tuned)
+            where = add_skill_text(sections, add)
+            tuned = outline_text(preamble, sections) if where else tuned
+        if where:
+            add.update(status="added", where=where)
+            added.append(add)
+            changes.append(change("skills", add["entry"], f"Added {add['name']} to {where}: the posting asks for it ({add['asked']}), and {add['entry']} shows it ({add['evidence']})."))
     preamble, sections = resume_outline(tuned)
     plain = outline_text(preamble, sections)
     present = term_hits(plain, terms)
@@ -699,7 +799,8 @@ def tune_resume(text: str, description: str, title: str = ""):
         for entry in section["entries"]:
             entry["bullets"] = [{"text": bullet, "hits": len(term_hits(bullet, present))} for bullet in entry["bullets"]]
     return {"text": tuned, "extension": "tex" if latex else "txt", "preamble": preamble, "sections": sections,
-            "changes": changes, "terms": present, "kind": kind, "kind_name": tailoring.TYPE_NAMES[kind]}
+            "changes": changes, "terms": present, "kind": kind, "kind_name": tailoring.TYPE_NAMES[kind],
+            "skills": matches[:16], "added": added}
 
 
 def highlight(text: str, terms) -> Markup:

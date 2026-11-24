@@ -81,10 +81,30 @@
   </section>
 </div>
 
+{% if tuned and tuned.skills %}
+<section class="panel skill-map-panel" id="skills" data-reveal style="--i:5">
+  <header class="panel-head"><div><p class="eyebrow">{{ ui.icon('sparkle') }} What this posting asks for</p><h2>Skills, matched to your work</h2><p class="sub">Each skill the posting names, most important first, with the experience or project that shows it best. Up to two the posting wants and your work shows, but your resume never names, are added to the tuned resume. Anything your work doesn't show is left off.</p></div></header>
+  <ul class="skill-map">
+    {% for s in tuned.skills %}
+    <li class="skill-row skill-{{ s.status }}" style="--i: {{ loop.index0 }}">
+      <b>{{ s.name }}</b>
+      <span class="skill-asked">{{ {'required': 'Required', 'preferred': 'Preferred', 'mentioned': 'Mentioned'}[s.asked] }}</span>
+      <span class="skill-where">
+        {% if s.status == 'added' %}<em>Added to {{ s.where }}</em> · {{ s.entry }} shows it ({{ s.evidence }})
+        {% elif s.status == 'named' %}On your resume{% if s.entry and s.entry != 'Skills' %} · {{ s.entry }}{% endif %}
+        {% elif s.status == 'shown' %}{{ s.entry }} shows it ({{ s.evidence }}){% if not s.listable %}, not a skills-list item{% endif %}, not added
+        {% else %}Nothing on your resume shows it, so it's left off{% endif %}
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 {% set kinds = {'order': 'Order', 'wording': 'Wording', 'title': 'Title', 'skills': 'Skills'} %}
 <section class="panel tuned" id="tuned" data-reveal style="--i:6">
   <header class="panel-head">
-    <div><p class="eyebrow">{{ ui.icon('sparkle') }} Tuned for this role</p><h2>Your {{ tuned.kind_name if tuned else '' }} resume for {{ job.company or 'this role' }}</h2><p class="sub">Same template, same words. Apply Desk read this posting as a {{ tuned.kind_name if tuned else 'software engineering' }} job and put your skills and projects in order for it, most important first. Experience keeps your order, and nothing is reworded or added.</p></div>
+    <div><p class="eyebrow">{{ ui.icon('sparkle') }} Tuned for this role</p><h2>Your {{ tuned.kind_name if tuned else '' }} resume for {{ job.company or 'this role' }}</h2><p class="sub">Same template, same words. Apply Desk read this posting as a {{ tuned.kind_name if tuned else 'software engineering' }} job and put your skills and projects in order for it, most important first. Experience keeps your order and nothing is reworded; at most two skills the posting asks for and your work shows are added (see Skills, matched to your work).</p></div>
     {% if tuned %}<div class="head-actions">
       <button class="button ghost" type="button" data-copy="tuned-source">{{ ui.icon('copy') }}<span>Copy</span></button>
       <a class="button ghost" href="/job/{{ job.id }}/tuned">{{ ui.icon('download') }}<span>.{{ tuned.extension }}</span></a>

@@ -1357,7 +1357,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const el = event.target;
       // Ignore everything while Apply Desk is filling: the browser marks the
       // change events its typing causes as trusted too.
-      if (window.__applyDeskBusy || !event.isTrusted || !el || !el.closest || el.type === 'file' || el.type === 'password') return;
+      if (window.__applyDeskBusy || !event.isTrusted || !el || !el.closest || el.type === 'file' || el.type === 'password' || isDatePart(el)) return;
       try {
         const seen = JSON.parse(sessionStorage.getItem('applyDeskSeen') || '{}');
         const value = el.type === 'radio' ? (el.checked ? textOf(el.labels && el.labels[0]) : '')
@@ -1498,7 +1498,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         continue;
       }
       const value = answeredValue(el);
-      if (value) { remember(question, value); continue; }
+      // A date's month, day, or year box alone ("24") is never an answer to learn.
+      if (value) { if (!isDatePart(el)) remember(question, value); continue; }
       const detail = detailOf(el);
       await fillControl(el, question, wanted(el, question) || (detail ? wanted(el, `${question} ${detail}`) : null));
     }

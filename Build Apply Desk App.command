@@ -8,8 +8,8 @@ set -euo pipefail
 ROOT="${0:A:h}"
 PACKAGE=0
 [[ "${1:-}" == "--package" ]] && PACKAGE=1
-VERSION="2.2"
-BUILD="4"
+VERSION="2.3"
+BUILD="5"
 BUNDLE_ID="com.ajeet.applydesk"
 APP_NAME="Apply Desk.app"
 DATA="$HOME/Library/Application Support/Apply Desk"

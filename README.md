@@ -73,7 +73,8 @@ Press ` (top left, under Esc) on any application open in Chrome, review what it 
 - **Tunes your resume for the kind of job, not each posting.** Like keeping a frontend, a backend, and an ML version of one resume: the title (or, for a plain "Software Engineering Intern", the posting) says whether the job is frontend, backend, full-stack, ML and AI, data, mobile, systems, or general. Tuning then:
   - orders the skills on each Skills line most important first for that kind of job (skills the posting names break ties; the rest keep your order);
   - orders your projects most relevant first (the kind of work each one shows, the posting's own terms, then the skills it uses);
-  - keeps experience in your order, and every bullet exactly as you wrote it. Nothing is reworded, and nothing is added.
+  - keeps experience in your order, and every bullet exactly as you wrote it. Nothing is reworded;
+  - reads the skills the posting asks for (its required and preferred qualifications count most) and matches each to the experience or project that shows it best. Up to two the posting wants, that your work shows, but your resume never names are added: a tool to the tech list of the project that uses it ("HTML" for a React app), anything else to your Skills line ("REST APIs" when a project has an Express API). A skill nothing on your resume shows (AWS with no cloud work) is never added. The role page lists every skill with where it stands.
 
   Every move appears under **What changed**. The preview is the exact page that gets sent.
 - **A new resume replaces the old one everywhere.** Upload it on the Resume page (or let Apply Desk watch its file): every fill and tuned resume uses it from then on, and the Profile facts it states (name, email, phone, GitHub, website, school, degree, when you started college, graduation) are replaced, with a note saying which. Your answers to questions like clearance and citizenship, your self-identification, your home address, and LinkedIn are never taken from a resume.
@@ -107,7 +108,7 @@ Your resume versions, profile, saved roles, and notes live in `~/Library/Applica
 
 ## Resume-writing choices
 
-Tuning follows these rules. It only puts your own lines in order; wording is yours (adding numbers, rewriting a weak bullet).
+Tuning follows these rules. It puts your own lines in order and adds at most two skills your work already shows; wording is yours (adding numbers, rewriting a weak bullet).
 
 - **Jake's Resume is the template.** A LaTeX resume keeps its preamble, every command, and every word; only the order of skills and projects changes. PDFs are drawn with Jake's measurements (11pt base, 10pt items, small-caps 12pt section titles over a rule, 0.5in margins) in Computer Modern when installed, otherwise Charter.
 - **One page, at least 10pt.** Spacing tightens before content spills to a second page, and the role page warns when it still does.
