@@ -64,6 +64,11 @@ STANDARD_QUESTIONS = [
      "pattern": r"^(if (yes|so)\b|please (describe|explain|list|provide|specify)|describe|explain|list|provide)\b.{0,120}(non ?disclosure|\bnda\b|non ?compete|restrictive covenant|confidentiality agreement)"},
     {"key": "high_school", "label": "High school", "default": "", "pattern": r"^(name of (your )?)?high school( name| attended)?$|(which|what) high school|high school (did|do) you"},
     {"key": "high_school_year", "label": "Year you finished high school", "default": "", "pattern": r"(year|date) of high school graduation|high school graduation (year|date)|(when|what year) did you graduate (from )?high school"},
+    {"key": "high_school_start", "label": "Year you started high school", "default": "", "pattern": r"(year|date) (you )?(started|began|entered) high school|high school (start|from) (year|date)|(when|what year) did you (start|begin|enter) high school"},
+    # Only a question that asks for the declared or active major ("What is your active major?");
+    # plain "Major" and "Field of study" get the field from the degree.
+    {"key": "declared_major", "label": "Declared (active) major, only when a form asks for it", "default": "",
+     "pattern": r"^(?!.*\b(have|did) you\b).*\b(active|declared|official|officially declared|current declared)\s+(major|program of study|field of study)\b"},
     # Before class_year and currently_student: "If you are currently enrolled..., what is your GPA?" is about GPA.
     {"key": "gpa", "label": "GPA", "default": "", "pattern": r"^(?!.*comment).*(\bgpa\b|grade point|overall result)"},
     # Credits by the time the internship starts ("by the time your internship begins"); credits done so far stay the user's.

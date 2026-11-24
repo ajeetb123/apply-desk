@@ -9,7 +9,7 @@ ROOT="${0:A:h}"
 PACKAGE=0
 [[ "${1:-}" == "--package" ]] && PACKAGE=1
 VERSION="2.3"
-BUILD="5"
+BUILD="6"
 BUNDLE_ID="com.ajeet.applydesk"
 APP_NAME="Apply Desk.app"
 DATA="$HOME/Library/Application Support/Apply Desk"

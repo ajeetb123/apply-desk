@@ -1095,7 +1095,7 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual((p["name"], p["email"], p["phone"], p["github"], p["website"]),
                          ("Riley Chen", "riley@example.com", "555-010-0100", "github.com/rileyc", "riley.dev"))
         self.assertEqual((p["school"], p["degree"], p["college_start"], p["graduation"]),
-                         ("State University", "B.S. in Computer Science", "August 2026", "December 2028"))
+                         ("State University", "Intended: Computer Science", "August 2026", "December 2028"))  # same field: the user's wording stays
         # Screening answers, the home address, and LinkedIn are never taken from a resume.
         self.assertEqual((p["us_citizen"], p["has_clearance"], p["city"], p["linkedin"]), ("Yes", "No", "Springfield", ""))
 
@@ -1204,6 +1204,19 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertIn("Skills, matched to your work", page)
         self.assertIn("Nothing on your resume shows it", page)  # AWS
         self.assertIn("Added to your Skills", page)
+
+    def test_resume_keeps_the_profile_degree_wording_for_the_same_field(self):
+        self.client.post("/profile", data={"degree": "Intended: Computer Science", "declared_major": "Mathematics"})
+        resume = "Riley Chen\nriley@example.com\nEDUCATION\nState University    Austin, TX\nB.S. in Computer Science (Intended)    Expected May 2029\n"
+        self.client.post("/resume", data={"resume": (io.BytesIO(resume.encode()), "resume.txt")}, content_type="multipart/form-data")
+        self.assertEqual(application.profile()["degree"], "Intended: Computer Science")
+        resume = resume.replace("Computer Science (Intended)", "Data Science")
+        self.client.post("/resume", data={"resume": (io.BytesIO(resume.encode()), "resume.txt")}, content_type="multipart/form-data")
+        self.assertEqual(application.profile()["degree"], "B.S. in Data Science")  # a different field replaces it
+        # The declared major answers only a question that asks for it.
+        key = application.applying.standard_key
+        self.assertEqual((key("What is your active major?"), key("Declared Major"), key("Major"), key("Have you declared a major?")),
+                         ("declared_major", "declared_major", None, None))
 
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})

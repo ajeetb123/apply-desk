@@ -249,6 +249,10 @@ def apply_resume_facts(text: str) -> list[str]:
     with db() as conn:
         for key, label in RESUME_FACTS:
             value = facts.get(key, "").strip()
+            # The same field in other words ("Intended: Computer Science" and "B.S. in
+            # Computer Science (Intended)") keeps the user's own wording.
+            if key == "degree" and p.get(key) and applying.field_of_study(value).lower() == applying.field_of_study(p[key]).lower():
+                continue
             if value and value != (p.get(key) or "").strip():
                 conn.execute("INSERT INTO profile(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
                 changed.append(label)
@@ -856,7 +860,7 @@ def analyze(description: str):
 # Rough, blunt odds of an offer for one application, from the posting's wording
 # and how internship hiring usually goes. Points move a role between tiers;
 # blockers end it. Kept separate from the fit score, which is not a probability.
-BIG_TECH = r"\b(google|alphabet|meta|facebook|apple|amazon|aws|microsoft|netflix|nvidia|openai|anthropic|stripe|airbnb|uber|lyft|linkedin|salesforce|adobe|databricks|snowflake|palantir|tesla|spacex|bloomberg|coinbase|robinhood|doordash|pinterest|snap|spotify|shopify|roblox|figma|ramp|scale ai|anduril)\b"
+BIG_TECH = r"\b(google|alphabet|meta|facebook|apple|amazon|aws|microsoft|netflix|nvidia|openai|stripe|airbnb|uber|lyft|linkedin|salesforce|adobe|databricks|snowflake|palantir|tesla|spacex|bloomberg|coinbase|robinhood|doordash|pinterest|snap|spotify|shopify|roblox|figma|ramp|scale ai|anduril)\b"
 QUANT = r"\b(jane street|citadel|two sigma|hudson river|jump trading|optiver|imc trading|d\.? ?e\.? shaw|five rings|akuna|susquehanna|drw|tower research|virtu|arrowstreet|aqr|bridgewater|renaissance|point72|millennium|balyasny|squarepoint|old mission|peak6|wolverine|flow traders|xtx|g-research|voleon)\b"
 DEFENSE = r"\b(leidos|booz allen|saic|northrop|lockheed|raytheon|rtx|general dynamics|gdit|bae systems|caci|mitre|peraton|l3harris|mantech|parsons|huntington ingalls|boeing|jhu ?apl|johns hopkins applied physics)\b"
 ODDS_TIERS = [(-99, "Long shot", "under 1%"), (-3, "Unlikely", "1–3%"), (-1, "Possible", "3–6%"), (1, "Decent shot", "6–12%"), (4, "Good shot", "12–20%")]

@@ -1174,7 +1174,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
             : /when (do|will) you (expect to )?(complete|graduate|finish)|^to\b|^end|graduat|expected|complet/.test(q) ? { date: entry.end }
             : SCHOOL_FIELD.test(q) ? { values: names, strict: true, search: schoolSearch(names) }
             : /degree/.test(q) ? { values: entry.degree_options.length ? entry.degree_options : [entry.degree] }
-            : /field of study|major|discipline/.test(q) ? { values: entry.field_options && entry.field_options.length ? entry.field_options : [entry.field], strict: true, search: [entry.field] }
+            // (An "active" or "declared" major is its own Profile answer, filled with the other questions.)
+            : /field of study|major|discipline/.test(q) && !/\b(active|declared|official)/.test(q) ? { values: entry.field_options && entry.field_options.length ? entry.field_options : [entry.field], strict: true, search: [entry.field] }
             : /gpa|grade|overall result/.test(q) ? { values: [entry.gpa, p.gpa_range], key: 'gpa' } : null;
         }
         // Not one of the entry's own fields ("If you selected Other, please specify"): answered like any other question.
