@@ -1532,6 +1532,24 @@ def api_batch_start():
     return {"batch": batch, "items": out, "auto_submit": p.get("auto_submit_clean") == "Yes"}
 
 
+BATCH_RETRY = ("This page wouldn't run Apply Desk",)
+
+
+@app.post("/api/batch/resume")
+def api_batch_resume():
+    """Postings a batch never got to (Apply Desk quit or was stopped, or Chrome
+    refused to run it), in list order, queued again for the Mac app."""
+    with db() as conn:
+        rows = conn.execute("SELECT id, url, list_text FROM batch_items WHERE status IN ('queued','working') "
+                            f"OR (status='needs_you' AND reason IN ({','.join('?' * len(BATCH_RETRY))})) ORDER BY id", BATCH_RETRY).fetchall()
+        now = datetime.now().isoformat(timespec="minutes")
+        conn.executemany("UPDATE batch_items SET status='queued', reason='', updated=? WHERE id=?", [(now, row["id"]) for row in rows])
+    if rows:
+        log_activity("Batch continued", f"{len(rows)} postings left from an earlier batch")
+    return {"items": [{"id": row["id"], "url": row["url"], "text": row["list_text"]} for row in rows],
+            "auto_submit": profile().get("auto_submit_clean") == "Yes"}
+
+
 @app.post("/api/batch/check")
 def api_batch_check():
     """Once a posting is open and saved as a role: apply, or the reason to skip it."""
@@ -1558,7 +1576,7 @@ def api_batch_update():
     Apply Desk asks (once) whether to submit fully clean ones itself."""
     data = request.get_json(silent=True) or {}
     item_id, status = int(data.get("item") or 0), str(data.get("status") or "")
-    if status not in {"working", "ready", "needs_you", "submitted", "closed", "skipped", "failed"}:
+    if status not in {"queued", "working", "ready", "needs_you", "submitted", "closed", "skipped", "failed"}:
         return {"error": "Unknown status."}, 400
     p = profile()
     now = datetime.now().isoformat(timespec="minutes")
@@ -2049,9 +2067,19 @@ def download_resume(job_id):
 init_db()
 refresh_pdf_resume()
 
+def exit_with_parent(parent: int) -> None:
+    """Started by the Mac app: ends when the app does, even when it was killed
+    and never got to stop this process (it used to keep running on its own)."""
+    while os.getppid() == parent:
+        time.sleep(3)
+    os._exit(0)
+
+
 if __name__ == "__main__":
     pid_file = INSTANCE / "app.pid"
     pid_file.write_text(str(os.getpid()))
     atexit.register(lambda: pid_file.unlink(missing_ok=True) if pid_file.exists() and pid_file.read_text().strip() == str(os.getpid()) else None)
     threading.Thread(target=watch_resume_loop, daemon=True, name="resume-file-watch").start()
+    if os.environ.get("APPLY_DESK_TOKEN"):
+        threading.Thread(target=exit_with_parent, args=(os.getppid(),), daemon=True, name="parent-watch").start()
     app.run(host="127.0.0.1", port=int(os.environ.get("APPLY_DESK_PORT", "8787")), debug=False)

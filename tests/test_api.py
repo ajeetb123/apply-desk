@@ -1301,6 +1301,19 @@ class ApplyDeskApiTests(unittest.TestCase):
         again = self.client.post("/api/batch/start", json={"items": self.BATCH_ITEMS[:1]}).json["items"][0]
         self.assertEqual(again["reason"], "Already applied")
 
+    def test_batch_resume_picks_up_what_never_ran(self):
+        items = self.client.post("/api/batch/start", json={"items": [{"url": f"https://jobs.lever.co/acme/{n}-intern", "text": f"Acme Software Intern {n}"} for n in range(5)]}).json["items"]
+        ids = [item["id"] for item in items]
+        self.client.post("/api/batch/update", json={"item": ids[0], "status": "ready"})
+        self.client.post("/api/batch/update", json={"item": ids[1], "status": "needs_you", "reason": "This page wouldn't run Apply Desk"})
+        self.client.post("/api/batch/update", json={"item": ids[2], "status": "needs_you", "reason": "Sign in to this site"})
+        self.client.post("/api/batch/update", json={"item": ids[3], "status": "working"})
+        resumed = self.client.post("/api/batch/resume", json={}).json
+        # Not the ready one or the one waiting on the user; the rest in list order.
+        self.assertEqual([item["id"] for item in resumed["items"]], [ids[1], ids[3], ids[4]])
+        self.assertEqual(resumed["items"][0]["text"], "Acme Software Intern 1")
+        self.assertEqual(self.client.post("/api/batch/resume", json={}).json["items"][0]["id"], ids[1])   # still queued until opened
+
     def test_clean_record_and_asking_before_auto_submit(self):
         items = self.client.post("/api/batch/start", json={"items": [{"url": f"https://jobs.lever.co/acme/{n}-intern", "text": "Acme Software Intern"} for n in range(12)]}).json["items"]
         clean = [{"question": "First Name", "value": "Riley", "flag": ""}, {"question": "Gender", "value": "Male", "flag": "Your self-identification answer from Profile"}]

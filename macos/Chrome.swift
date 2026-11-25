@@ -169,6 +169,38 @@ enum Chrome {
         _ = run(script)
     }
 
+    /// Every open tab's id and address, in one call (batch mode watches dozens).
+    static func tabList() -> [(id: String, url: String)]? {
+        guard isRunning else { return nil }
+        let script = """
+        tell application id "\(bundleID)"
+            set out to ""
+            repeat with theWindow in windows
+                set ids to id of every tab of theWindow
+                set urls to URL of every tab of theWindow
+                repeat with i from 1 to count of ids
+                    set out to out & ((item i of ids) as text) & (character id 9) & (item i of urls) & linefeed
+                end repeat
+            end repeat
+            return out
+        end tell
+        """
+        guard let value = run(script) else { return nil }
+        return value.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
+            return parts.count == 2 ? (parts[0], parts[1]) : nil
+        }
+    }
+
+    /// The same page whatever its tracking query ("?utm_source=..."): host and path.
+    nonisolated static func samePage(_ a: String, _ b: String) -> Bool {
+        func key(_ value: String) -> String {
+            guard let parts = URLComponents(string: value), let host = parts.host else { return value }
+            return host.lowercased() + parts.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+        return key(a) == key(b)
+    }
+
     /// Any tab by its id, wherever it is now: another window, or behind the
     /// front tab (a fill keeps running in a tab the user has left).
     static func tab(id: String) -> Tab? {
@@ -292,6 +324,10 @@ enum Chrome {
         NSLog("Apply Desk Chrome script error %d: %@", number, message)
         if number == -1743 || message.localizedCaseInsensitiveContains("not authorized") {
             lastFailure = .notAuthorized
+        } else if message.localizedCaseInsensitiveContains("JavaScript through AppleScript is turned off") {
+            // Chrome's own words: it's off in the running Chrome, even when its
+            // saved Preferences still say on (seen after a long session).
+            lastFailure = .javaScriptOff
         } else if javaScriptSettingOn() == true {
             // The setting is on, whatever this error says (a page that won't run
             // scripts, a tab Chrome put to sleep): never tell the user to turn it on.
