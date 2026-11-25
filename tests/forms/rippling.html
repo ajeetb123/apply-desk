@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mock: dropdowns drawn as boxes (Rippling style)</title>
+<style>
+  body { font: 15px system-ui, sans-serif; max-width: 640px; margin: 24px auto; }
+  .field { margin: 18px 0; }
+  .box { border: 1px solid #999; padding: 6px 8px; min-height: 20px; cursor: pointer; }
+  ul[role=listbox] { list-style: none; margin: 0; padding: 0; border: 1px solid #555; }
+  li[role=option] { padding: 4px 8px; }
+  li[role=option]:hover { background: #eef; }
+</style>
+</head>
+<body>
+<h1>Software Engineering Intern</h1>
+<form>
+  <div class="field"><label id="first-label" for="first">First name*</label><input id="first" aria-required="true"></div>
+  <div class="field"><label for="phone">Phone number*</label><input id="phone" type="tel" aria-required="true"></div>
+
+  <!-- A place picked from suggestions: the same city name exists elsewhere, listed first. -->
+  <div class="field"><label id="city-label">Location (City)*</label>
+    <input id="city" class="select" role="combobox" aria-haspopup="listbox" aria-labelledby="city-label" aria-required="true" placeholder="Search"
+           data-options="Austin, Minnesota, United States|Austin, Texas, United States|Austin, Pennsylvania, United States" data-search="true"></div>
+
+  <!-- A box with role="combobox" and no input inside. -->
+  <div class="field"><span id="gender-label">Gender</span>
+    <div id="gender" class="box" role="combobox" aria-haspopup="listbox" aria-labelledby="gender-label" aria-label="Select..." tabindex="0"
+         data-options="Female|Male|Non-binary|Choose not to disclose">Select...</div></div>
+
+  <!-- A searchable one-choice input whose choice becomes its own value. -->
+  <div class="field"><span id="race-label">Please identify your race</span>
+    <input id="race" class="select" role="combobox" aria-haspopup="listbox" aria-autocomplete="list" aria-labelledby="race-label" placeholder="Select..."
+           data-options="American Indian or Alaskan Native|Asian|Black or African American|White|Choose not to disclose"></div>
+
+  <div class="field"><span id="vet-label">Veteran Status</span>
+    <div id="vet" class="box" role="combobox" aria-haspopup="listbox" aria-labelledby="vet-label" aria-label="Select..." tabindex="0"
+         data-options="I am not a protected veteran|I identify as one or more of the classifications of a protected veteran|Choose not to disclose">Select...</div></div>
+
+  <!-- The question sits several wrappers above the radios, with a "Clear selection" link. -->
+  <div class="field"><div><p>Are you able to work in Austin, TX May 2027 through August 2027?</p>
+    <div><div><div role="radiogroup">
+      <label><input type="radio" name="work_in" value="Yes"> Yes</label>
+      <label><input type="radio" name="work_in" value="No"> No</label>
+      <label><input type="radio" name="work_in" value="I plan to relocate."> I plan to relocate.</label>
+    </div></div></div><a href="#" onclick="return false">Clear selection</a></div></div>
+</form>
+<script>
+// Each dropdown draws its list in requestAnimationFrame, like the real one:
+// a background tab that never runs frames never shows the options.
+let openList = null;
+function closeList() {
+  if (!openList) return;
+  openList.list.remove();
+  openList.trigger.setAttribute('aria-expanded', 'false');
+  openList.trigger.removeAttribute('aria-controls');
+  openList = null;
+}
+function showList(trigger, filter = '') {
+  if (openList && openList.trigger === trigger) { openList.list.remove(); openList = null; }
+  closeList();
+  requestAnimationFrame(() => {
+    const list = document.createElement('ul');
+    list.id = trigger.id + '-list';
+    list.setAttribute('role', 'listbox');
+    const words = filter.toLowerCase().split(',')[0].trim();
+    for (const label of trigger.dataset.options.split('|')) {
+      if (trigger.dataset.search && (!words || !label.toLowerCase().startsWith(words))) continue;
+      const option = document.createElement('li');
+      option.setAttribute('role', 'option');
+      option.textContent = label;
+      option.addEventListener('mousedown', event => event.preventDefault());
+      option.addEventListener('click', () => {
+        if (trigger.tagName === 'INPUT') trigger.value = label; else trigger.textContent = label;
+        closeList();
+      });
+      list.append(option);
+    }
+    trigger.parentElement.append(list);
+    trigger.setAttribute('aria-expanded', 'true');
+    trigger.setAttribute('aria-controls', list.id);
+    openList = { trigger, list };
+  });
+}
+for (const trigger of document.querySelectorAll('[role=combobox]')) {
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.addEventListener('mousedown', event => {
+    if (openList && openList.trigger === trigger) { closeList(); return; }
+    showList(trigger, trigger.tagName === 'INPUT' ? trigger.value : '');
+    if (trigger.tagName === 'DIV') event.preventDefault();
+  });
+  trigger.addEventListener('keydown', event => { if (event.key === 'ArrowDown') showList(trigger, trigger.value || ''); if (event.key === 'Escape') closeList(); });
+  if (trigger.tagName === 'INPUT') trigger.addEventListener('input', () => showList(trigger, trigger.value));
+}
+document.addEventListener('mousedown', event => { if (openList && !openList.trigger.contains(event.target) && !openList.list.contains(event.target)) closeList(); });
+</script>
+</body>
+</html>

@@ -82,7 +82,7 @@ STANDARD_QUESTIONS = [
     {"key": "class_year", "label": "Year in school", "default": "",
      "pattern": r"year in (school|college|university)|class (standing|year|level)|academic (year|standing|classification)|current year of (study|school)|what year are you|year of study|grade level"},
     {"key": "currently_student", "label": "Currently a student", "default": "",
-     "pattern": r"^(?!.*(which|what) (university|school|college|institution)).*(currently (working towards?|pursuing|enrolled|attending|a student)|are you (a )?(current )?(college |university )?student)"},
+     "pattern": r"^(?!.*((which|what) (university|school|college|institution)|\bwhere\b)).*(currently (working towards?|pursuing|enrolled|attending|an? (undergraduate |undergrad |college |university )?student)|are you (currently )?(an? )?(current )?(undergraduate |undergrad |college |university )?student)"},
     {"key": "degree_recent", "label": "Earned a degree in the last 2 years", "default": "",
      "pattern": r"(obtain|obtained|earn|earned|receive|received|complete|completed|graduate|graduated)( this| your| a)?( degree)? (with)?in the (last|past) \d+ (months|years)|recent graduate"},
     {"key": "over_18", "label": "18 or older", "default": "", "pattern": r"(18|eighteen) (years|or older)|at least 18|over (the age of )?18"},
@@ -99,7 +99,8 @@ STANDARD_KEYS = [q["key"] for q in STANDARD_QUESTIONS]
 # answer" option is chosen. These answers are never learned from forms.
 DECLINE = ["I do not wish to answer", "I don't wish to answer", "I do not want to answer", "I don't want to answer",
            "I do not wish to self-identify", "I don't wish to self-identify", "Decline to self-identify", "Decline to self identify",
-           "Decline to answer", "Decline to state", "I choose not to self-identify", "I choose not to disclose", "Prefer not to say",
+           "Decline to answer", "Decline to state", "I choose not to self-identify", "I choose not to disclose", "Choose not to disclose",
+           "Choose not to answer", "Prefer not to say",
            "Prefer not to answer", "Prefer not to disclose", "Not declared", "Not specified", "I decline to self-identify",
            "I decline to answer", "I decline", "Decline"]
 DISCLOSURE_QUESTIONS = [

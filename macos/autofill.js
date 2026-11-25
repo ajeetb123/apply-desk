@@ -15,6 +15,23 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const decode = b64 => new TextDecoder().decode(Uint8Array.from(atob(b64 || ''), c => c.charCodeAt(0)));
   if (window.__applyDeskBusy && window.__applyDeskFill && !window.__applyDeskFill.done) return JSON.stringify({ started: true, already: true });
   const plan = JSON.parse(decode(planB64) || '{}');
+  // A background tab never runs requestAnimationFrame, and some dropdowns
+  // (Rippling's) only draw their options in one, so a batch tab's lists stayed
+  // empty. While the tab is hidden, frames run on a timer instead (Chrome lets
+  // those run about once a second there); a visible tab is untouched.
+  if (!window.__applyDeskFrames) {
+    const real = window.requestAnimationFrame.bind(window), cancel = window.cancelAnimationFrame.bind(window);
+    const timed = new Map();
+    let next = 1e9;
+    window.__applyDeskFrames = true;
+    window.requestAnimationFrame = callback => {
+      if (!document.hidden) return real(callback);
+      const id = ++next;
+      timed.set(id, setTimeout(() => { timed.delete(id); callback(performance.now()); }, 16));
+      return id;
+    };
+    window.cancelAnimationFrame = id => { if (timed.has(id)) { clearTimeout(timed.get(id)); timed.delete(id); } else cancel(id); };
+  }
   const state = window.__applyDeskFill = { done: false, filled: [], attached: false, learn: [], skipped: [], blocks: 0, beat: 0, stop: '', page: '', needs: [] };
   // One application can span many pages and reloads; its progress is kept in
   // this tab so the review covers every page, even after a stop.
@@ -64,14 +81,17 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const never = new RegExp(plan.never || 'race|ethnic|gender|veteran|disab|password', 'i');
   const handled = new Set();
 
+  // Always looks again after each nap, even past the deadline: in a background
+  // tab a 120ms nap can take a second, and giving up after one look (taken
+  // before the page reacted) made pickCombo press an open list closed.
   const waitFor = async (check, ms) => {
     const end = Date.now() + ms;
-    while (Date.now() < end) {
+    for (;;) {
       const value = check();
       if (value) return value;
+      if (Date.now() >= end) return null;
       await sleep(120);
     }
-    return null;
   };
 
   // ---------- Reading the form ----------
@@ -138,7 +158,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     for (let node = el.parentElement, depth = 0; node && node !== document.body && depth < 7; node = node.parentElement, depth += 1) {
       if (!options.every(option => node.contains(option))) continue;
       if (controlCount(node) > options.length + 1) return '';
-      const text = textAround(node, options);
+      const text = textAround(node, options).replace(/\s*clear selection$/i, '');
       if (text.length >= 3) return text.slice(0, 300);
     }
     return '';
@@ -158,7 +178,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const labelled = byIds(el.getAttribute('aria-labelledby'));
     if (labelled) return labelled;
     if (fieldLabel) return fieldLabel;
-    if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+    const aria = el.getAttribute('aria-label') || '';
+    if (aria && !placeholderText(aria) && !/^(search|textbox)$/i.test(aria)) return aria;
     const choice = el.type === 'radio' || el.type === 'checkbox';
     const around = choice ? groupQuestion(el) : '';
     if (around) return around;
@@ -170,7 +191,16 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const label = node.querySelector('label, legend, .application-label');
       if (label && textOf(label)) return textOf(label);
     }
-    return own || el.placeholder || '';
+    // A dropdown with no label of its own (Rippling's custom questions): the
+    // text of the nearest wrapper that holds only this field.
+    if (isListbox(el) || isSearchSelect(el)) {
+      for (let node = el.parentElement, depth = 0; node && node !== document.body && depth < 9; node = node.parentElement, depth += 1) {
+        if (controlCount(node) > (el.tagName === 'INPUT' ? 1 : 0) || node.querySelectorAll('[role="combobox"]:not(input), button[aria-haspopup="listbox"]').length > (el.tagName === 'INPUT' ? 0 : 1)) break;
+        const text = clean(textOf(node).replace(textOf(el), ' '));
+        if (text.length >= 3) return text.slice(0, 300);
+      }
+    }
+    return own || aria || el.placeholder || '';
   }
 
   // The helper text between a field's label and the field: on some forms
@@ -188,9 +218,16 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
                               el.getAttribute('data-automation-id')].filter(Boolean).join(' '));
 
   const isText = el => el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && ['text', 'email', 'tel', 'url', 'number', 'search', ''].includes((el.type || 'text').toLowerCase()));
-  const isPrompt = el => el.tagName === 'INPUT' && (el.getAttribute('data-automation-id') === 'searchBox'
+  const isPrompt = el => el.tagName === 'INPUT' && !isSearchSelect(el) && (el.getAttribute('data-automation-id') === 'searchBox'
     || !!el.closest('[data-automation-id="multiselectInputContainer"]') || (el.getAttribute('role') === 'combobox' && el.getAttribute('aria-autocomplete') === 'list'));
-  const isListbox = el => el.tagName === 'BUTTON' && el.getAttribute('aria-haspopup') === 'listbox';
+  // Workday's list buttons, and dropdowns drawn as a box with role="combobox" (Rippling's Gender, Veteran Status).
+  const isListbox = el => (el.tagName === 'BUTTON' && el.getAttribute('aria-haspopup') === 'listbox')
+    || (el.tagName !== 'INPUT' && el.getAttribute('role') === 'combobox' && el.getAttribute('aria-haspopup') === 'listbox' && !el.querySelector('input, select, textarea'));
+  // A searchable one-choice dropdown whose choice becomes the box's own text
+  // (Rippling's Pronouns and race): not a Workday box of chosen pills.
+  const isSearchSelect = el => el.tagName === 'INPUT' && el.getAttribute('role') === 'combobox' && el.getAttribute('aria-haspopup') === 'listbox'
+    && el.getAttribute('data-automation-id') !== 'searchBox' && !el.closest('[data-automation-id="multiselectInputContainer"], [data-automation-id^="formField"]')
+    && !comboControl(el) && !comboToggle(el);
   // Searchable dropdowns built with react-select (Greenhouse's new forms and
   // many others): a combobox input inside a "...__control" box.
   const comboControl = el => el.closest('.select__control, [class*="select__control"], [class*="-control"]');
@@ -198,7 +235,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const comboToggle = el => el.getAttribute('aria-haspopup') === 'listbox' && el.parentElement ? el.parentElement.querySelector('button') : null;
   const isCombo = el => el.tagName === 'INPUT' && el.getAttribute('role') === 'combobox' && !isPromptBox(el) && (!!comboControl(el) || !!comboToggle(el));
   const isPromptBox = el => el.getAttribute('data-automation-id') === 'searchBox' || !!el.closest('[data-automation-id="multiselectInputContainer"]');
-  const placeholderText = s => /^(select( one)?|choose( one)?|please select|--.*|)$/.test(norm(s));
+  const placeholderText = s => /^(select( one| an option)?|choose( one| an option)?|please select( one| an option)?|--.*|)$/.test(norm(s).replace(/[.…]+$/, '').trim());
 
   // ---------- Acting like a person ----------
   function glow(el) {
@@ -245,16 +282,15 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
 
   // A place typed into a box with a suggestion list (Lever's location, Google's
   // place picker) only sticks once a suggestion is chosen: type it, nudge the
-  // search with a key, and pick the suggestion that starts with the city.
+  // search with a key, and pick the suggestion for the city in the user's state.
   async function typeAndPick(el, value) {
     if (!insertText(el, value) || el.value !== value) {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value);
       el.dispatchEvent(new Event('input', { bubbles: true }));
     }
     for (const type of ['keydown', 'keyup']) el.dispatchEvent(new KeyboardEvent(type, { key: 'a', bubbles: true }));
-    const city = norm(value.split(',')[0]);
-    const suggestion = await waitFor(() => [...document.querySelectorAll('.dropdown-location, .pac-item, [role="option"]')]
-      .find(option => visible(option) && !option.closest(chosenTag) && norm(textOf(option)).startsWith(city)), 4000);
+    const suggestion = await waitFor(() => placeOption([...document.querySelectorAll('.dropdown-location, .pac-item, [role="option"]')]
+      .filter(option => visible(option) && !option.closest(chosenTag)), textOf), 4000);
     if (suggestion) {
       press(suggestion);
       await sleep(300);
@@ -473,7 +509,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // somewhere else ("Singapore HP Campus Week").
   const heardPick = (options, values, label = optionLabel) => best(options, values, label, 'prefix')
     || best(options.filter(o => norm(label(o)).split(' ').length <= 3), values, label);
-  const pickFor = (options, want, label = optionLabel) => want.key === 'heard_about' ? heardPick(options, want.values, label) : best(options, want.values, label, want.strict);
+  const pickFor = (options, want, label = optionLabel) => want.place ? placeOption(options, label)
+    : want.key === 'heard_about' ? heardPick(options, want.values, label) : best(options, want.values, label, want.strict);
 
   let current = null;     // the answer being filled, so the review can say where it came from
   let pageNow = '';
@@ -511,7 +548,12 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     await closeLists();
     const before = new Set(openOptions());
     press(button);
-    const options = await freshOptions(button, before);
+    let options = await freshOptions(button, before);
+    // Didn't open (another list was still closing): one more press.
+    if (!options && button.getAttribute('aria-expanded') !== 'true') {
+      press(button);
+      options = await freshOptions(button, before);
+    }
     let match = options && (pickFor(options, want) || (options.length > 7 && await scrollFor(options, want.values, want.strict)));
     if (match) {
       // A click normally chooses; some lists only take Enter on the option.
@@ -593,6 +635,59 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const shown = control && control.querySelector('[class*="singleValue"], [class*="single-value"], [class*="multiValue"] [class*="label"], [class*="multi-value__label"]');
     return shown ? textOf(shown) : control ? '' : el.value.trim();
   };
+  // A searchable one-choice dropdown (isSearchSelect): open it, pick from its
+  // own list (searching when the answer isn't shown), and check the box took it.
+  async function pickSearchSelect(input, want, question) {
+    if (input.value.trim() && !placeholderText(input.value)) return false;
+    const own = () => {
+      const list = document.getElementById(input.getAttribute('aria-controls') || `${input.id}-list`);
+      return list && shown(list) ? openOptions(list) : [];
+    };
+    await closeLists();
+    // The list may not open on the first press while another one is still
+    // closing (a background tab runs that slowly): press again, then ArrowDown.
+    let options = null;
+    for (const poke of [() => press(input), () => press(input), () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true, cancelable: true }))]) {
+      if (own().length) { options = own(); break; }
+      poke();
+      input.focus();
+      options = await waitFor(() => own().length ? own() : null, 1500);
+      if (options) break;
+    }
+    let match = options && (pickFor(options, want) || (options.length > 7 && await scrollFor(options, want.values, want.strict)));
+    let typed = false;
+    for (const term of (want.search || want.values).filter(Boolean).slice(0, 3)) {
+      if (match) break;
+      typed = true;
+      if (!insertText(input, term)) {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, term);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      let last = '', same = 0;
+      options = await waitFor(() => {
+        const now = own(), key = now.map(optionLabel).join('|');
+        same = key && key === last ? same + 1 : 0;
+        last = key;
+        return same >= 1 ? now : null;
+      }, 3000);
+      match = options && pickFor(options, want);
+    }
+    if (!match) {
+      escape(input);
+      if (typed) {   // the search words aren't an answer
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      await closeLists(input);
+      return false;
+    }
+    const label = optionLabel(match);
+    press(match);
+    if (!(await waitFor(() => norm(input.value).includes(norm(label).slice(0, 20)), 1500))) return false;
+    note(input, question, input.value);
+    return true;
+  }
+
   // With `readOnly`, opens the dropdown, returns its option labels, and closes it.
   async function pickCombo(input, want, question, readOnly = false) {
     if (comboValue(input)) return readOnly ? [] : false;
@@ -792,6 +887,18 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Search the way a person would: the everyday name, the start of the
   // official name, then the whole official name.
   const url = link => link && !/^https?:\/\//i.test(link) ? `https://${link}` : link;
+  // A place picked from a suggestion list (Greenhouse's "Location (City)",
+  // Ashby's location): the city in the user's state ("Vienna, Virginia, United
+  // States"), never the same name somewhere else ("Vienna, Austria").
+  const placeStates = (p.state_options || [p.state]).filter(Boolean).map(norm);
+  const placeHow = { place: true, search: [p.city, p.city && placeStates[0] ? `${p.city}, ${p.state_options ? p.state_options[0] : p.state}` : ''].filter(Boolean) };
+  function placeOption(options, label = optionLabel) {
+    const city = norm(p.city);
+    if (!city) return null;
+    const named = options.filter(o => (t => t === city || t.startsWith(city + ' ') || t.startsWith(city + ','))(norm(label(o))));
+    const rest = o => ` ${norm(label(o)).slice(city.length).replace(/,/g, ' ')} `.replace(/\s+/g, ' ');
+    return named.find(o => placeStates.some(state => rest(o).includes(` ${state} `))) || named.find(o => norm(label(o)) === city) || null;
+  }
   const schoolSearch = names => [...new Set([names[names.length - 1], (names[0] || '').split(' ').slice(0, 3).join(' '), names[0]])].filter(Boolean);
   const contact = [
     ['email', /e ?mail/, [p.email]], ['phone', /phone number|^phone$|mobile|cell(ular)? number|telephone/, [p.phone]],
@@ -802,11 +909,11 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     ['name', /full name|your name|legal name|^name$/, [p.name]],
     ['address', /address line 1|street address|address 1|^address$|^(mailing|home|current|permanent|residential) address( line 1)?$/, [p.address]],
     // "Current location": city and state together.
-    ['location', /^(current )?location$|where are you (currently )?(located|based)|^city,? state$/, [[p.city, p.state].filter(Boolean).join(', ')]],
-    ['city', /(^| )city( |$)|town/, [p.city]], ['state', /(^| )state( |$)|province|region/, p.state_options || [p.state], { strict: true }],
+    ['location', /^(current )?location$|where are you (currently )?(located|based)|^city,? state$/, [[p.city, p.state].filter(Boolean).join(', ')], placeHow],
+    ['city', /(^| )city( |$)|town/, [p.city], placeHow], ['state', /(^| )state( |$)|province|region/, p.state_options || [p.state], { strict: true }],
     ['postal', /zip|postal code|postcode|^postal$/, [p.postal_code]],
     // The school field itself, never any label that mentions one ("Technical Accomplishments - School/Internships").
-    ['school', /(which|what) (university|school|college|institution) (are|do|will|did)|^(current |name of (your )?)?(school|university|college|institution)( name| attended)?$|school or university|college\/university|university\/college|(school|university|college) (name|attended|attending|enrolled)|(which|what) (school|university|college)|(school|university|college).{0,50}(enrolled|attend|study|studying|graduat)|name of (your )?(school|university|college|institution)/,
+    ['school', /(which|what) (university|school|college|institution) (are|do|will|did)|where (are|do) you (currently )?(a student|attend|study|studying|enrolled|go to (school|college))|^(current |name of (your )?)?(school|university|college|institution)( name| attended)?$|school or university|college\/university|university\/college|(school|university|college) (name|attended|attending|enrolled)|(which|what) (school|university|college)|(school|university|college).{0,50}(enrolled|attend|study|studying|graduat)|name of (your )?(school|university|college|institution)/,
      schoolNames, { strict: true, search: schoolSearch(schoolNames) }],
     ['field', /field of study|area of study|\bmajors?\b|academic discipline/, school.field_options || [], { strict: true, search: [school.field] }],
     // The degree itself, not any question that mentions one ("credit hours toward your degree").
@@ -995,6 +1102,17 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const words = String(plan.role.title || '').split(/[^A-Za-z+#]+/).filter(w => w.length > 1 && !/^(intern|internship|interns|summer|fall|spring|winter|the|and|for|with|program|co|op|of|in|at)$/i.test(w));
       if (words.length) return { values: [...words, ...(plan.role.kind ? [plan.role.kind] : [])], source: 'answer' };
     }
+    // "Are you able to work in Greensboro, NC May 2027 through August 2027?" as choices:
+    // Yes where the user lives; anywhere else their relocation answer, with the
+    // form's "I plan to relocate" when it has one.
+    const workIn = !isText(el) && !/united states|\bu\.?s\.?a?\b|\bus\b|countr|legal|authori|sponsor|remote/.test(q) && q.match(/\b(?:able|available|willing) to work (?:in|at|from|out of) ([^?]{3,120})/);
+    if (workIn) {
+      const place = ` ${workIn[1].replace(/,/g, ' ')} `.replace(/\s+/g, ' ');
+      const home = (p.city && place.includes(` ${norm(p.city)} `)) || placeStates.some(state => place.includes(` ${state} `));
+      const relocate = (plan.answers || []).find(answer => answer.key === 'relocate');
+      if (home) return { values: ['Yes'], source: 'answer', key: 'work_in' };
+      if (relocate && /^yes/i.test(relocate.answer || '')) return { values: ['I plan to relocate', 'Yes, I plan to relocate', 'Yes, willing to relocate', 'Yes'], source: 'answer', key: 'relocate' };
+    }
     // A required consent question with choices ("Yes, I consent"), once the user agreed to terms in Profile.
     if (plan.agree_terms && (!isText(el) || isCombo(el)) && consent.test(q) && !marketing.test(q) && isRequired(el, question)) {
       return { values: AGREE, source: 'terms', strict: 'prefix' };
@@ -1047,6 +1165,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (el.tagName === 'SELECT') return pickSelect(el, values, question, want.strict);
       if (isListbox(el)) return await pickListbox(el, { ...want, values }, question);
       if (isCombo(el)) return await pickCombo(el, { ...want, values }, question);
+      if (isSearchSelect(el)) return await pickSearchSelect(el, { ...want, values }, question);
       if (isPrompt(el)) return selectedPills(el).length ? false : await pickPrompt(el, { ...want, values }, question);
       // Self-identification answers are picked from the form's options, never typed (pronouns are often a text box).
       if (want.field === 'location' && isText(el) && !el.value.trim()) {
@@ -1076,8 +1195,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Workday draws its date boxes (month, day, year) as tiny inputs under the date
   // it shows, so they're judged by that shown date, never taken for bot traps.
   const dateWrapper = el => el.closest('[data-automation-id="dateInputWrapper"]') || el.parentElement;
-  const controlsIn = root => [...root.querySelectorAll('input:not([type=hidden]):not([type=file]), select, textarea, button[aria-haspopup="listbox"]')]
-    .filter(el => !el.disabled && !el.readOnly && (isDatePart(el) ? visible(dateWrapper(el)) : visible(el) && !isTrap(el)));
+  const controlsIn = root => [...root.querySelectorAll('input:not([type=hidden]):not([type=file]), select, textarea, button[aria-haspopup="listbox"], [role="combobox"][aria-haspopup="listbox"]:not(input)')]
+    .filter(el => !el.disabled && !el.readOnly && el.getAttribute('aria-disabled') !== 'true' && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || isListbox(el))
+      && (isDatePart(el) ? visible(dateWrapper(el)) : visible(el) && !isTrap(el)));
 
   function sectionFor(pattern) {
     const heads = [...document.querySelectorAll('h1, h2, h3, h4, h5, legend, [role="heading"], [data-automation-id$="Header"]')]
@@ -1467,6 +1587,18 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     }
   }
 
+  // A consent question drawn as radios with no other answer ("Arbitration
+  // Acknowledgment ... I Acknowledge/Accept this Statement"): agreed like a
+  // consent box, once the user agreed to terms in Profile.
+  function consentRadio(group, question) {
+    const text = norm(`${question} ${group.map(choiceLabel).join(' ')}`);
+    if (!plan.agree_terms || !consent.test(text)) return null;
+    const required = isRequired(group[0], question);
+    if (marketing.test(text) && !(required && aboutThisApplication.test(text))) return null;
+    if (!required && optionalSharing.test(text)) return null;
+    return { values: AGREE, source: 'terms', strict: 'prefix' };
+  }
+
   // A box that states something ("I am authorized to work in the U.S.", "I will
   // not disclose confidential information"): ticked only when the user's own
   // answers make that statement true.
@@ -1526,7 +1658,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const question = questionOf(group[0]);
       const checked = group.find(r => r.checked);
       if (checked) { remember(question, choiceLabel(checked)); continue; }
-      const want = wanted(group[0], question) || disclosureFor(group.map(choiceLabel).join(' '));
+      const want = wanted(group[0], question) || disclosureFor(group.map(choiceLabel).join(' ')) || consentRadio(group, question);
       current = want;
       if (want && want.values) pickRadio(group, want.values, question, want.strict);
       current = null;
