@@ -271,27 +271,28 @@ def known_tools() -> list[str]:
 # Only LISTABLE ones are ever added (to a Skills line): the rest read oddly in a
 # skills list ("Debugging") and are only shown on the role page.
 CONCEPTS = [
-    ("REST APIs", r"(?-i:\bREST(ful)?\b)|\brestful\b|\bweb (apis?|services)\b", r"(?-i:\bREST(ful)?\b)|\brestful\b", r"\bapis?\b|endpoints?\b|\bexpress\b|fastapi|flask|django|spring boot|\bhttp\b", "tools", 1),
-    ("Unit testing", r"unit test|automated test|test.driven|\btdd\b|testing frameworks?", r"unit test", r"pytest|unittest|\bjest\b|junit|unit tests?|test (cases|suites?)", "tools", 1),
+    ("REST APIs", r"(?-i:\bREST(ful)?\b)|\brestful\b|\bweb (apis?|services)\b", r"(?-i:\bREST(ful)?\b)|\brestful\b", r"\bapis?\b|endpoints?\b|\bexpress\b|fastapi|flask|django|spring boot|\bhttp\b", "backend", 1),
+    ("Unit testing", r"unit test|automated test|test.driven|\btdd\b|testing frameworks?", r"unit test", r"pytest|unittest|\bjest\b|junit|unit tests?|test (cases|suites?)|\d+ (ci |unit )?tests\b", "testing", 1),
     ("SQL", r"\bsql\b|relational databases?", r"\bsql\b", r"postgres|mysql|sqlite|supabase|sql server", "languages", 1),
-    ("Data analysis", r"data analy|analy[sz]e (large )?data|analytics", r"data analy", r"pandas|statsmodels|numpy|analy[sz]ed|correlation|regression", "tools", 1),
-    ("Statistics", r"statistic", r"statistic", r"statsmodels|regression|permutation tests?|hypothesis|correlation", "tools", 0.8),
-    ("Machine learning", r"machine learning|\bml\b", r"machine learning", r"pytorch|tensorflow|scikit|keras|neural|trained (a |the )?models?|classifiers?", "tools", 1),
-    ("LLMs", r"\bllms?\b|large language models?|generative ai|\bgen ?ai\b", r"\bllms?\b|language models?", r"\bgpt\b|prompts?|\bagents?\b|tool.calling", "tools", 1),
-    ("AI agents", r"\bai agents?\b|agentic|\bagents?\b", r"\bagents?\b", r"tool.calling|\bllms?\b", "tools", 0.8),
-    ("Data visualization", r"visuali[sz]|dashboards?", r"visuali[sz]", r"dashboards?|charts?|plots?|matplotlib|\bd3\b|deck\.gl|mapbox|rendered", "tools", 0.8),
-    ("Front-end development", r"front.?end|user interfaces?", r"front.?end", r"\breact\b|\bvue\b|angular|\bvite\b|\bhtml\b|\bcss\b|web app", "tools", 0.8),
-    ("Back-end development", r"back.?end|server.side", r"back.?end", r"\bexpress\b|fastapi|flask|django|spring|\bapis?\b|endpoints?\b", "tools", 0.8),
-    ("Debugging", r"debug|troubleshoot", r"debug", r"\bbugs?\b|troubleshoot|\bfixed\b", "tools", 0.5),
-    ("Object-oriented programming", r"object.oriented|\boop\b", r"object.oriented", r"software design|\bclasses\b|\bjava\b|c\+\+|c#", "tools", 0.8),
-    ("Data structures and algorithms", r"data structures|algorithms", r"data structures|algorithms", r"data structures|algorithms", "tools", 0.8),
-    ("CI/CD", r"ci/?cd|continuous (integration|delivery|deployment)|github actions|jenkins", r"ci/?cd|continuous integration", r"github actions|jenkins|pipelines?", "tools", 1),
+    ("Data analysis", r"data analy|analy[sz]e (large )?data|analytics", r"data analy", r"pandas|statsmodels|numpy|analy[sz]ed|correlation|regression", "data", 1),
+    ("Statistics", r"statistic", r"statistic", r"statsmodels|regression|permutation tests?|hypothesis|correlation", "data", 0.8),
+    ("Machine learning", r"machine learning|\bml\b", r"machine learning", r"pytorch|tensorflow|scikit|keras|neural|trained (a |the )?models?|classifiers?", "ai", 1),
+    ("LLMs", r"\bllms?\b|large language models?|generative ai|\bgen ?ai\b", r"\bllms?\b|language models?", r"\bgpt\b|prompts?|\bagents?\b|tool.calling", "ai", 1),
+    ("AI agents", r"\bai agents?\b|agentic|\bagents?\b", r"\bagents?\b", r"tool.calling|\bllms?\b", "ai", 0.8),
+    ("Data visualization", r"visuali[sz]|dashboards?", r"visuali[sz]", r"dashboards?|charts?|plots?|matplotlib|\bd3\b|deck\.gl|mapbox|rendered", "data", 0.8),
+    ("Front-end development", r"front.?end|user interfaces?", r"front.?end", r"\breact\b|\bvue\b|angular|\bvite\b|\bhtml\b|\bcss\b|web app", "frameworks", 0.8),
+    ("Back-end development", r"back.?end|server.side", r"back.?end", r"\bexpress\b|fastapi|flask|django|spring|\bapis?\b|endpoints?\b", "backend", 0.8),
+    ("Debugging", r"debug|troubleshoot", r"debug", r"\bbugs?\b|troubleshoot|\bfixed\b", "testing", 0.5),
+    ("Object-oriented programming", r"object.oriented|\boop\b", r"object.oriented", r"software design|\bclasses\b|\bjava\b|c\+\+|c#", "concepts", 0.8),
+    ("Data structures and algorithms", r"data structures|algorithms", r"data structures|algorithms", r"data structures|algorithms", "concepts", 0.8),
+    ("CI/CD", r"ci/?cd|continuous (integration|delivery|deployment)|github actions|jenkins", r"ci/?cd|continuous integration", r"github actions|jenkins|pipelines?|\bci tests?\b|deployed (on|to)\b", "devops", 1),
     ("Agile", r"\bagile\b|\bscrum\b", r"\bagile\b|\bscrum\b", r"sprints?|stand.?ups?", "tools", 0.5),
-    ("Geospatial data", r"geospatial|\bgis\b|mapping", r"geospatial|\bgis\b", r"mapbox|geocod|\bmaps?\b", "tools", 0.8),
+    ("Geospatial data", r"geospatial|\bgis\b|mapping", r"geospatial|\bgis\b", r"mapbox|geocod|\bmaps?\b", "data", 0.8),
     ("3D graphics", r"\b3d\b|computer graphics|rendering", r"\b3d\b", r"meshe?s?\b|deck\.gl|three\.js|rendered", "tools", 0.8),
-    ("JSON", r"\bjson\b", r"\bjson\b", r"\bjson\b", "tools", 0.5),
+    ("JSON", r"\bjson\b", r"\bjson\b", r"\bjson\b", "backend", 0.5),
     ("Technical writing", r"technical writing|documentation", r"technical writing", r"\barticle\b|documented|co.authored|published", "tools", 0.5),
 ]
+DATABASES = {"postgresql", "mysql", "sqlite", "mongodb", "redis", "dynamodb", "snowflake", "supabase", "sql server", "elasticsearch"}
 # Tools a posting names that the resume shows through another tool.
 LISTABLE = {"REST APIs", "Unit testing", "SQL", "Data analysis", "Statistics", "Machine learning", "LLMs", "Data visualization",
             "Object-oriented programming", "Data structures and algorithms", "CI/CD", "Agile"}
@@ -358,7 +359,8 @@ def posting_skills(title: str, description: str) -> list[dict]:
         entry = group_for(tool)
         pattern = entry[1] if entry else names_pattern([tool])
         lower = tool.lower()
-        category = "languages" if lower in LANGUAGES else "frameworks" if lower in FRAMEWORKS | LIBRARIES else "tools"
+        category = ("languages" if lower in LANGUAGES else "frameworks" if lower in FRAMEWORKS | LIBRARIES
+                    else "data" if lower in DATABASES else "tools")
         note(tool, pattern, category, 1, pattern, RELATED.get(lower), spelled=True)
     return sorted(found.values(), key=lambda item: -item["score"])
 

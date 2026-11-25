@@ -193,10 +193,20 @@ def profile():
         return {r["key"]: r["value"] for r in conn.execute("SELECT * FROM profile")}
 
 
+def fix_superscripts(text: str) -> str:
+    """Layout mode sets a superscript apart like a column, and NFKC turns "²" into
+    "2": "10,000 m    2 building" is "10,000 m² building"."""
+    return re.sub(r"(?<=\d) ?(m|km|cm|mm|ft|in)    ([23])(?=[\s.,;:)]|$)", lambda m: f" {m.group(1)}{'²' if m.group(2) == '2' else '³'}", text or "")
+
+
 def resume_row():
     with db() as conn:
         row = conn.execute("SELECT * FROM resume ORDER BY id DESC LIMIT 1").fetchone()
-        return dict(row) if row else None
+    if not row:
+        return None
+    row = dict(row)
+    row["text"] = fix_superscripts(row["text"])
+    return row
 
 
 def log_activity(kind: str, summary: str):
@@ -359,7 +369,7 @@ def extract_text(path: Path, ext: str) -> str:
         lines = (re.sub(r"(?<=\S) {3,}(?=\S)", "    ", line.strip()) for line in text.splitlines())
         text = "\n".join(re.sub(r"(?<=\S) {2}(?=\S)", " ", line) for line in lines)
         words = pdfkit_words(path)
-        return respace(text, words) if words else text
+        return fix_superscripts(respace(text, words) if words else text)
     if ext == "docx":
         from docx import Document
         doc = Document(path)
@@ -641,7 +651,13 @@ def resume_entries(sections) -> list[dict]:
     return out
 
 
-SKILL_LINES = {"languages": r"language", "frameworks": r"framework|librar", "tools": r"tool|technolog|database|platform|developer|other"}
+# Which "Label:" a skill belongs under, for the usual headings and ones like
+# "Backend & Data", "AI & Search", or "Testing & DevOps".
+SKILL_LINES = {"languages": r"language", "frameworks": r"framework|librar|front|web|backend|back.end",
+               "data": r"data|database|backend|back.end", "backend": r"backend|back.end|\bapi|server|framework|web",
+               "testing": r"test|\bqa\b|quality", "devops": r"devops|deploy|\bci\b|cloud|infra",
+               "ai": r"\bai\b|\bml\b|machine|model|\bllm|intelligence", "concepts": r"concept|language",
+               "tools": r"tool|technolog|database|platform|developer|devops|other"}
 
 
 def skill_line(lines: list[str], category: str) -> int:
@@ -661,15 +677,15 @@ def add_skill_text(sections, add: dict) -> str:
             for entry in section["entries"] if section["kind"] == "projects" else []:
                 if not entry["header"] or entry_label(entry) != add["entry"]:
                     continue
-                name, bar, rest = entry["header"][0].partition(" | ")
-                if not bar:
+                parts = entry["header"][0].split(" | ")
+                index = project_tech_part(entry["header"][0])
+                if index < 0:
                     break
-                ends = [i for i in (rest.find(" | "), rest.find("    ")) if i >= 0]
-                cut = min(ends) if ends else len(rest)
-                tech, tail = rest[:cut], rest[cut:]
+                tech, gap, tail = parts[index].partition("    ")
                 award = re.search(r"\s+\d+(?:st|nd|rd|th)\b.*$", tech)  # an award the PDF ran into the list
                 core, award_text = (tech[:award.start()], tech[award.start():]) if award else (tech, "")
-                entry["header"][0] = f"{name}{bar}{core.rstrip(' ,')}, {add['name']}{award_text}{tail}"
+                parts[index] = f"{core.rstrip(' ,')}, {add['name']}{award_text}{gap}{tail}"
+                entry["header"][0] = " | ".join(parts)
                 return f"{add['entry']}'s tech list"
     slots = [(entry, key, index) for section in sections if section["kind"] == "skills" for entry in section["entries"]
              for key in ("header", "bullets") for index in range(len(entry[key])) if ":" in entry[key][index]]
@@ -951,7 +967,8 @@ def match_role(description: str, title: str = "", wave: str = "", sector: str = 
     candidate_skills = list(dict.fromkeys(explicit_skills + inferred_skills))
     # Whole-word matches, so "C" doesn't match every posting and "Java" doesn't match "JavaScript".
     matched_skills = term_hits(body, candidate_skills)
-    skill_score = round(100 * len(matched_skills) / max(1, min(8, len(candidate_skills)))) if candidate_skills else 0
+    # Eight matching skills is full marks; more can't push it past 100%.
+    skill_score = min(100, round(100 * len(matched_skills) / max(1, min(8, len(candidate_skills))))) if candidate_skills else 0
     targets = [x.strip().lower() for x in re.split(r"[,;\n]", p.get("target_roles", "")) if x.strip()]
     role_hits = [target for target in targets if target in title.lower() or (len(target.split()) > 1 and target in body)]
     role_score = 100 if role_hits else (35 if any(word in body for word in ("intern", "internship", "early career", "new grad")) else 0)
@@ -995,7 +1012,7 @@ def match_role(description: str, title: str = "", wave: str = "", sector: str = 
             reasons.append(f"The listing mentions {year}, while your profile says {grad_year}; verify eligibility before applying.")
 
     breakdown = {"skills": skill_score, "role": role_score, "goals": goal_score, "campaign": campaign_score, "graduation": grad_score}
-    score = round(skill_score * .40 + role_score * .25 + goal_score * .15 + campaign_score * .10 + grad_score * .10)
+    score = min(100, round(skill_score * .40 + role_score * .25 + goal_score * .15 + campaign_score * .10 + grad_score * .10))
     if eligibility == "possible mismatch":
         status = "Check eligibility"
     elif score >= 60:
@@ -1537,6 +1554,23 @@ def api_role_for_url():
     return {"job_id": row["id"], "title": row["title"]} if row else {"job_id": None}
 
 
+def url_like(text: str) -> bool:
+    """A project's link ("gobbler-plan.fly.dev", "github.com/you/app"), not a tool ("Node.js", "Fly.io", "deck.gl")."""
+    text = text.strip()
+    return bool(re.search(r"://|^www\.|/", text) or re.fullmatch(r"[\w-]+(\.[\w-]+){2,}", text)
+                or re.fullmatch(r"[\w-]+\.(com|dev|app|net|org|me|co|xyz|site|page|vercel\.app|netlify\.app)", text, re.I))
+
+
+def project_tech_part(header: str) -> int:
+    """Which " | " part of a project heading is its tech list (-1 if none): the first after the name that isn't a link."""
+    parts = header.split(" | ")
+    for index, part in enumerate(parts[1:], start=1):
+        core = part.split("    ")[0].strip()
+        if core and not url_like(core) and not re.fullmatch(r"[A-Z][a-z]{2,8}\.? (19|20)\d{2}", core):
+            return index
+    return -1
+
+
 def resume_skills(sections) -> list[str]:
     """Every skill the resume names, in its order: the Skills section's items,
     each project's tech list, then tools named in the projects and jobs
@@ -1554,7 +1588,9 @@ def resume_skills(sections) -> list[str]:
             if section["kind"] == "projects" and entry["header"]:
                 # "Name | TypeScript, React, Express | Sept. 2026": the middle part is the tech list
                 # (an award the PDF ran into it, "Supabase 1st Place", is cut off).
-                for part in entry["header"][0].split(" | ")[1:]:
+                parts = entry["header"][0].split(" | ")
+                tech = project_tech_part(entry["header"][0])
+                for part in parts[tech:tech + 1] if tech > 0 else []:
                     for item in part.split("    ")[0].split(","):
                         item = re.split(r"\s+\d+(?:st|nd|rd|th)\b", item.strip())[0].strip()
                         if item and len(item.split()) <= 3 and not re.search(r"\d|\b(place|track|award|winner|prize|finalist)\b", item, re.I):

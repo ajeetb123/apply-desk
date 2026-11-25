@@ -1218,6 +1218,29 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual((key("What is your active major?"), key("Declared Major"), key("Major"), key("Have you declared a major?")),
                          ("declared_major", "declared_major", None, None))
 
+    def test_fit_score_never_passes_100(self):
+        skills = ["Python", "TypeScript", "JavaScript", "SQL", "Java", "FastAPI", "React", "Docker", "Linux", "Git", "pytest", "Node.js"]
+        self.add_resume("Riley Chen\nEXPERIENCE\nExample Labs    2026 – Present\nSWE Intern    Remote\n• Built tools in " + ", ".join(skills)
+                        + "\nTECHNICAL SKILLS\nLanguages: " + ", ".join(skills))
+        posting = ("Software Engineering Intern. You will use " + ", ".join(skills) + " every day. ") * 3
+        match = application.match_role(posting, "Software Engineering Intern")
+        self.assertLessEqual(match["breakdown"]["skills"], 100)
+        self.assertLessEqual(match["score"], 100)
+
+    def test_new_resume_project_links_and_superscripts(self):
+        resume = ("Riley Chen\nPROJECTS\nTrail Map | trail-map.fly.dev    | TypeScript, Node.js, SQLite    Nov. 2026\n• Mapped a 10,000 m    2 park\n"
+                  "TECHNICAL SKILLS\nLanguages: Python\nBackend & Data: FastAPI\nTesting & DevOps: pytest, Docker")
+        self.assertEqual(application.fix_superscripts(resume).count("10,000 m² park"), 1)
+        sections = application.resume_outline(resume)[1]
+        self.assertNotIn("trail-map.fly.dev", application.resume_skills(sections))  # a link, not a skill
+        self.assertIn("SQLite", application.resume_skills(sections))
+        tuned = application.tune_resume(resume, "Basic Qualifications\nExperience building RESTful APIs and CI/CD pipelines\n", "Backend Engineer Intern")
+        self.assertIn("Backend & Data: FastAPI, REST APIs", tuned["text"])  # FastAPI shows it; it goes under the backend heading
+        self.assertIn("trail-map.fly.dev    | TypeScript", tuned["text"])  # the link stays where it was
+        lines = ["Languages: Python", "Backend & Data: FastAPI", "AI & Search: RAG", "Testing & DevOps: pytest"]
+        self.assertEqual([lines[application.skill_line(lines, c)].split(":")[0] for c in ("backend", "testing", "ai", "devops", "data")],
+                         ["Backend & Data", "Testing & DevOps", "AI & Search", "Testing & DevOps", "Backend & Data"])
+
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})
         self.assertEqual(response.status_code, 421)
