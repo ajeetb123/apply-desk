@@ -36,6 +36,10 @@ STANDARD_QUESTIONS = [
      "pattern": r"\b(eligib\w*|able|willing)\b.{0,80}\b(obtain|get|apply for|be granted|receive|maintain)\b.{0,40}clearance|eligib\w* for .{0,30}clearance|clearance eligib"},
     {"key": "has_clearance", "label": "Hold a security clearance", "default": "",
      "pattern": r"clearance"},
+    # The user's own employer being one of theirs ("current or former employee of a client, prime contractor,
+    # partner, vendor, or competitor"); a question about family goes to relatives.
+    {"key": "client_conflict", "label": "Work for one of the employer's clients, partners, vendors, or competitors", "default": "",
+     "pattern": r"^(?!.*\b(family|relatives?|household|spouse|parents?|siblings?)\b).*\b(employee|employed|work(ed|ing)? for)\b.{0,80}\b(client|customer|prime contractor|subcontractor|vendor|supplier|competitor|channel partner)s?\b"},
     {"key": "foreign_official", "label": "Foreign government official, or close to one", "default": "",
      "pattern": r"foreign (government )?official|(non.?u\.? ?s\.?|foreign) government|official of a foreign|politically exposed"},
     {"key": "dod_official", "label": "Current or former DoD official", "default": "",
@@ -45,7 +49,8 @@ STANDARD_QUESTIONS = [
     {"key": "heard_about", "label": "How you heard about roles", "default": "",
      "pattern": r"how did you (hear|learn|find)|how you (heard|learned|found)|hear about (us|this)|where did you (hear|find|learn)|referral source|^source$|candidate source"},
     # Before previously_employed: "relatives currently employed at Acme" is about relatives.
-    {"key": "relatives", "label": "Relatives employed there", "default": "", "pattern": r"relative|family members?|close personal relationship"},
+    {"key": "relatives", "label": "Relatives employed there", "default": "",
+     "pattern": r"relative|family members?|close personal relationship|member of your (immediate )?(family|household)|(immediate )?family or household|immediate family|household members?|members? of your household"},
     {"key": "previously_employed", "label": "Previously worked for the employer", "default": "",
      "pattern": r"former .{0,40}(employee|contractor|intern)\b|(held|had|completed) (a |an |any )?(prior|previous|past) internship|^(?!.*\bapplied\b).*((previously|ever|formerly) (worked|interned|been employed|employed|work (for|at))|former employee)|worked (for|at) (this|our|the) (organization|company)|current or former (employee|intern)|(currently|presently) (employed|working) (by|for|at|with)"},
     {"key": "currently_employed", "label": "Currently employed", "default": "",
@@ -73,7 +78,7 @@ STANDARD_QUESTIONS = [
     {"key": "gpa", "label": "GPA", "default": "", "pattern": r"^(?!.*comment).*(\bgpa\b|grade point|overall result)"},
     # Credits by the time the internship starts ("by the time your internship begins"); credits done so far stay the user's.
     {"key": "credits_by_start", "label": "Credit hours you'll have when an internship starts", "default": "",
-     "pattern": r"credit(s| hours?| units?)\b.{0,120}\b(by the time|before|by|prior to|when)\b.{0,60}\b(internship|co.?op|position|program|job)\b.{0,30}\b(begins?|starts?)|(by the time|before|prior to) .{0,60}(internship|co.?op).{0,30}(begins?|starts?).{0,120}credit(s| hours?| units?)\b"},
+     "pattern": r"credit(s| hours?| units?)\b.{0,120}\b(by the time|before|by|prior to|when)\b.{0,60}\b(internship|co.?op|position|program|job)\b.{0,30}\b(begins?|starts?)|(by the time|before|prior to) .{0,60}(internship|co.?op).{0,30}(begins?|starts?).{0,120}credit(s| hours?| units?)\b|credit(s| hours?| units?)\b.{0,120}\bby the time (you )?(would |will )?(start|begin)"},
     {"key": "class_year", "label": "Year in school", "default": "",
      "pattern": r"year in (school|college|university)|class (standing|year|level)|academic (year|standing|classification)|current year of (study|school)|what year are you|year of study|grade level"},
     {"key": "currently_student", "label": "Currently a student", "default": "",
@@ -399,9 +404,13 @@ def program_years(school: dict) -> float:
     return semesters / 2 if semesters > 0 else 0
 
 
-def presumed_answers(profile: dict, education: list[dict], experience: list[dict], applied_before: bool = False) -> list[dict]:
+def presumed_answers(profile: dict, education: list[dict], experience: list[dict], applied_before: bool = False, posting: str = "") -> list[dict]:
     out = []
     school = education[0] if education else {}
+    field = (school.get("field") or "").strip()
+    if field and posting and re.search(re.escape(field) + r"|related (technical |stem |engineering )?(field|discipline|major|degree)|stem (field|degree|major)|technical (field|degree|major)", posting, re.I):
+        out.append({"key": "required_major", "answer": "Yes", "options": YES, "assumed": False,
+                    "pattern": r"(majoring|major|degree|field of study|program of study).{0,60}(required|listed|preferred|eligible|identified|specified|qualifying).{0,40}(majors?|fields?|degrees?|posting|description|list)|required majors?"})
     if school.get("degree_options"):
         # "What is your Current Degree Program?": the degree and field ("Bachelor of Science in Computer Science").
         program = f"{school['degree_options'][0]} in {school['field']}" if school.get("field") else school["degree_options"][0]

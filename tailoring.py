@@ -409,3 +409,31 @@ def skills_to_add(matches: list[dict], limit: int = 2) -> list[dict]:
     skills list, and only ones asked for in the requirements or preferred
     skills, or mentioned more than once."""
     return [m for m in matches if m["status"] == "shown" and m["listable"] and (m["asked"] != "mentioned" or m["score"] >= 2)][:limit]
+
+
+# Other names a form's skills list (Workday's especially) may use for the same
+# skill. Only true synonyms: a skill is never swapped for a different one.
+SKILL_ALIASES = {
+    "rag": ["Retrieval-Augmented Generation", "Retrieval Augmented Generation"],
+    "llmevaluation": ["Large Language Models (LLMs)", "Large Language Models", "LLM"],
+    "llms": ["Large Language Models (LLMs)", "Large Language Models", "LLM"],
+    "bm25": ["Information Retrieval"],
+    "restapis": ["REST API", "RESTful API", "RESTful Web Services", "Application Programming Interface (API)"],
+    "unittesting": ["Unit Testing", "Software Testing"],
+    "ci/cd": ["Continuous Integration", "Continuous Integration and Continuous Delivery (CI/CD)", "CI/CD"],
+    "objectorientedprogramming": ["Object-Oriented Programming (OOP)", "Object Oriented Programming", "OOP"],
+    "datastructuresandalgorithms": ["Data Structures", "Algorithms"],
+    "datastructures": ["Data Structures and Algorithms"],
+    "dataanalysis": ["Data Analytics", "Data Analysis"],
+    "datavisualization": ["Data Visualization"],
+    "nginx": ["NGINX", "Nginx"],
+    "githubactions": ["GitHub"],
+    "linearalgebra": ["Linear Algebra"],
+    "statistics": ["Statistical Analysis", "Statistics"],
+    "discretemathematics": ["Discrete Mathematics", "Discrete Math"],
+}
+
+
+def skill_aliases(name: str) -> list[str]:
+    key = re.sub(r"[^a-z0-9/]", "", name.lower())
+    return [alias for alias in SKILL_ALIASES.get(key, []) if alias.lower() != name.lower()]

@@ -1609,6 +1609,18 @@ def resume_skills(sections) -> list[str]:
     return unique
 
 
+def coursework_topics(sections) -> list[str]:
+    """Courses on the resume that are skills in their own right ("Data Structures", "Linear Algebra")."""
+    topics = []
+    for section in sections:
+        for entry in section["entries"] if section["kind"] == "education" else []:
+            for line in entry["header"] + [b["text"] if isinstance(b, dict) else b for b in entry["bullets"]]:
+                label, colon, items = line.partition(":")
+                if colon and re.search(r"course", label, re.I):
+                    topics += [item.strip(" .") for item in items.split(",") if 2 < len(item.strip()) <= 40]
+    return topics
+
+
 def tailored_skills(sections, posting: str, declared: list[str], kind: str = "general", limit: int = 40) -> list[str]:
     """Skills for an application's skills field: everything the resume names,
     then the profile's, most important first for this kind of job."""
@@ -1632,10 +1644,10 @@ def api_fill_plan():
         with db() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     posting = f"{row['title']}\n{row['description']}" if row else ""
-    sections = []
+    sections, tuned = [], None
     if resume:
-        text = tune_resume(resume["text"], row["description"], row["title"] or "")["text"] if row else resume["text"]
-        sections = resume_outline(text)[1]
+        tuned = tune_resume(resume["text"], row["description"], row["title"] or "") if row else None
+        sections = resume_outline(tuned["text"] if tuned else resume["text"])[1]
     declared = [x.strip() for x in re.split(r"[,;\n]", p.get("skills", "")) if x.strip()]
     facts = applying.listing_facts(row["title"] or "", row["description"] or "", row["url"] or "") if row else {}
     # A preferred internship date says nothing about a full-time role.
@@ -1649,7 +1661,8 @@ def api_fill_plan():
     contact["graduation_dates"] = applying.date_formats(applying.parse_month_year(p.get("graduation", "")))
     education = applying.education_entries(sections, p)
     experience = applying.experience_entries(sections)
-    role = {"id": row["id"], "title": row["title"], "company": row["company"]} if row else None
+    role = {"id": row["id"], "title": row["title"], "company": row["company"],
+            "kind": {"ml": "Machine Learning", "fullstack": "Full Stack", "general": "Software"}.get(kind := tailoring.job_type(row["title"] or "", row["description"] or ""), kind.title())} if row else None
     # Answers the resume already gives: enrollment status from the degree, and
     # the current job ("Example Labs", employed: Yes). Profile answers win.
     derived = {"degree": education[0]["degree"]} if education and not p.get("enrollment_status") else {}
@@ -1663,6 +1676,16 @@ def api_fill_plan():
     # All of them, best first: the form adds them in order up to any limit it states.
     kind = tailoring.job_type(row["title"] or "", row["description"] or "") if row else "general"
     skills = tailored_skills(sections, posting, declared, kind)
+    # A skills field takes every relevant skill, not just what the resume lists:
+    # its coursework topics and every skill the posting asks for that the user's
+    # work shows (the tuned resume adds only two of those).
+    extra = coursework_topics(sections) + [m["name"] for m in (tuned["skills"] if tuned else [])
+                                           if m["status"] == "shown" and (m["listable"] or m["tool"])]
+    keys = {tailoring.skill_key(name) for name in skills}
+    for name in extra:
+        if tailoring.skill_key(name) not in keys:
+            keys.add(tailoring.skill_key(name))
+            skills.append(name)
     # The listing answers some questions itself, and gives "open to all" its places.
     facts = applying.listing_facts(row["title"], row["description"], row["url"]) if row else {"locations": []}
     answers = applying.follow_up_answers(hints) + applying.standard_answers(hints) + (applying.listing_answers(facts) if row else [])
@@ -1699,10 +1722,12 @@ def api_fill_plan():
     salary = {"text": f"I'm fine with the posted rate ({pay['text']})." if pay else "Negotiable", "hourly": pay.get("hourly"),
               "annual": pay.get("annual") or (round(pay["hourly"] * 2080) if pay.get("hourly") else None)}
     return {"profile": contact, "answers": answers, "learned": learned,
-            "presumed": applying.presumed_answers(hints, education, experience, applied_before), "salary": salary,
+            "presumed": applying.presumed_answers(hints, education, experience, applied_before, posting), "salary": salary,
             "stories": [{"name": story["name"], "kind": story["kind"], "text": story["text"]} for story in stories],
             "disclosures": applying.disclosure_answers(p), "today": applying.date_formats((today.year, today.month, today.day)),
-            "experience": experience, "education": education, "skills": skills, "start": {**start, "source": start_source},
+            "experience": experience, "education": education, "skills": skills,
+            # Other names a form's skills list may use ("Retrieval-Augmented Generation" for RAG).
+            "skill_aliases": {name: tailoring.skill_aliases(name) for name in skills if tailoring.skill_aliases(name)}, "start": {**start, "source": start_source},
             "drafts": applying.drafts(hints, education, experience, skills, role, posting, stories, applying.honor_lines(sections)),
             # The user's choice in Profile: tick required terms boxes and sign
             # with their name, for them to read before they submit.

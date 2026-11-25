@@ -990,6 +990,11 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const number = answer.number && isText(el) && (el.type === 'number' || /^how many|number of years/.test(q));
       return { values: number ? [answer.number] : answer.options, source: answer.assumed ? 'presumed' : 'answer', key: answer.key };
     }
+    // "What best describes the type of opportunities you're interested in?" as a list: the kind of work in this role's title.
+    if (!isText(el) && plan.role && /(type|kind|area|category) of (opportunit|role|position|work|job)|area of (interest|expertise)|which (team|area|function|discipline)|(job|career|functional) (area|family|function|category)/.test(q)) {
+      const words = String(plan.role.title || '').split(/[^A-Za-z+#]+/).filter(w => w.length > 1 && !/^(intern|internship|interns|summer|fall|spring|winter|the|and|for|with|program|co|op|of|in|at)$/i.test(w));
+      if (words.length) return { values: [...words, ...(plan.role.kind ? [plan.role.kind] : [])], source: 'answer' };
+    }
     // A required consent question with choices ("Yes, I consent"), once the user agreed to terms in Profile.
     if (plan.agree_terms && (!isText(el) || isCombo(el)) && consent.test(q) && !marketing.test(q) && isRequired(el, question)) {
       return { values: AGREE, source: 'terms', strict: 'prefix' };
@@ -1269,7 +1274,19 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         options = await freshOptions(input, before, previous, 6000);
       }
       previous = options ? options.map(optionLabel).join('|') : previous;
-      const match = options && skillOption(options, skill);
+      let match = options && skillOption(options, skill);
+      // The list may name it differently ("Retrieval-Augmented Generation" for RAG): try its other names.
+      for (const alias of (plan.skill_aliases || {})[skill] || []) {
+        if (match || pills().length >= limit) break;
+        await closeLists();
+        input = findInput() || input;
+        if (!input.isConnected) break;
+        search(input, '');
+        search(input, alias);
+        const more = await freshOptions(input, before, previous, 6000);
+        previous = more ? more.map(optionLabel).join('|') : previous;
+        match = more && !has(alias) ? skillOption(more, alias) : null;
+      }
       if (!match) skillsMissed.add(skill);  // the form's list doesn't have it; don't search again on the second pass
       if (match && !ticked(match) && !has(optionLabel(match))) {
         const count = pills().length;

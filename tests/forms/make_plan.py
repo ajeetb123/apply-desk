@@ -17,6 +17,7 @@ Austin, TX | 555-010-0100 | riley@example.com | github.com/rileytest
 EDUCATION
 Texas State University    San Marcos, TX
 B.S. in Computer Science    Expected December 2028
+Coursework: Data Structures, Linear Algebra
 
 EXPERIENCE
 Example Labs    Oct. 2026 – Present
@@ -37,6 +38,7 @@ TECHNICAL SKILLS
 Languages: Python, TypeScript, JavaScript, Java, SQL
 Frameworks & Libraries: React, Node.js, Express, FastAPI, pandas
 Tools & Databases: PostgreSQL, Git, pytest
+AI & Search: RAG
 """
 with sqlite3.connect(application.DB) as conn:
     conn.execute("INSERT INTO resume(filename,text,uploaded) VALUES(?,?,?)", ("resume.txt", RESUME, "2026-11-12"))

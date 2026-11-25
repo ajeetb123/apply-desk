@@ -1241,6 +1241,28 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual([lines[application.skill_line(lines, c)].split(":")[0] for c in ("backend", "testing", "ai", "devops", "data")],
                          ["Backend & Data", "Testing & DevOps", "AI & Search", "Testing & DevOps", "Backend & Data"])
 
+    def test_skills_field_gets_every_relevant_skill(self):
+        self.add_resume("Riley Chen\nEDUCATION\nState University    Austin, TX\nB.S. in Computer Science    Expected May 2029\nCoursework: Data Structures, Linear Algebra\n"
+                        "PROJECTS\nTrail Map | TypeScript, React, Express | 2026\n• Built a web app with an Express API\n"
+                        "TECHNICAL SKILLS\nLanguages: Python, TypeScript\nAI & Search: RAG")
+        job_id = self.client.post("/api/evaluate", json={"title": "Backend Engineer Intern", "company": "Acme",
+                                                         "description": ("Basic Qualifications\nRESTful APIs, unit testing, and Node.js\n" * 3)}).json["saved_job_id"]
+        plan = self.client.get(f"/api/fill-plan?job_id={job_id}").json
+        for name in ("Python", "RAG", "Data Structures", "Linear Algebra", "REST APIs", "Node.js"):
+            self.assertIn(name, plan["skills"])
+        self.assertIn("Retrieval-Augmented Generation", plan["skill_aliases"]["RAG"])
+        self.assertNotIn("AWS", plan["skills"])
+
+    def test_family_client_and_major_questions(self):
+        key = application.applying.standard_key
+        self.assertEqual(key("Is any member of your family or household a current Example Corp employee?"), "relatives")
+        self.assertEqual(key("Is anyone in your immediate family a government official or employee?"), "relatives")
+        self.assertEqual(key("Are you a current or former employee of an organization that may become an Example Corp client, prime contractor, or partner?"), "client_conflict")
+        self.assertEqual(key("How many credit hours will you have completed by the time you would start this position?"), "credits_by_start")
+        presumed = application.applying.presumed_answers({}, [{"field": "Computer Science", "degree_options": []}], [], posting="Majors: Computer Science or a related field")
+        owner = next(a for a in presumed if a["key"] == "required_major")
+        self.assertTrue(re.search(owner["pattern"], "are you currently majoring in any of the required majors identified in the job posting"))
+
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})
         self.assertEqual(response.status_code, 421)
