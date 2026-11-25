@@ -24,6 +24,7 @@
     <a class="nav-item{{ ' is-active' if page in ('today', 'job') }}" href="/">{{ ui.icon('today') }}<span>Today</span>{% if nav.roles %}<em>{{ nav.roles }}</em>{% endif %}</a>
     <a class="nav-item{{ ' is-active' if page == 'resume' }}" href="/resume">{{ ui.icon('resume') }}<span>Resume</span>{% if not nav.resume %}<i class="nav-dot" title="Add your resume"></i>{% endif %}</a>
     <a class="nav-item{{ ' is-active' if page == 'profile' }}" href="/profile">{{ ui.icon('profile') }}<span>Profile</span></a>
+    <a class="nav-item{{ ' is-active' if page == 'batch' }}" href="/batch">{{ ui.icon('bolt') }}<span>Batch</span></a>
   </nav>
   <div class="sidebar-fill"></div>
   <section class="agent" data-agent data-state="web">

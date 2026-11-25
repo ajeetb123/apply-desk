@@ -60,6 +60,13 @@
         </div>
       </section>
 
+      <section class="panel" id="batch" data-reveal style="--i:7">
+        <header class="panel-head"><div><h2>Submitting batch applications</h2><p class="sub">In batch mode (Shift-` on a page of postings) you submit every application yourself. After 10 in a row that you submit exactly as Apply Desk filled them, it asks whether to submit fully clean ones itself. You can turn that on or off here.</p></div></header>
+        <div class="fields">
+          <label class="wide"><span>Submit fully clean batch applications for me</span><select name="auto_submit_clean"><option value="">No, I submit each one</option><option value="Asked"{{ ' selected' if profile.get('auto_submit_clean') == 'Asked' }}>No, and don't ask again</option><option value="Yes"{{ ' selected' if profile.get('auto_submit_clean') == 'Yes' }}>Yes, when every answer is my own and nothing is blank</option></select></label>
+        </div>
+      </section>
+
       <section class="panel" id="model" data-reveal style="--i:7">
         <header class="panel-head"><div><h2>A model on this Mac</h2><p class="sub">With <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> running, Apply Desk can ask a model installed on this Mac about the questions its own rules can't settle: unusual multiple-choice questions and essay drafts. It runs entirely on this computer, sees only your resume, your answers here, and the job posting, and every answer is marked in the review. It never answers facts you haven't given (like GPA) and never touches self-identification, contact details, or pay. {% if local_models %}Installed: {{ local_models|join(', ') }}.{% else %}Ollama isn't running right now, so this stays off until it is.{% endif %}</p></div></header>
         <div class="fields">

@@ -112,6 +112,63 @@ enum Chrome {
         return tab(from: run(script))
     }
 
+    /// Opens `url` in a new tab of Chrome's front window and keeps the tab the
+    /// user is on in front; returns the new tab's id.
+    static func openTab(_ url: String) -> String? {
+        guard isRunning else { return nil }
+        let script = """
+        tell application id "\(bundleID)"
+            if (count of windows) is 0 then make new window
+            set theWindow to front window
+            set keep to active tab index of theWindow
+            set newTab to make new tab at end of tabs of theWindow with properties {URL:"\(appleScriptLiteral(url))"}
+            set active tab index of theWindow to keep
+            return (id of newTab) as text
+        end tell
+        """
+        return run(script)
+    }
+
+    /// Brings Chrome forward with the tab `id` in front (from a notice's button).
+    static func show(tabID: String) {
+        let script = """
+        tell application id "\(bundleID)"
+            repeat with theWindow in windows
+                set n to 0
+                repeat with theTab in tabs of theWindow
+                    set n to n + 1
+                    if ((id of theTab) as text) is "\(appleScriptLiteral(tabID))" then
+                        set active tab index of theWindow to n
+                        set index of theWindow to 1
+                        activate
+                        return "ok"
+                    end if
+                end repeat
+            end repeat
+            return ""
+        end tell
+        """
+        _ = run(script)
+    }
+
+    /// Closes the tab `id` (a posting batch mode decided to skip).
+    static func closeTab(_ tabID: String) {
+        let script = """
+        tell application id "\(bundleID)"
+            repeat with theWindow in windows
+                repeat with theTab in tabs of theWindow
+                    if ((id of theTab) as text) is "\(appleScriptLiteral(tabID))" then
+                        close theTab
+                        return "ok"
+                    end if
+                end repeat
+            end repeat
+            return ""
+        end tell
+        """
+        _ = run(script)
+    }
+
     /// Any tab by its id, wherever it is now: another window, or behind the
     /// front tab (a fill keeps running in a tab the user has left).
     static func tab(id: String) -> Tab? {

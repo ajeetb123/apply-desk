@@ -8,8 +8,8 @@ set -euo pipefail
 ROOT="${0:A:h}"
 PACKAGE=0
 [[ "${1:-}" == "--package" ]] && PACKAGE=1
-VERSION="2.5"
-BUILD="9"
+VERSION="2.6"
+BUILD="10"
 BUNDLE_ID="com.ajeet.applydesk"
 APP_NAME="Apply Desk.app"
 DATA="$HOME/Library/Application Support/Apply Desk"
@@ -92,7 +92,7 @@ done
 
 echo "Bundling the local service…"
 cp "$ROOT/app.py" "$ROOT/tailoring.py" "$ROOT/applying.py" "$RESOURCES/backend/"
-cp "$ROOT/macos/autofill.js" "$RESOURCES/"
+cp "$ROOT/macos/autofill.js" "$ROOT/macos/batch.js" "$RESOURCES/"
 /usr/bin/ditto "$ROOT/templates" "$RESOURCES/backend/templates"
 /usr/bin/ditto "$ROOT/static" "$RESOURCES/backend/static"
 if (( PACKAGE )); then

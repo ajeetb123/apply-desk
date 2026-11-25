@@ -53,6 +53,12 @@ enum Autofill {
     /// What the user has changed by hand since the last check, taken out of the tab so it's sent once.
     static let correctionsScript = "(() => { try { const seen = sessionStorage.getItem('applyDeskSeen'); if (seen) sessionStorage.removeItem('applyDeskSeen'); return seen || ''; } catch (error) { return ''; } })()"
 
+    /// Batch mode's helpers (batch.js) and one call to them: "collect()", "confirmed()", or "submit()".
+    static func batchScript(_ call: String) -> String? {
+        guard let source = Bundle.main.url(forResource: "batch", withExtension: "js").flatMap({ try? String(contentsOf: $0, encoding: .utf8) }) else { return nil }
+        return source + "\nJSON.stringify(window.__applyDeskBatch.\(call))"
+    }
+
     /// The filler plus the call that starts it. `plan` is GET /api/fill-plan.
     static func script(plan: Data, resume: (name: String, pdf: Data)? = nil, source: String? = nil) -> String? {
         guard let filler = source ?? Bundle.main.url(forResource: "autofill", withExtension: "js").flatMap({ try? String(contentsOf: $0, encoding: .utf8) }) else {

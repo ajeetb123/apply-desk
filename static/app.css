@@ -666,3 +666,15 @@ html:not(.native) [data-native-only], html.native [data-web-only] { display: non
 .skill-named b { color: color-mix(in srgb, var(--mint) 80%, var(--ink)); }
 .skill-missing .skill-where { color: var(--ink-3); }
 @media (max-width: 640px) { .skill-row { grid-template-columns: 1fr auto; } .skill-where { grid-column: 1 / -1; } }
+
+/* Batch page */
+.batch-group { margin-bottom: 14px; }
+.batch-count { font-style: normal; font-size: 12px; font-weight: 650; color: var(--ink-2); margin-left: 6px; padding: 2px 8px; border-radius: 99px; box-shadow: inset 0 0 0 1px var(--line-2); }
+.batch-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 2px; }
+.batch-list li { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: 12px; align-items: baseline; padding: 8px 10px; border-radius: var(--radius-sm); font-size: 13px; }
+.batch-list li:nth-child(odd) { background: var(--panel-2); }
+.batch-list span { color: var(--ink-2); }
+.batch-links { display: flex; gap: 10px; }
+.batch-ready h2 { color: color-mix(in srgb, var(--mint) 80%, var(--ink)); }
+.batch-needs_you h2 { color: color-mix(in srgb, var(--amber) 85%, var(--ink)); }
+@media (max-width: 640px) { .batch-list li { grid-template-columns: 1fr; } }

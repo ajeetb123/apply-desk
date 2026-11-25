@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+{% import '_ui.html' as ui %}
+{% block body %}
+<section class="page-head">
+  <p class="eyebrow" data-reveal>Batch</p>
+  <h1 data-reveal style="--i:1">Applying to a list</h1>
+  <p class="lede" data-reveal style="--i:2">On a page of postings in Chrome, press <kbd class="key-wide">⇧`</kbd>. Apply Desk opens each posting it should apply to in its own tab, fills it up to Review, and lets you know. You submit each one.</p>
+</section>
+
+{% if not groups %}
+<div class="panel">{{ ui.empty('No list yet', 'Open a page with many postings in Chrome (a job board search, a careers page, or an internship list) and press Shift-` there.') }}</div>
+{% else %}
+<section class="panel batch-trust" data-reveal style="--i:3">
+  <header class="panel-head"><div><h2>Submitting</h2>
+    {% if auto_submit %}<p class="sub">Apply Desk submits fully clean applications itself (every answer your own, nothing drafted or guessed, nothing left blank). Everything else waits for you. Turn this off in Profile.</p>
+    {% else %}<p class="sub">You submit every application. After {{ trust }} in a row that you submit exactly as Apply Desk filled them, it asks once whether to submit fully clean ones itself. So far: <b>{{ streak }} of {{ trust }}</b>.</p>{% endif %}
+  </div></header>
+</section>
+{% for status, title, rows in groups %}
+<section class="panel batch-group batch-{{ status }}" data-reveal style="--i:{{ loop.index + 3 }}">
+  <header class="panel-head"><div><h2>{{ title }} <em class="batch-count">{{ rows|length }}</em></h2></div></header>
+  <ul class="batch-list">
+    {% for r in rows %}
+    <li>
+      <b>{% if r.title %}{{ r.title }}{% else %}{{ (r.list_text or r.url)[:90] }}{% endif %}</b>
+      <span>{{ r.company or '' }}{% if r.reason %}{% if r.company %} · {% endif %}{{ r.reason }}{% endif %}{% if r.auto %} · submitted by Apply Desk{% endif %}</span>
+      <span class="batch-links">{% if r.job_id %}<a href="/job/{{ r.job_id }}">Role</a>{% endif %}<a href="{{ r.url }}" target="_blank" rel="noopener" data-web-only>Posting</a></span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endfor %}
+{% endif %}
+{% endblock %}

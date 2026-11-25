@@ -51,7 +51,7 @@ LINK_FIELDS = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("website", "Port
 # Values the Mac app may type into clearly labeled, empty application fields.
 AUTOFILL_FIELDS = [key for key, _ in CONTACT_FIELDS + EDUCATION_FIELDS + LINK_FIELDS]
 PROFILE_FIELDS = AUTOFILL_FIELDS + ["target_roles", "skills", "career_goals", "role_campaigns", "larp"] + [
-    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS] + applying.DISCLOSURE_KEYS + ["agree_terms", "use_model", "no_linkedin"] + applying.BACKGROUND_KEYS
+    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS] + applying.DISCLOSURE_KEYS + ["agree_terms", "use_model", "no_linkedin", "auto_submit_clean"] + applying.BACKGROUND_KEYS
 # A model running on this Mac (Ollama). Only this address is ever used, so
 # nothing the user has entered leaves the computer.
 OLLAMA = "http://127.0.0.1:11434"
@@ -92,6 +92,11 @@ def init_db():
         -- same question comes up again.
         CREATE TABLE IF NOT EXISTS answers (id INTEGER PRIMARY KEY, question TEXT NOT NULL UNIQUE, label TEXT NOT NULL, answer TEXT NOT NULL, updated TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL, created TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', attached INTEGER NOT NULL DEFAULT 0, filled TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, extension TEXT NOT NULL, pdf BLOB, pages INTEGER NOT NULL DEFAULT 1, changes TEXT NOT NULL DEFAULT '[]');
+        -- Postings from a page of many that Apply Desk applies to one by one
+        -- (status: queued, skipped, working, ready, needs_you, submitted, closed).
+        CREATE TABLE IF NOT EXISTS batch_items (id INTEGER PRIMARY KEY, batch TEXT NOT NULL, url TEXT NOT NULL, list_text TEXT NOT NULL DEFAULT '',
+            job_id INTEGER, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', clean INTEGER NOT NULL DEFAULT 0, changed INTEGER NOT NULL DEFAULT 0,
+            auto INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL, updated TEXT NOT NULL);
         """)
         # Personal contact details live only in the ignored local database. Do
         # not put an individual's address, phone, or email into tracked code.
@@ -106,6 +111,9 @@ def init_db():
             "career_goals": "",
             "role_campaigns": "",
             "larp": "2", "gpa": "", "gpa_range": "", "preferred_start": "", "college_start": "",
+            # Batch mode: how many batch applications in a row were submitted exactly as filled,
+            # and whether the user let Apply Desk submit fully clean ones ("Yes", or "Asked" when they said not yet).
+            "clean_streak": "0", "auto_submit_clean": "",
         }
         defaults.update({spec["key"]: spec["default"] for spec in applying.STANDARD_QUESTIONS if spec["key"] not in defaults})
         # 2.2: background answers ("Ever convicted?", "Languages you speak") and
@@ -1448,6 +1456,153 @@ def application_print(job_id, application_id):
     if not row:
         return "Not found", 404
     return render_resume(row["source"], resume_pdf_name()[:-4])
+
+
+# ---------------------------------------------------------------------------
+# Batch mode: apply to most postings on a page of many, each in its own tab,
+# stopping at Review. Skipped: quant and trading, roles that need an active
+# clearance the user doesn't hold, anything but internships and co-ops, and
+# postings already applied to.
+
+QUANT_FIRMS = (r"jane street|citadel|hudson river|optiver|imc trading|susquehanna|\bsig\b|\bdrw\b|jump trading|two sigma|d\.? ?e\.? shaw|virtu|akuna|"
+               r"five rings|tower research|old mission|belvedere|flow traders|chicago trading|xtx|millennium|point72|radix|headlands|quantlab|voleon|renaissance tech")
+SKIP_QUANT = re.compile(r"\bquant(itative)?\b|\btrad(ing|er)s?\b|market[- ]making|hedge fund|prop(rietary)? trading|\bhft\b|" + QUANT_FIRMS, re.I)
+QUANT_POSTING = re.compile(r"quantitative (trading|research|developer|analyst)|quant (research|trader|developer)|market[- ]making|proprietary trading|high[- ]frequency trading", re.I)
+ACTIVE_CLEARANCE = re.compile(r"\b(active|current)\b.{0,40}\b(ts/sci|top secret|secret|security)\b.{0,20}clearance|clearance\b.{0,30}\b(required|must)\b.{0,40}\b(active|current)\b|must (currently )?(hold|possess|have) an? active", re.I)
+INTERNSHIP = re.compile(r"\bintern(ship)?s?\b|\bco-?op\b|summer (analyst|associate|20\d\d)", re.I)
+
+
+def batch_decision(p: dict, text: str = "", title: str = "", company: str = "", description: str = "") -> str:
+    """Why a posting is skipped ("" to apply), from its list row or, once open, the posting itself."""
+    named = f"{title} {company} {text}"
+    if SKIP_QUANT.search(named) or QUANT_POSTING.search(description or ""):
+        return "Quant or trading"
+    if (p.get("has_clearance") or "").lower() != "yes" and ACTIVE_CLEARANCE.search(f"{text} {description}"):
+        return "Needs an active clearance"
+    known = title or text
+    if known and not INTERNSHIP.search(f"{title} {text}"):
+        return "Not an internship or co-op"
+    return ""
+
+
+# A batch application is clean when every review line is the user's own answer:
+# nothing drafted, guessed, picked by the model, or left blank that's required.
+CLEAN_FLAGS = ("Replaced the text Workday read", "Your self-identification answer", "Chose the decline option", "From an answer you gave",
+               "Ticked for you", "Signed with your name", "You don't share LinkedIn", "From the GPA range", "You said you're open to all",
+               "Your correction", "Left blank (optional)")
+
+
+def batch_clean(items: list) -> bool:
+    for item in items or []:
+        flag = (item.get("flag") or "").strip()
+        if flag and not flag.startswith(CLEAN_FLAGS):
+            return False
+    return True
+
+
+def applied_keys() -> set:
+    with db() as conn:
+        urls = [r[0] for r in conn.execute("SELECT jobs.url FROM applications JOIN jobs ON jobs.id=applications.job_id WHERE applications.attached=1")]
+        urls += [r[0] for r in conn.execute("SELECT url FROM batch_items WHERE status IN ('ready','submitted')")]
+    return {applying.posting_key(url) for url in urls if url}
+
+
+@app.post("/api/batch/start")
+def api_batch_start():
+    """A page's postings → which ones Apply Desk applies to, and why it skips the rest."""
+    items = (request.get_json(silent=True) or {}).get("items") or []
+    p, done, seen, out = profile(), applied_keys(), set(), []
+    batch = datetime.now().isoformat(timespec="seconds")
+    with db() as conn:
+        for item in items[:150]:
+            url = safe_http_url(str(item.get("url", "")))
+            text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()[:400]
+            if not url:
+                continue
+            key = applying.posting_key(url)
+            reason = "Listed twice" if key in seen else "Already applied" if key in done else batch_decision(p, text=text)
+            seen.add(key)
+            status = "skipped" if reason else "queued"
+            now = datetime.now().isoformat(timespec="minutes")
+            item_id = conn.execute("INSERT INTO batch_items(batch,url,list_text,status,reason,created,updated) VALUES(?,?,?,?,?,?,?)",
+                                   (batch, url, text, status, reason, now, now)).lastrowid
+            out.append({"id": item_id, "url": url, "text": text, "apply": not reason, "reason": reason})
+    applying_count = sum(1 for item in out if item["apply"])
+    log_activity("Batch started", f"Applying to {applying_count} of {len(out)} postings on a page")
+    return {"batch": batch, "items": out, "auto_submit": p.get("auto_submit_clean") == "Yes"}
+
+
+@app.post("/api/batch/check")
+def api_batch_check():
+    """Once a posting is open and saved as a role: apply, or the reason to skip it."""
+    data = request.get_json(silent=True) or {}
+    item_id, job_id = int(data.get("item") or 0), int(data.get("job_id") or 0)
+    with db() as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        item = conn.execute("SELECT * FROM batch_items WHERE id=?", (item_id,)).fetchone()
+    if not row or not item:
+        return {"apply": True, "reason": ""}
+    reason = batch_decision(profile(), title=row["title"] or "", company=row["company"] or "", description=row["description"] or "")
+    if not reason and applying.posting_key(row["url"] or "") in applied_keys():
+        reason = "Already applied"
+    with db() as conn:
+        conn.execute("UPDATE batch_items SET job_id=?, status=?, reason=?, updated=? WHERE id=?",
+                     (job_id, "skipped" if reason else "working", reason, datetime.now().isoformat(timespec="minutes"), item_id))
+    return {"apply": not reason, "reason": reason, "title": row["title"] or "", "company": row["company"] or ""}
+
+
+@app.post("/api/batch/update")
+def api_batch_update():
+    """A batch application's progress. A submit counts toward the clean record only
+    when nothing was flagged and the user changed nothing; after ten in a row
+    Apply Desk asks (once) whether to submit fully clean ones itself."""
+    data = request.get_json(silent=True) or {}
+    item_id, status = int(data.get("item") or 0), str(data.get("status") or "")
+    if status not in {"working", "ready", "needs_you", "submitted", "closed", "skipped", "failed"}:
+        return {"error": "Unknown status."}, 400
+    p = profile()
+    now = datetime.now().isoformat(timespec="minutes")
+    with db() as conn:
+        item = conn.execute("SELECT * FROM batch_items WHERE id=?", (item_id,)).fetchone()
+        if not item:
+            return {"error": "No such batch item."}, 404
+        clean = batch_clean(data["items"]) if "items" in data else bool(item["clean"])
+        changed = bool(item["changed"]) or bool(data.get("changed"))
+        conn.execute("UPDATE batch_items SET status=?, reason=?, clean=?, changed=?, auto=?, updated=? WHERE id=?",
+                     (status, str(data.get("reason") or "")[:300], int(clean), int(changed), int(bool(data.get("auto")) or bool(item["auto"])), now, item_id))
+        streak = int(p.get("clean_streak") or 0)
+        if status == "submitted" and item["status"] != "submitted":
+            streak = streak + 1 if clean and not changed else 0
+            conn.execute("INSERT INTO profile(key,value) VALUES('clean_streak',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(streak),))
+    ask = status == "submitted" and streak >= BATCH_TRUST and (p.get("auto_submit_clean") or "") == ""
+    return {"clean": clean, "streak": streak, "ask_auto_submit": ask}
+
+
+BATCH_TRUST = 10   # submitted-unchanged applications in a row before Apply Desk offers to submit clean ones
+
+
+@app.post("/api/batch/auto-submit")
+def api_batch_auto_submit():
+    """The user's answer to "Submit fully clean applications yourself?" ("Asked" keeps asking off until they turn it on in Profile)."""
+    enabled = bool((request.get_json(silent=True) or {}).get("enabled"))
+    with db() as conn:
+        conn.execute("INSERT INTO profile(key,value) VALUES('auto_submit_clean',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("Yes" if enabled else "Asked",))
+    log_activity("Batch setting", "Submits fully clean applications" if enabled else "Kept submitting to the user")
+    return {"auto_submit": enabled}
+
+
+@app.route("/batch")
+def batch_page():
+    with db() as conn:
+        latest = conn.execute("SELECT batch FROM batch_items ORDER BY id DESC LIMIT 1").fetchone()
+        rows = [dict(r) for r in conn.execute(
+            "SELECT b.*, j.title, j.company FROM batch_items b LEFT JOIN jobs j ON j.id=b.job_id WHERE b.batch=? ORDER BY b.id", (latest[0],))] if latest else []
+    groups = [(status, title, [r for r in rows if r["status"] == status]) for status, title in
+              (("ready", "Ready for you to submit"), ("needs_you", "Needs you"), ("working", "Working on it"), ("queued", "Up next"),
+               ("submitted", "Submitted"), ("skipped", "Skipped"), ("closed", "Closed"), ("failed", "Couldn't finish"))]
+    p = profile()
+    return render_template("batch.html", page="batch", title="Applying to a list", groups=[g for g in groups if g[2]], total=len(rows),
+                           streak=int(p.get("clean_streak") or 0), trust=BATCH_TRUST, auto_submit=p.get("auto_submit_clean") == "Yes")
 
 
 @app.post("/api/applications")

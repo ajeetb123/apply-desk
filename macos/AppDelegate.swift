@@ -43,6 +43,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var learningTabs: [String: Date] = [:]     // tab id → when its last fill ended; the user's corrections are collected from it
     private var learningTimer: Timer?
     private var resumeMakers: [String: ResumePDF] = [:] // tab id → the resume being rendered for its fill
+    // Batch mode (⇧` on a page of postings): each posting it applies to opens in
+    // its own tab, two fill at a time, and each stops at Review for the user.
+    private var batchHotKey: HotKey?
+    private struct BatchItem { let id: Int; let url: String; var label: String; var status = "working" }
+    private var batchQueue: [BatchItem] = []
+    private var batchFilling: [String: BatchItem] = [:]   // tab id → item using one of the two slots
+    private var batchTabs: [String: BatchItem] = [:]      // tab id → every batch tab still open, watched for a submit
+    private var batchAutoSubmit = false
+    private var batchTimer: Timer?
+    private var batchCounts = (ready: 0, needs: 0, skipped: 0, submitted: 0)
+    private let batchSlots = 2
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let event = NSAppleEventManager.shared().currentAppleEvent
@@ -64,9 +75,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // One key, `, claimed only while a job or application page is in front
         // in Chrome (see tick()); everywhere else it types a backtick as usual.
         fillHotKey = HotKey(keyCode: kVK_ANSI_Grave, modifiers: 0) { [weak self] in self?.fillApplication() }
+        // ⇧`, also only while Chrome is in front: apply to every posting on a page of many.
+        batchHotKey = HotKey(keyCode: kVK_ANSI_Grave, modifiers: shiftKey) { [weak self] in self?.applyToList() }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                if !Chrome.isFrontmost { self?.fillHotKey?.isEnabled = false }
+                if !Chrome.isFrontmost { self?.fillHotKey?.isEnabled = false; self?.batchHotKey?.isEnabled = false }
                 else { self?.tick() }
             }
         }
@@ -171,9 +184,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         let scan = item("Scan Current Chrome Tab", #selector(scanNow), "j")
         let fill = item("Fill Application in Chrome (` key)", #selector(fillApplication))
+        let batch = item("Apply to Every Posting on This Page (⇧`)", #selector(applyToList))
+        let list = item("Show Batch List", #selector(openBatchList))
         let watch = item("Watch Chrome for Listings", #selector(toggleWatching))
         watch.state = watching ? .on : .off
-        for entry in [scan, fill, watch] { menu.addItem(entry) }
+        for entry in [scan, fill, batch, list, watch] { menu.addItem(entry) }
         if chromeStatus != .ready && chromeStatus != .notRunning {
             menu.addItem(item(chromeStatus == .javaScriptOff ? "Fix Chrome Setting…" : "Allow Chrome Access…", #selector(fixChromeAccess)))
         }
@@ -390,13 +405,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func tick() {
         guard Chrome.isRunning else {
             fillHotKey?.isEnabled = false
+            batchHotKey?.isEnabled = false
             if chromeStatus == .ready || chromeStatus == .javaScriptOff { setChromeStatus(.notRunning) }
             return
         }
         guard Chrome.isFrontmost else {
             fillHotKey?.isEnabled = false
+            batchHotKey?.isEnabled = false
             return
         }
+        batchHotKey?.isEnabled = true
         if chromeStatus == .notRunning { setChromeStatus(.ready) }
         if !accessVerified {
             // Check permission without sending Chrome anything, so macOS never
@@ -644,14 +662,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             _ = Chrome.runJavaScript(Autofill.stopScript, tabID: tab.id)
             return toasts.show(Toast(title: "Stopping…", detail: "Press ` again whenever you like. It continues from there and leaves what's filled alone.", symbol: "pause.circle"))
         }
+        startFill(tab)
+    }
+
+    /// Starts the filler in `tab`: for the role given (batch mode already saved
+    /// it), or the one this page belongs to.
+    private func startFill(_ tab: Chrome.Tab, role knownRole: Int? = nil) {
         fills[tab.id] = Date()
-        roleForFill(tab) { [weak self] role in
+        let lookup: (@escaping (Int?) -> Void) -> Void = { [weak self] done in
+            if let role = knownRole { done(role) } else { self?.roleForFill(tab, completion: done) }
+        }
+        lookup { [weak self] role in
             guard let self = self else { return }
             self.fetchPlan(role: role, startingModel: true) { [weak self] plan in
                 guard let self = self else { return }
                 guard let plan = plan, let profile = plan["profile"] as? [String: Any],
                       profile.values.contains(where: { ($0 as? String).map { !$0.isEmpty } ?? false }) else {
                     self.fills[tab.id] = nil
+                    self.batchEnded(tab.id, status: "failed", reason: "No Profile details")
                     return self.toasts.show(Toast(title: "Add your details first", detail: "Apply Desk fills applications from your profile.",
                                                   symbol: "person.text.rectangle", actionTitle: "Open Profile", action: { [weak self] in self?.workspace.show(path: "profile") }))
                 }
@@ -748,9 +776,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return toasts.show(Toast(title: "Stopped", detail: "Press ` to start when you're ready.", symbol: "pause.circle"))
         }
         guard let planData = try? JSONSerialization.data(withJSONObject: plan),
-              let script = Autofill.script(plan: planData, resume: resume.map { (name, $0.pdf) }) else { fills[tab.id] = nil; return }
+              let script = Autofill.script(plan: planData, resume: resume.map { (name, $0.pdf) }) else { fills[tab.id] = nil; batchEnded(tab.id, status: "failed", reason: "Couldn't start"); return }
         guard Chrome.runJavaScript(script, tabID: tab.id) != nil else {
             fills[tab.id] = nil
+            batchEnded(tab.id, status: "needs_you", reason: "This page wouldn't run Apply Desk")
             if Chrome.lastFailure != nil { noteChromeFailure(); fixChromeAccess() }
             else { toasts.show(Toast(title: "Couldn't read this form", detail: "This page may block autofill. Enter the remaining details yourself.", symbol: "exclamationmark.triangle")) }
             return
@@ -758,7 +787,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Toasts name the application, since several can be running.
         let info = plan["role"] as? [String: Any]
         let label = [info?["company"] as? String, info?["title"] as? String].compactMap { $0 }.first { !$0.isEmpty } ?? "This application"
-        toasts.show(Toast(title: "Filling \(label)…", detail: "Apply Desk fills each page, checks it, fills it again, and stops at Review. You can start another in a different tab; press ` here to stop this one.", symbol: "wand.and.stars"), for: 60)
+        if batchTabs[tab.id] == nil {
+            toasts.show(Toast(title: "Filling \(label)…", detail: "Apply Desk fills each page, checks it, fills it again, and stops at Review. You can start another in a different tab; press ` here to stop this one.", symbol: "wand.and.stars"), for: 60)
+        }
         waitForFill(FillWatch(script: script, tabID: tab.id, label: label, role: role)) { [weak self] result in
             self?.finishFill(result, tab: tab, role: role, resume: resume, label: label)
         }
@@ -781,6 +812,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                   let seen = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: String], !seen.isEmpty else { continue }
             let answers = seen.map { ["question": $0.key, "answer": $0.value, "corrected": "yes"] }
             backend.send("api/answers", json: ["answers": answers]) { _ in }
+            // The user changed something on a batch application: it no longer counts as submitted exactly as filled.
+            if let item = batchTabs[tabID] { backend.send("api/batch/update", json: ["item": item.id, "status": item.status, "changed": true]) { _ in } }
         }
         if learningTabs.isEmpty { learningTimer?.invalidate(); learningTimer = nil }
     }
@@ -829,9 +862,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if result.waiting != watch.waiting || (!result.page.isEmpty && result.page != watch.page) {
                     watch.page = result.page
                     watch.waiting = result.waiting
+                    // A batch tab waiting on the user frees its slot for the next posting; it carries on once they answer.
+                    if self.batchTabs[watch.tabID] != nil {
+                        if result.waiting { self.batchNeedsYou(watch.tabID, reason: "Answer what's left on \(result.page.isEmpty ? "this page" : result.page)") }
+                    } else {
                     self.toasts.show(result.waiting
                         ? Toast(title: "\(watch.label) needs you on \(result.page)", detail: "Answer what's listed in that tab. Apply Desk keeps going by itself once you're done.", symbol: "hand.raised")
                         : Toast(title: "\(watch.label): filling \(result.page)…", detail: "Apply Desk goes page by page and stops at Review. Press ` in that tab to stop.", symbol: "wand.and.stars"), for: 60)
+                    }
                 }
                 watch.last = result
             } else if self.stopping.contains(watch.tabID) {
@@ -857,9 +895,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let wasStopped = stopping.remove(tab.id) != nil
         watchCorrections(tab.id)
         if wasStopped, result?.done != true {
+            batchEnded(tab.id, status: "needs_you", reason: "You stopped it")
             return toasts.show(Toast(title: "Stopped \(label)", detail: "Press ` to continue where it left off.", symbol: "pause.circle"))
         }
         guard let result = result, result.done else {
+            batchEnded(tab.id, status: "needs_you", reason: "The form stopped responding")
             return toasts.show(Toast(title: "\(label): the form stopped responding", detail: "Some fields may be filled. Check that tab and press ` there to pick it up again.", symbol: "exclamationmark.triangle"))
         }
         if !result.learned.isEmpty {
@@ -878,6 +918,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if self?.workspace.isVisible == true { self?.workspace.reload() }
             }
         }
+        if batchTabs[tab.id] != nil { return batchFilled(tab.id, result: result, attached: result.attached) }
         let open: () -> Void = { [weak self] in if let role = role { self?.workspace.show(path: "job/\(role)") } }
         let pageName = result.page.isEmpty ? "This page" : result.page
         let resumeNote = !result.attached ? "" : role == nil ? " Attached your resume as it is (Apply Desk couldn't find the posting to tune it)." : " Attached your tuned resume."
@@ -960,7 +1001,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Fill this application with your details?"
-        alert.informativeText = "Apply Desk types your saved contact, education, and link details into empty, clearly labeled fields in Chrome's front tab, and attaches your resume tuned for this role to the resume upload. It skips sponsorship, demographic, and screening questions and never submits. Review everything before you apply."
+        alert.informativeText = "Apply Desk types your saved contact, education, and link details into empty, clearly labeled fields in Chrome's front tab, and attaches your resume tuned for this role to the resume upload. It never submits unless you turn that on for batch mode. Review everything before you apply."
         alert.addButton(withTitle: "Fill Fields")
         alert.addButton(withTitle: "Cancel")
         alert.showsSuppressionButton = true
@@ -971,5 +1012,271 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         Chrome.activate()
         return confirmed
+    }
+}
+
+// MARK: Batch mode
+
+extension AppDelegate {
+    @objc private func openBatchList() { workspace.show(path: "batch") }
+
+    /// ⇧` on a page of postings (a job board search, a careers page, an
+    /// internship list): the local service picks which to apply to (not quant
+    /// or trading, no active clearance needed, internships and co-ops, not
+    /// already applied to), and each opens in its own tab, two at a time, and
+    /// is filled up to Review. The user gets a note as each is ready, and
+    /// submits it, unless they turned on submitting fully clean ones.
+    @objc private func applyToList() {
+        guard Chrome.isRunning, Chrome.isFrontmost || NSApp.isActive else {
+            return toasts.show(Toast(title: "Switch to the list in Chrome", detail: "Press ⇧` on a page of postings.", symbol: "globe"))
+        }
+        switch Chrome.automationAccess(ask: false) {
+        case .granted: break
+        case .denied: return askAgainForChromeAccess()
+        default: return requestChromeAccess { [weak self] in self?.applyToList() }
+        }
+        guard confirmFirstFill() else { return }
+        guard let tab = Chrome.activeTab(), let script = Autofill.batchScript("collect()"),
+              let raw = Chrome.runJavaScript(script, tabID: tab.id), let data = raw.data(using: .utf8),
+              let found = (try? JSONSerialization.jsonObject(with: data)) as? [[String: String]] else {
+            noteChromeFailure()
+            return toasts.show(Toast(title: "Couldn't read this page", detail: Chrome.lastErrorMessage.isEmpty ? "Open a page with many postings and try again." : "Chrome said: \(Chrome.lastErrorMessage.prefix(140))", symbol: "exclamationmark.triangle"))
+        }
+        guard found.count >= 2 else {
+            return toasts.show(Toast(title: "No list of postings here", detail: "On a single posting or application, press ` instead. ⇧` is for a page with many postings.", symbol: "list.bullet"))
+        }
+        if batchFilling.isEmpty && batchQueue.isEmpty { batchCounts = (0, 0, 0, 0) }
+        backend.send("api/batch/start", json: ["items": found]) { [weak self] result in
+            guard let self = self, let items = result?["items"] as? [[String: Any]] else {
+                self?.toasts.show(Toast(title: "Couldn't reach the local service", detail: "Try ⇧` again in a moment.", symbol: "exclamationmark.triangle"))
+                return
+            }
+            self.batchAutoSubmit = result?["auto_submit"] as? Bool ?? false
+            let picked = items.filter { $0["apply"] as? Bool == true }.compactMap { item -> BatchItem? in
+                guard let id = item["id"] as? Int, let url = item["url"] as? String else { return nil }
+                return BatchItem(id: id, url: url, label: String((item["text"] as? String ?? url).prefix(60)))
+            }
+            let skipped = items.count - picked.count
+            self.batchCounts.skipped += skipped
+            self.batchQueue += picked
+            self.toasts.show(Toast(title: "Applying to \(picked.count) of \(items.count) postings",
+                                   detail: "Each opens in its own tab, two at a time, and stops at Review. Skipped \(skipped): quant or trading, an active clearance, not an internship, or already applied. You'll get a note as each is ready.",
+                                   symbol: "square.stack.3d.down.forward", actionTitle: "Show List", action: { [weak self] in self?.openBatchList() }), for: 14)
+            self.batchNext()
+            self.startBatchWatch()
+        }
+    }
+
+    /// Opens the next postings while a slot is free.
+    private func batchNext() {
+        while batchFilling.count < batchSlots, !batchQueue.isEmpty {
+            let item = batchQueue.removeFirst()
+            guard let tabID = Chrome.openTab(item.url) else {
+                batchUpdate(item, "failed", reason: "Couldn't open a tab")
+                continue
+            }
+            batchFilling[tabID] = item
+            batchTabs[tabID] = item
+            batchUpdate(item, "working")
+            batchLoad(item, tabID: tabID, waits: 60, reads: 8)
+        }
+        if batchFilling.isEmpty, batchQueue.isEmpty, batchCounts.ready + batchCounts.needs + batchCounts.submitted > 0, batchTabs.values.allSatisfy({ $0.status != "working" }) {
+            let c = batchCounts
+            batchCounts = (0, 0, 0, 0)
+            toasts.show(Toast(title: "Batch done: \(c.ready) ready to submit\(c.submitted > 0 ? ", \(c.submitted) submitted" : "")",
+                              detail: "\(c.needs) need you, \(c.skipped) skipped. Each one is in its own tab; the list shows why any were skipped.",
+                              symbol: "checklist", actionTitle: "Show List", action: { [weak self] in self?.openBatchList() }), for: 16)
+        }
+    }
+
+    /// Waits for the posting to load, saves it as a role, and asks the local
+    /// service whether it's one to apply to (the list row can't always tell).
+    private func batchLoad(_ item: BatchItem, tabID: String, waits: Int, reads: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self = self else { return }
+            guard let tab = Chrome.tab(id: tabID) else { return self.batchEnded(tabID, status: "closed", reason: "Tab closed") }
+            if tab.loading && waits > 0 { return self.batchLoad(item, tabID: tabID, waits: waits - 1, reads: reads) }
+            guard let page = Chrome.readPage(tabID: tabID), page.ready, page.description.count >= 300, JobListing.looksLikePosting(page.description) else {
+                // Boards that draw the posting after the page loads get a few more looks; an application page goes straight to the filler.
+                if reads > 0 { return self.batchLoad(item, tabID: tabID, waits: 0, reads: reads - 1) }
+                return self.startFill(tab)
+            }
+            var payload: [String: Any] = page.signals.mapValues { String($0.prefix(300)) }
+            payload["url"] = tab.url
+            payload["description"] = String(page.description.prefix(50_000))
+            self.saveRole(payload, tab: tab) { [weak self] role in
+                guard let self = self else { return }
+                guard let role = role else { return self.startFill(tab) }
+                self.backend.send("api/batch/check", json: ["item": item.id, "job_id": role]) { [weak self] check in
+                    guard let self = self else { return }
+                    if check?["apply"] as? Bool == false {
+                        Chrome.closeTab(tabID)
+                        self.batchFilling[tabID] = nil
+                        self.batchTabs[tabID] = nil
+                        self.batchCounts.skipped += 1
+                        return self.batchNext()
+                    }
+                    let title = check?["title"] as? String ?? "", company = check?["company"] as? String ?? ""
+                    if !title.isEmpty, var named = self.batchTabs[tabID] {
+                        named.label = company.isEmpty ? title : "\(company): \(title)"
+                        self.batchTabs[tabID] = named
+                        self.batchFilling[tabID] = named
+                    }
+                    self.startFill(tab, role: role)
+                }
+            }
+        }
+    }
+
+    private func batchUpdate(_ item: BatchItem, _ status: String, reason: String = "", items: [[String: String]]? = nil, auto: Bool = false,
+                             completion: (([String: Any]?) -> Void)? = nil) {
+        var body: [String: Any] = ["item": item.id, "status": status, "reason": reason, "auto": auto]
+        if let items = items { body["items"] = items }
+        backend.send("api/batch/update", json: body) { result in completion?(result) }
+    }
+
+    private func showTab(_ tabID: String) -> () -> Void { { Chrome.show(tabID: tabID) } }
+
+    /// A batch tab whose fill ended early (it couldn't start, was stopped, or the page stopped responding).
+    private func batchEnded(_ tabID: String, status: String, reason: String) {
+        guard var item = batchTabs[tabID] else { return }
+        batchFilling[tabID] = nil
+        item.status = status
+        if status == "needs_you" {
+            batchTabs[tabID] = item
+            batchCounts.needs += 1
+            toasts.show(Toast(title: "\(item.label) needs you", detail: "\(reason). It's waiting in its own tab.", symbol: "hand.raised",
+                              actionTitle: "Show Tab", action: showTab(tabID)), for: 10)
+        } else {
+            batchTabs[tabID] = nil
+        }
+        batchUpdate(item, status, reason: reason)
+        batchNext()
+    }
+
+    /// The filler is waiting on the user in this tab: its slot goes to the next
+    /// posting, and the fill carries on by itself once they answer.
+    private func batchNeedsYou(_ tabID: String, reason: String) {
+        guard var item = batchTabs[tabID], item.status != "needs_you" else { return }
+        item.status = "needs_you"
+        batchTabs[tabID] = item
+        batchFilling[tabID] = nil
+        batchCounts.needs += 1
+        batchUpdate(item, "needs_you", reason: reason)
+        toasts.show(Toast(title: "\(item.label) needs you", detail: "\(reason). It keeps going once you answer.", symbol: "hand.raised",
+                          actionTitle: "Show Tab", action: showTab(tabID)), for: 10)
+        batchNext()
+    }
+
+    /// The fill reached the end: at Review with nothing required left, the
+    /// application is ready for the user to submit (or submitted, when they
+    /// turned that on and every answer is their own); otherwise it needs them.
+    private func batchFilled(_ tabID: String, result: Autofill.Result, attached: Bool) {
+        guard var item = batchTabs[tabID] else { return }
+        batchFilling[tabID] = nil
+        let answered = result.items.filter { !($0["value"] ?? "").isEmpty }.count
+        let blanks = result.items.filter { ($0["flag"] ?? "").hasPrefix("Required") }.count
+        let onePage = result.pages.isEmpty && (result.stop == "end" || result.stop == "needs")
+        let wasWaiting = item.status == "needs_you"
+        if (result.stop == "review" || (onePage && answered > 0)) && blanks == 0 {
+            item.status = "ready"
+            batchTabs[tabID] = item
+            if wasWaiting { batchCounts.needs -= 1 }
+            batchCounts.ready += 1
+            batchUpdate(item, "ready", items: result.items) { [weak self] response in
+                guard let self = self else { return }
+                let clean = response?["clean"] as? Bool ?? false
+                if self.batchAutoSubmit && clean && attached { return self.batchSubmit(tabID) }
+                self.toasts.show(Toast(title: "Ready to submit: \(item.label)",
+                                       detail: "Filled \(answered) field\(answered == 1 ? "" : "s")\(attached ? " and attached your tuned resume" : ""). Check it and press Submit."
+                                           + (clean ? "" : " Some answers are marked to check in the panel on that tab."),
+                                       symbol: "checkmark.seal", actionTitle: "Show Tab", action: self.showTab(tabID)), for: 12)
+            }
+        } else {
+            let reason = result.stop == "signin" ? "Sign in to this site (Apply Desk never types passwords), then press ` there"
+                : blanks > 0 ? "\(blanks) required question\(blanks == 1 ? "" : "s") only you can answer"
+                : result.stop == "stuck" ? "The next page didn't load"
+                : !result.needs.isEmpty ? "Answer " + result.needs.prefix(3).joined(separator: "; ")
+                : "Check this tab"
+            item.status = "needs_you"
+            batchTabs[tabID] = item
+            if !wasWaiting { batchCounts.needs += 1 }
+            batchUpdate(item, "needs_you", reason: reason)
+            toasts.show(Toast(title: "\(item.label) needs you", detail: "\(reason).", symbol: "hand.raised", actionTitle: "Show Tab", action: showTab(tabID)), for: 10)
+        }
+        batchNext()
+    }
+
+    /// Presses Submit on a fully clean application (only with the user's say-so in
+    /// Profile) and checks the page confirms it; if not, the tab is left for them.
+    private func batchSubmit(_ tabID: String) {
+        guard var item = batchTabs[tabID], let script = Autofill.batchScript("submit()") else { return }
+        guard Chrome.runJavaScript(script, tabID: tabID) == "\"pressed\"" else {
+            return toasts.show(Toast(title: "Ready to submit: \(item.label)", detail: "Apply Desk couldn't find its Submit button. Check it and press Submit.",
+                                     symbol: "checkmark.seal", actionTitle: "Show Tab", action: showTab(tabID)), for: 12)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+            guard let self = self, let check = Autofill.batchScript("confirmed()") else { return }
+            if Chrome.runJavaScript(check, tabID: tabID) == "true" {
+                item.status = "submitted"
+                self.batchTabs[tabID] = nil
+                self.batchCounts.ready -= 1
+                self.batchCounts.submitted += 1
+                self.batchUpdate(item, "submitted", auto: true)
+                self.toasts.show(Toast(title: "Submitted: \(item.label)", detail: "Every answer was your own and nothing was blank, so Apply Desk submitted it. What was sent is on the role page.",
+                                       symbol: "paperplane", actionTitle: "Show Tab", action: self.showTab(tabID)), for: 10)
+            } else {
+                item.status = "needs_you"
+                self.batchTabs[tabID] = item
+                self.batchUpdate(item, "needs_you", reason: "Pressed Submit, but the page didn't confirm it")
+                self.toasts.show(Toast(title: "Check \(item.label)", detail: "Apply Desk pressed Submit, but the page didn't confirm it. Look at that tab before anything else.",
+                                       symbol: "exclamationmark.triangle", actionTitle: "Show Tab", action: self.showTab(tabID)), for: 16)
+            }
+        }
+    }
+
+    /// Every few seconds: a closed batch tab is closed; one showing "thank you
+    /// for applying" was submitted, which counts toward the clean record.
+    private func startBatchWatch() {
+        guard batchTimer == nil else { return }
+        batchTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.batchWatchTick() }
+        }
+    }
+
+    private func batchWatchTick() {
+        guard Chrome.isRunning else { return }
+        for (tabID, item) in batchTabs where batchFilling[tabID] == nil {
+            guard Chrome.tab(id: tabID) != nil else {
+                var closed = item
+                closed.status = "closed"
+                batchTabs[tabID] = nil
+                batchUpdate(closed, "closed")
+                continue
+            }
+            guard item.status == "ready" || item.status == "needs_you", let script = Autofill.batchScript("confirmed()"),
+                  Chrome.runJavaScript(script, tabID: tabID) == "true" else { continue }
+            var done = item
+            done.status = "submitted"
+            batchTabs[tabID] = nil
+            batchCounts.submitted += 1
+            batchUpdate(done, "submitted") { [weak self] response in
+                if response?["ask_auto_submit"] as? Bool == true { self?.askAutoSubmit() }
+            }
+        }
+        if batchTabs.isEmpty && batchQueue.isEmpty { batchTimer?.invalidate(); batchTimer = nil }
+    }
+
+    /// Asked once, after ten batch applications in a row were submitted exactly as filled.
+    private func askAutoSubmit() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Submit fully clean applications for you?"
+        alert.informativeText = "Your last 10 batch applications were submitted exactly as Apply Desk filled them. From now on, Apply Desk can press Submit itself when every answer is your own and nothing is blank, drafted, or guessed. Anything else still waits for you, and you can turn this off in Profile."
+        alert.addButton(withTitle: "Submit Clean Ones")
+        alert.addButton(withTitle: "Not Yet")
+        let yes = alert.runModal() == .alertFirstButtonReturn
+        batchAutoSubmit = yes
+        backend.send("api/batch/auto-submit", json: ["enabled": yes]) { _ in }
     }
 }

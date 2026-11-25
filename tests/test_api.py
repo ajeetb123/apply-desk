@@ -1263,6 +1263,66 @@ class ApplyDeskApiTests(unittest.TestCase):
         owner = next(a for a in presumed if a["key"] == "required_major")
         self.assertTrue(re.search(owner["pattern"], "are you currently majoring in any of the required majors identified in the job posting"))
 
+    BATCH_ITEMS = [
+        {"url": "https://boards.greenhouse.io/acme/jobs/1234567", "text": "Acme Software Engineering Intern Austin, TX Apply"},
+        {"url": "https://jobs.lever.co/globex/0b1c2d3e-quant", "text": "Globex Quantitative Trading Intern New York, NY Apply"},
+        {"url": "https://initech.wd5.myworkdayjobs.com/External/job/Remote/Software-Engineer_R100", "text": "Initech Software Engineer (Full Time) Remote Apply"},
+        {"url": "https://jobs.ashbyhq.com/umbrella/9f8e7d", "text": "Umbrella Backend Intern (Active TS/SCI clearance required) Washington, DC"},
+        {"url": "https://careers.example-hooli.com/jobs/456-data-intern", "text": "Hooli Data Engineering Intern San Francisco, CA Apply"},
+        {"url": "https://boards.greenhouse.io/acme/jobs/1234567?gh_src=list", "text": "Acme Software Engineering Intern (repost)"},
+    ]
+
+    def test_batch_picks_postings_to_apply_to(self):
+        self.client.post("/profile", data={"has_clearance": "No"})
+        result = self.client.post("/api/batch/start", json={"items": self.BATCH_ITEMS}).json
+        decided = {item["url"].split("/")[2] + ":" + item["text"][:14]: item["reason"] for item in result["items"]}
+        self.assertEqual([item["apply"] for item in result["items"]], [True, False, False, False, True, False])
+        reasons = [item["reason"] for item in result["items"]]
+        self.assertEqual(reasons[1:4], ["Quant or trading", "Not an internship or co-op", "Needs an active clearance"])
+        self.assertEqual(reasons[5], "Listed twice")
+        self.assertFalse(result["auto_submit"])
+        page = self.client.get("/batch").get_data(as_text=True)
+        self.assertIn("Up next", page)
+        self.assertIn("Quant or trading", page)
+        self.assertIn("0 of 10", page)
+
+    def test_batch_check_reads_the_posting_and_skips_what_was_applied_to(self):
+        self.add_resume("Riley Chen\nEXPERIENCE\nExample Labs    2026 – Present\nSWE Intern    Remote\n• Built tools in Python")
+        item = self.client.post("/api/batch/start", json={"items": [{"url": "https://jobs.example.com/jobs/77-intern", "text": ""}]}).json["items"][0]
+        job = self.client.post("/api/evaluate", json={"title": "Quant Research Intern", "company": "Example Capital", "url": "https://jobs.example.com/jobs/77-intern",
+                                                      "description": "Quantitative research internship building trading signals. " * 8}).json
+        check = self.client.post("/api/batch/check", json={"item": item["id"], "job_id": job["saved_job_id"]}).json
+        self.assertEqual((check["apply"], check["reason"]), (False, "Quant or trading"))
+        # Already applied: a later list skips it before opening anything.
+        job = self.client.post("/api/evaluate", json={"title": "Software Engineering Intern", "company": "Acme", "url": "https://boards.greenhouse.io/acme/jobs/1234567",
+                                                      "description": "Software engineering internship building Python services. " * 8}).json
+        self.client.post("/api/applications", json={"job_id": job["saved_job_id"], "url": "https://boards.greenhouse.io/acme/jobs/1234567", "attached": True,
+                                                     "fields": ["email"], "pages": 1, "pdf": base64.b64encode(b"%PDF-1.4 test").decode()})
+        again = self.client.post("/api/batch/start", json={"items": self.BATCH_ITEMS[:1]}).json["items"][0]
+        self.assertEqual(again["reason"], "Already applied")
+
+    def test_clean_record_and_asking_before_auto_submit(self):
+        items = self.client.post("/api/batch/start", json={"items": [{"url": f"https://jobs.lever.co/acme/{n}-intern", "text": "Acme Software Intern"} for n in range(12)]}).json["items"]
+        clean = [{"question": "First Name", "value": "Riley", "flag": ""}, {"question": "Gender", "value": "Male", "flag": "Your self-identification answer from Profile"}]
+        drafted = clean + [{"question": "Why us?", "value": "Draft", "flag": "Draft from your resume. Read it and make it yours"}]
+        self.assertTrue(application.batch_clean(clean))
+        self.assertFalse(application.batch_clean(drafted))
+        # A drafted answer or a change by the user resets the record.
+        self.client.post("/api/batch/update", json={"item": items[0]["id"], "status": "ready", "items": drafted})
+        self.assertEqual(self.client.post("/api/batch/update", json={"item": items[0]["id"], "status": "submitted"}).json["streak"], 0)
+        self.client.post("/api/batch/update", json={"item": items[1]["id"], "status": "ready", "items": clean})
+        self.client.post("/api/batch/update", json={"item": items[1]["id"], "status": "ready", "changed": True})
+        self.assertEqual(self.client.post("/api/batch/update", json={"item": items[1]["id"], "status": "submitted"}).json["streak"], 0)
+        asked = []
+        for item in items[2:12]:
+            self.client.post("/api/batch/update", json={"item": item["id"], "status": "ready", "items": clean})
+            asked.append(self.client.post("/api/batch/update", json={"item": item["id"], "status": "submitted"}).json["ask_auto_submit"])
+        self.assertEqual(asked, [False] * 9 + [True])   # asked once, after ten in a row
+        self.assertEqual(application.profile()["auto_submit_clean"], "")  # nothing changes until the user says yes
+        self.client.post("/api/batch/auto-submit", json={"enabled": True})
+        self.assertEqual(application.profile()["auto_submit_clean"], "Yes")
+        self.assertTrue(self.client.post("/api/batch/start", json={"items": []}).json["auto_submit"])
+
     def test_wrong_host_is_rejected(self):
         response = self.client.get("/api/profile", headers={"Host": "attacker.example"})
         self.assertEqual(response.status_code, 421)
