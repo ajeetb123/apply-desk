@@ -88,7 +88,7 @@ Apply Desk needs two things to read and fill Chrome tabs:
 1. **macOS Automation access.** The first time you turn on watching or press `, macOS asks "Apply Desk wants access to control Google Chrome" — choose **OK**. If macOS has an old "Don't Allow" saved (an earlier build can leave one behind), the sidebar shows **Chrome access is off**; click **Ask macOS Again** and Apply Desk clears that one saved answer (`tccutil reset AppleEvents com.ajeet.applydesk`) so macOS asks again. You can also turn on **Google Chrome** under **Apply Desk** in System Settings → Privacy & Security → Automation.
 2. **One Chrome setting.** In Chrome, choose **View → Developer → Allow JavaScript from Apple Events**.
 
-Watching stays on while either is missing; the sidebar and menu bar say what's left, and Apply Desk resumes on its own once it's fixed. It only reads the front tab, only when it looks like a job listing or when you press `.
+Watching stays on while either is missing; the sidebar and menu bar say what's left, and Apply Desk resumes on its own once it's fixed. Apply Desk checks the Chrome setting itself, so it only asks you to turn it on when it's really off; if Chrome refuses a tab for another reason, Apply Desk tells you what Chrome said. It only reads the front tab, only when it looks like a job listing or when you press `.
 
 ## Setup
 

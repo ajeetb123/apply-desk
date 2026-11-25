@@ -11,8 +11,34 @@ enum Chrome {
         case notAuthorized, javaScriptOff, other
     }
 
-    /// Why the most recent Apple Events call failed, if it did.
+    /// Why the most recent Apple Events call failed, if it did, and Chrome's own words.
     static private(set) var lastFailure: Failure?
+    static private(set) var lastErrorMessage = ""
+
+    /// Chrome's own saved "Allow JavaScript from Apple Events" (View → Developer),
+    /// read from its profiles' Preferences: true when every profile has it on,
+    /// false when none does, nil when it can't tell (mixed, unreadable). Cached
+    /// for a few seconds, since failed calls can come every second or two.
+    private static var settingCache: (value: Bool?, at: Date)?
+    static func javaScriptSettingOn() -> Bool? {
+        if let cache = settingCache, Date().timeIntervalSince(cache.at) < 5 { return cache.value }
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Google/Chrome")
+        var folders = ["Default"]
+        if let data = try? Data(contentsOf: root.appendingPathComponent("Local State")),
+           let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let profiles = (state["profile"] as? [String: Any])?["info_cache"] as? [String: Any], !profiles.isEmpty {
+            folders = Array(profiles.keys)
+        }
+        var values: [Bool] = []
+        for folder in folders {
+            guard let data = try? Data(contentsOf: root.appendingPathComponent(folder).appendingPathComponent("Preferences")),
+                  let prefs = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            values.append(((prefs["browser"] as? [String: Any])?["allow_javascript_apple_events"] as? Bool) ?? false)
+        }
+        let value: Bool? = values.isEmpty ? nil : values.allSatisfy { $0 } ? true : values.allSatisfy { !$0 } ? false : nil
+        settingCache = (value, Date())
+        return value
+    }
 
     struct Page {
         let url: String
@@ -205,13 +231,19 @@ enum Chrome {
         }
         let message = error[NSAppleScript.errorMessage] as? String ?? ""
         let number = error[NSAppleScript.errorNumber] as? Int ?? 0
+        lastErrorMessage = message
+        NSLog("Apply Desk Chrome script error %d: %@", number, message)
         if number == -1743 || message.localizedCaseInsensitiveContains("not authorized") {
             lastFailure = .notAuthorized
-        } else if message.localizedCaseInsensitiveContains("JavaScript") {
+        } else if javaScriptSettingOn() == true {
+            // The setting is on, whatever this error says (a page that won't run
+            // scripts, a tab Chrome put to sleep): never tell the user to turn it on.
+            lastFailure = .other
+        } else if javaScriptSettingOn() == false || message.localizedCaseInsensitiveContains("turned off")
+                    || message.localizedCaseInsensitiveContains("JavaScript from Apple Events") {
             lastFailure = .javaScriptOff
         } else {
             lastFailure = .other
-            NSLog("Apply Desk Chrome script error %d: %@", number, message)
         }
         return nil
     }

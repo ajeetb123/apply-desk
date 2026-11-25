@@ -335,7 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let access = Chrome.automationAccess(ask: false)
         accessVerified = access == .granted
         switch access {
-        case .granted: if chromeStatus != .javaScriptOff { setChromeStatus(.ready) }
+        case .granted: if chromeStatus != .javaScriptOff || Chrome.javaScriptSettingOn() == true { setChromeStatus(.ready) }
         case .denied: setChromeStatus(.denied)
         case .notAsked: setChromeStatus(.notAsked)
         case .notRunning: setChromeStatus(.notRunning)
@@ -467,7 +467,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch Chrome.automationAccess(ask: false) {
         case .granted:
             accessVerified = true
-            if chromeStatus == .javaScriptOff || Chrome.lastFailure == .javaScriptOff { showJavaScriptHelp() } else { setChromeStatus(.ready) }
+            // Only when Chrome's own saved setting is off: with it on, the problem is something else, said plainly.
+            if Chrome.javaScriptSettingOn() != true && (chromeStatus == .javaScriptOff || Chrome.lastFailure == .javaScriptOff) {
+                showJavaScriptHelp()
+            } else {
+                setChromeStatus(.ready)
+                if Chrome.lastFailure == .other && !Chrome.lastErrorMessage.isEmpty {
+                    toasts.show(Toast(title: "Chrome didn't run Apply Desk on this tab",
+                                      detail: "Your Chrome setting is on. Chrome said: \(Chrome.lastErrorMessage.prefix(140)). Click into the job page and try again.",
+                                      symbol: "exclamationmark.triangle"))
+                }
+            }
         case .denied:
             askAgainForChromeAccess()
         default:
