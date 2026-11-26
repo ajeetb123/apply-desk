@@ -59,6 +59,14 @@ enum Autofill {
         return source + "\nJSON.stringify(window.__applyDeskBatch.\(call))"
     }
 
+    /// The sign-in helper (account.js) and one call: "look", "act" (with the
+    /// email and the Keychain password for this one call), or "google".
+    static func accountScript(_ function: String, _ argument: Any = NSNull()) -> String? {
+        guard let source = Bundle.main.url(forResource: "account", withExtension: "js").flatMap({ try? String(contentsOf: $0, encoding: .utf8) }),
+              let data = try? JSONSerialization.data(withJSONObject: argument, options: .fragmentsAllowed) else { return nil }
+        return source + "\nJSON.stringify(window.__applyDeskAccount.\(function)(JSON.parse(decodeURIComponent(escape(atob('\(data.base64EncodedString())'))))))"
+    }
+
     /// The filler plus the call that starts it. `plan` is GET /api/fill-plan.
     static func script(plan: Data, resume: (name: String, pdf: Data)? = nil, source: String? = nil) -> String? {
         guard let filler = source ?? Bundle.main.url(forResource: "autofill", withExtension: "js").flatMap({ try? String(contentsOf: $0, encoding: .utf8) }) else {

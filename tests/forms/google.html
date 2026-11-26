@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Mock: Google account chooser and consent</title></head>
+<body>
+<!-- ?step=chooser (default), consent, more (asks for more than sign-in), password -->
+<main id="main"></main>
+<script>
+const step = new URLSearchParams(location.search).get('step') || 'chooser';
+const main = document.getElementById('main');
+window.mock = { picked: '', continued: false };
+if (step === 'chooser') {
+  main.innerHTML = '<h1>Choose an account</h1><ul>' +
+    '<li><div role="link" data-identifier="someone.else@example.com">Someone Else</div></li>' +
+    '<li><div role="link" data-identifier="riley@example.com">Riley Test</div></li></ul><div role="button">Use another account</div>';
+  for (const el of main.querySelectorAll('[data-identifier]')) el.addEventListener('click', () => { window.mock.picked = el.dataset.identifier; });
+} else if (step === 'consent') {
+  main.innerHTML = '<h1>Sign in to Example Careers</h1><p>To continue, Google will share your name, email address, language preference, and profile picture with Example Careers.</p><button>Cancel</button><button id="go">Continue</button>';
+} else if (step === 'more') {
+  main.innerHTML = '<h1>Example Careers wants access to your Google Account</h1><p>This will allow Example Careers to: See, edit, create, and delete all of your Google Drive files.</p><button>Cancel</button><button id="go">Continue</button>';
+} else {
+  main.innerHTML = '<h1>Welcome</h1><label>Enter your password <input type="password"></label><button>Next</button>';
+}
+const go = document.getElementById('go');
+if (go) go.addEventListener('click', () => { window.mock.continued = true; });
+</script>
+</body>
+</html>

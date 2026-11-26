@@ -61,9 +61,11 @@
       </section>
 
       <section class="panel" id="batch" data-reveal style="--i:7">
-        <header class="panel-head"><div><h2>Submitting batch applications</h2><p class="sub">In batch mode (Shift-` on a page of postings) you submit every application yourself. After 10 in a row that you submit exactly as Apply Desk filled them, it asks whether to submit fully clean ones itself. You can turn that on or off here.</p></div></header>
+        <header class="panel-head"><div><h2>Batch applications and sign-ins</h2><p class="sub">In batch mode (Shift-` on a page of postings) you submit every application yourself. After 10 in a row that you submit exactly as Apply Desk filled them, it asks whether to submit fully clean ones itself. Shift-` again stops a batch.</p></div></header>
         <div class="fields">
           <label class="wide"><span>Submit fully clean batch applications for me</span><select name="auto_submit_clean"><option value="">No, I submit each one</option><option value="Asked"{{ ' selected' if profile.get('auto_submit_clean') == 'Asked' }}>No, and don't ask again</option><option value="Yes"{{ ' selected' if profile.get('auto_submit_clean') == 'Yes' }}>Yes, when every answer is my own and nothing is blank</option></select></label>
+          <label class="wide"><span>Signing in to application sites</span><select name="sign_in_mode"><option value="">I sign in myself</option><option value="google"{{ ' selected' if profile.get('sign_in_mode') == 'google' }}>Sign in with Google when offered, otherwise make an account for me</option><option value="create"{{ ' selected' if profile.get('sign_in_mode') == 'create' }}>Make an account for me</option></select></label>
+          <p class="sub wide">Accounts use your email above and a new strong password for each site, kept in this Mac's Keychain (Keychain Access, search "Apply Desk"). Verification emails, codes, and "are you human" checks stay yours: the tab waits, and ` picks it up once you're past them.</p>
         </div>
       </section>
 

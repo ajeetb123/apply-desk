@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mock: sign in or create an account (Workday style)</title>
+<style>body { font: 15px system-ui, sans-serif; max-width: 520px; margin: 24px auto; } label { display: block; margin: 12px 0; } .hidden { display: none; }</style>
+</head>
+<body>
+<!-- ?verify=1: making an account ends at "check your email". ?google=0: no Google button. -->
+<section id="signin">
+  <h1>Sign In</h1>
+  <label>Email Address* <input id="si-email" type="email" required></label>
+  <label>Password* <input id="si-pass" type="password" required></label>
+  <p id="si-error" class="hidden">Wrong email or password.</p>
+  <button id="si-go" type="button">Sign In</button>
+  <button id="google" type="button">Sign in with Google</button>
+  <p><a href="#" id="create-link">Create Account</a></p>
+</section>
+<section id="create" class="hidden">
+  <h1>Create Account</h1>
+  <label>Email Address* <input id="cr-email" type="email" required></label>
+  <label>Password* <input id="cr-pass" type="password" required></label>
+  <label>Verify New Password* <input id="cr-pass2" type="password" required></label>
+  <label><input id="cr-terms" type="checkbox" required> I agree to the Privacy Policy *</label>
+  <label><input id="cr-alerts" type="checkbox"> Send me job alerts and updates</label>
+  <button id="cr-go" type="button">Create Account</button>
+</section>
+<section id="verify" class="hidden"><h1>Almost there</h1><p>We've sent you an email. Verify your email to continue.</p></section>
+<section id="form" class="hidden">
+  <h1>My Information</h1>
+  <label>First Name* <input id="first" required></label>
+  <label>Last Name* <input id="last" required></label>
+</section>
+<script>
+const params = new URLSearchParams(location.search);
+const show = id => { for (const s of document.querySelectorAll('section')) s.classList.toggle('hidden', s.id !== id); };
+window.mock = { created: null, signedIn: false, googlePressed: false };
+document.getElementById('create-link').addEventListener('click', e => { e.preventDefault(); show('create'); });
+document.getElementById('google').addEventListener('click', () => { window.mock.googlePressed = true; });
+if (params.get('google') === '0') document.getElementById('google').remove();
+document.getElementById('cr-go').addEventListener('click', () => {
+  const email = document.getElementById('cr-email').value, pass = document.getElementById('cr-pass').value;
+  if (!email || pass.length < 8 || pass !== document.getElementById('cr-pass2').value || !document.getElementById('cr-terms').checked) return;
+  window.mock.created = { email, pass, alerts: document.getElementById('cr-alerts').checked };
+  show(params.get('verify') === '1' ? 'verify' : 'form');
+});
+document.getElementById('si-go').addEventListener('click', () => {
+  const ok = document.getElementById('si-email').value === 'riley@example.com' && document.getElementById('si-pass').value === 'Known-Test-Pass-1';
+  if (ok) { window.mock.signedIn = true; show('form'); } else document.getElementById('si-error').classList.remove('hidden');
+});
+</script>
+</body>
+</html>

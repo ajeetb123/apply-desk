@@ -57,6 +57,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var batchPaused = false       // Chrome stopped running scripts: no new tabs until ⇧` or Continue Batch
     private var batchWatchBusy = false    // a watch tick is running (Apple Events can run timers inside a call)
     private var batchWatchTurn = 0        // which waiting tabs this tick checks for a confirmation
+    // Profile → Signing in: what each filling tab may use to get past a sign-in page.
+    private struct SignIn { let email: String; let name: String; let mode: String; let agree: Bool }
+    private var signIns: [String: SignIn] = [:]       // tab id → the user's choice and email, from that fill's plan
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let event = NSAppleEventManager.shared().currentAppleEvent
@@ -189,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fill = item("Fill Application in Chrome (` key)", #selector(fillApplication))
         let batch = item("Apply to Every Posting on This Page (⇧`)", #selector(applyToList))
         let running = !batchPaused && !(batchQueue.isEmpty && batchFilling.isEmpty)
-        let control = running ? item("Stop Batch (\(batchQueue.count) left)", #selector(stopBatch))
+        let control = running ? item("Stop Batch (⇧`, \(batchQueue.count) left)", #selector(stopBatch))
             : item(batchPaused ? "Continue Batch (\(batchQueue.count) left)" : "Continue Last Batch", #selector(continueBatch))
         let list = item("Show Batch List", #selector(openBatchList))
         let watch = item("Watch Chrome for Listings", #selector(toggleWatching))
@@ -791,6 +794,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             else { toasts.show(Toast(title: "Couldn't read this form", detail: "This page may block autofill. Enter the remaining details yourself.", symbol: "exclamationmark.triangle")) }
             return
         }
+        let profile = plan["profile"] as? [String: Any] ?? [:]
+        signIns[tab.id] = SignIn(email: profile["email"] as? String ?? "", name: profile["name"] as? String ?? "",
+                                 mode: plan["sign_in"] as? String ?? "", agree: plan["agree_terms"] as? Bool ?? false)
         // Toasts name the application, since several can be running.
         let info = plan["role"] as? [String: Any]
         let label = [info?["company"] as? String, info?["title"] as? String].compactMap { $0 }.first { !$0.isEmpty } ?? "This application"
@@ -912,6 +918,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !result.learned.isEmpty {
             backend.send("api/answers", json: ["answers": result.learned]) { _ in }
         }
+        // A sign-in page, and the user chose Profile → Signing in: get past it, then fill.
+        if result.stop == "signin", let signIn = signIns[tab.id], !signIn.mode.isEmpty, !signIn.email.isEmpty {
+            return signInStep(tab.id, role: role, label: label, step: 0, last: "")
+        }
         // Lines with a value are answers; the rest are blanks listed for the user.
         let answered = result.items.filter { !($0["value"] ?? "").isEmpty }.count
         let blanks = result.items.filter { ($0["flag"] ?? "").hasPrefix("Required") }.count
@@ -945,7 +955,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return toasts.show(Toast(title: "\(label): \(pageName) needs you", detail: "\(shown). Answer \(result.needs.count == 1 ? "it" : "them") in that tab, then press ` there to keep going.",
                                      symbol: "hand.raised"), for: 14)
         case "signin":
-            return toasts.show(Toast(title: "Sign in first", detail: "Apply Desk never types passwords. Sign in, then press ` on the application's first page.", symbol: "person.badge.key"))
+            return toasts.show(Toast(title: "Sign in first", detail: "Sign in, then press ` on the application's first page. Profile → Signing in lets Apply Desk sign in with Google or make an account for you.", symbol: "person.badge.key"))
         case "stopped":
             return toasts.show(Toast(title: "Stopped on \(pageName)", detail: "Press ` to continue. It only fills what's still blank, and what you change now is learned.", symbol: "pause.circle"))
         case "stuck":
@@ -1044,6 +1054,8 @@ extension AppDelegate {
         }
         guard confirmFirstFill() else { return }
         if batchPaused { return continueBatch() }
+        // ⇧` while a batch is opening postings stops it; ⇧` again continues.
+        if !batchQueue.isEmpty { return stopBatch() }
         guard let tab = Chrome.activeTab(), let script = Autofill.batchScript("collect()"),
               let raw = Chrome.runJavaScript(script, tabID: tab.id), let data = raw.data(using: .utf8),
               let found = (try? JSONSerialization.jsonObject(with: data)) as? [[String: String]] else {
@@ -1070,7 +1082,7 @@ extension AppDelegate {
             self.batchCounts.skipped += skipped
             self.batchQueue += picked
             self.toasts.show(Toast(title: "Applying to \(picked.count) of \(items.count) postings",
-                                   detail: "Each opens in its own tab, two at a time, and stops at Review. Skipped \(skipped): quant or trading, an active clearance, not an internship, or already applied. You'll get a note as each is ready.",
+                                   detail: "Each opens in its own tab, two at a time, and stops at Review. Press ⇧` to stop. Skipped \(skipped): wave 1, quant or trading, an active clearance, not an internship, or already applied.",
                                    symbol: "square.stack.3d.down.forward", actionTitle: "Show List", action: { [weak self] in self?.openBatchList() }), for: 14)
             self.batchNext()
             self.startBatchWatch()
@@ -1207,7 +1219,7 @@ extension AppDelegate {
                                        symbol: "checkmark.seal", actionTitle: "Show Tab", action: self.showTab(tabID)), for: 12)
             }
         } else {
-            let reason = result.stop == "signin" ? "Sign in to this site (Apply Desk never types passwords), then press ` there"
+            let reason = result.stop == "signin" ? "Sign in to this site, then press ` there (Profile → Signing in can do it for you)"
                 : blanks > 0 ? "\(blanks) required question\(blanks == 1 ? "" : "s") only you can answer"
                 : result.stop == "stuck" ? "The next page didn't load"
                 : !result.needs.isEmpty ? "Answer " + result.needs.prefix(3).joined(separator: "; ")
@@ -1315,7 +1327,7 @@ extension AppDelegate {
         let left = batchQueue.count
         batchQueue.removeAll()
         batchPaused = false
-        toasts.show(Toast(title: "Stopped the batch", detail: "\(left) posting\(left == 1 ? "" : "s") not started yet stay saved. Choose Continue Last Batch in the menu, or press ⇧` on any page that isn't a list, to pick them up.",
+        toasts.show(Toast(title: "Stopped the batch", detail: "\(left) posting\(left == 1 ? "" : "s") not started yet stay saved. Tabs already filling finish. Press ⇧` on any page that isn't a list (or Continue Last Batch in the menu) to pick them up.",
                           symbol: "stop.circle", actionTitle: "Show List", action: { [weak self] in self?.openBatchList() }), for: 12)
     }
 
@@ -1358,5 +1370,99 @@ extension AppDelegate {
         let yes = alert.runModal() == .alertFirstButtonReturn
         batchAutoSubmit = yes
         backend.send("api/batch/auto-submit", json: ["enabled": yes]) { _ in }
+    }
+}
+
+// MARK: Signing in
+
+extension AppDelegate {
+    /// One step past a sign-in page (Profile → Signing in): Google when the user
+    /// chose it and the site offers it, the password Apply Desk made for this
+    /// site, or a new account with a new Keychain password. Each step waits for
+    /// the page, then looks again; once there's no sign-in left, the fill starts
+    /// over and picks up where it was. Codes, verification emails, and "are you
+    /// human" checks go to the user, who presses ` once past them.
+    private func signInStep(_ tabID: String, role: Int?, label: String, step: Int, last: String) {
+        guard let signIn = signIns[tabID], let tab = Chrome.tab(id: tabID), let site = Accounts.site(of: tab.url) else { return }
+        if tab.loading && step < 30 {
+            return DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.signInStep(tabID, role: role, label: label, step: step + 1, last: last) }
+        }
+        let look = Chrome.runJavaScript(Autofill.accountScript("look") ?? "", tabID: tabID).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) } ?? "none"
+        if look == "none" { return restartFill(tabID, role: role) }
+        // The same page after signing in with the saved password: it didn't work.
+        if last == "signed_in" && look == "signin" {
+            return signInNeedsYou(tabID, label: label, reason: "The password Apply Desk saved for \(site) didn't work. Sign in yourself (it's in Keychain Access under \"Apply Desk\"), then press ` there")
+        }
+        guard step < 12 else { return signInNeedsYou(tabID, label: label, reason: "Apply Desk couldn't get past signing in to \(site). Sign in, then press ` there") }
+        let known = Accounts.password(site: site, email: signIn.email)
+        let password = known ?? (look == "create" ? Accounts.makePassword(site: site, email: signIn.email) : nil)
+        let argument: [String: Any] = ["email": signIn.email, "password": password ?? "", "known": known != nil,
+                                       "google": signIn.mode == "google", "name": signIn.name, "agree": signIn.agree]
+        let did = Chrome.runJavaScript(Autofill.accountScript("act", argument) ?? "", tabID: tabID).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) } ?? ""
+        switch did {
+        case "google":
+            toasts.show(Toast(title: "\(label): signing in with Google…", detail: "Apply Desk picks \(signIn.email) in Google's window. If Chrome shows its own account prompt, choose it there.", symbol: "person.badge.key"), for: 20)
+            watchGoogle(tabID, role: role, label: label, since: Date(), told: false)
+        case "created", "signed_in", "opened_create":
+            if did == "created" {
+                toasts.show(Toast(title: "Made an account on \(site)", detail: "With \(signIn.email) and a new password saved in your Keychain (Keychain Access, search \"Apply Desk\").", symbol: "person.crop.circle.badge.checkmark"), for: 10)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.signInStep(tabID, role: role, label: label, step: step + 1, last: did) }
+        case "captcha":
+            signInNeedsYou(tabID, label: label, reason: "\(site) wants you to prove you're human. Do that, then press ` there")
+        case "code":
+            signInNeedsYou(tabID, label: label, reason: "Enter the code \(site) sent to \(signIn.email), then press ` there")
+        case "verify":
+            signInNeedsYou(tabID, label: label, reason: "Open the verification email \(site) sent to \(signIn.email), then come back and press ` on the application")
+        case "exists":
+            signInNeedsYou(tabID, label: label, reason: "You already have an account on \(site) that Apply Desk doesn't know the password to. Sign in, then press ` there")
+        default:
+            signInNeedsYou(tabID, label: label, reason: "Sign in or make an account on \(site), then press ` there")
+        }
+    }
+
+    /// After "Sign in with Google": picks the user's account in Google's window
+    /// (a pop-up or this tab) and continues only for a plain sign-in. When the
+    /// application page no longer asks to sign in, the fill starts over.
+    private func watchGoogle(_ tabID: String, role: Int?, label: String, since: Date, told: Bool) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self = self, let signIn = self.signIns[tabID] else { return }
+            let googleTabs = (Chrome.tabList() ?? []).filter { URLComponents(string: $0.url)?.host == "accounts.google.com" }
+            for page in googleTabs {
+                let said = Chrome.runJavaScript(Autofill.accountScript("google", signIn.email) ?? "", tabID: page.id).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) } ?? ""
+                if said == "password" || said == "asks_more" || said == "no_account" {
+                    let why = said == "asks_more" ? "This site asks Google for more than your name and email, so Apply Desk left it for you"
+                        : said == "no_account" ? "\(signIn.email) isn't signed in to Google in this Chrome" : "Google wants your password or a second step"
+                    return self.signInNeedsYou(tabID, label: label, reason: "\(why). Finish signing in with Google, then press ` on the application")
+                }
+            }
+            guard let tab = Chrome.tab(id: tabID) else { return }
+            let onGoogle = URLComponents(string: tab.url)?.host == "accounts.google.com"
+            let look = onGoogle || tab.loading ? "" : Chrome.runJavaScript(Autofill.accountScript("look") ?? "", tabID: tabID).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) } ?? ""
+            if look == "none" && googleTabs.isEmpty { return self.restartFill(tabID, role: role) }
+            if Date().timeIntervalSince(since) > 90 {
+                return self.signInNeedsYou(tabID, label: label, reason: "Signing in with Google didn't finish. Finish it in Chrome, then press ` on the application")
+            }
+            // Chrome's own account prompt (not a page Apply Desk can read): the user picks.
+            let tell = !told && googleTabs.isEmpty && !onGoogle && Date().timeIntervalSince(since) > 8
+            if tell {
+                self.toasts.show(Toast(title: "Choose \(signIn.email) in Chrome", detail: "Chrome is asking which Google account to use. Pick it, and Apply Desk carries on with \(label).", symbol: "person.badge.key"), for: 20)
+            }
+            self.watchGoogle(tabID, role: role, label: label, since: since, told: told || tell)
+        }
+    }
+
+    /// Past sign-in: the filler starts again on this tab (a batch tab keeps its slot).
+    private func restartFill(_ tabID: String, role: Int?) {
+        guard fills[tabID] == nil, let tab = Chrome.tab(id: tabID) else { return }
+        startFill(tab, role: role)
+    }
+
+    private func signInNeedsYou(_ tabID: String, label: String, reason: String) {
+        if batchTabs[tabID] != nil {
+            batchNeedsYou(tabID, reason: reason)
+        } else {
+            toasts.show(Toast(title: "\(label) needs you", detail: reason + ".", symbol: "person.badge.key", actionTitle: "Show Tab", action: { Chrome.show(tabID: tabID) }), for: 16)
+        }
     }
 }
