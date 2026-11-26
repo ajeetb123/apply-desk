@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from flask import Flask, Response, flash, redirect, render_template, request, send_file, url_for
 from markupsafe import Markup, escape
@@ -1484,13 +1484,39 @@ def skips_wave_one(p: dict) -> bool:
     return bool(waves) and "wave 1" not in waves
 
 
-def batch_decision(p: dict, text: str = "", title: str = "", company: str = "", description: str = "") -> str:
+# Places outside the U.S. as postings and internship lists name them ("London, UK",
+# "Mississauga, ON, Canada"); a U.S. place anywhere beside them wins.
+FOREIGN_PLACE = re.compile(r"\b(United Kingdom|UK|U\.K\.|England|Scotland|Wales|Northern Ireland|Ireland|Dublin|London|Belfast|Edinburgh|Manchester|Canada|Toronto|"
+                           r"Vancouver|Montreal|Montréal|Ottawa|Waterloo|Mississauga|Markham|Calgary|Ontario|Quebec|British Columbia|India|Bengaluru|Bangalore|Hyderabad|"
+                           r"Pune|Chennai|Germany|Berlin|Munich|France|Netherlands|Amsterdam|Spain|Madrid|Barcelona|Poland|Warsaw|Krakow|Kraków|Portugal|Lisbon|Italy|Milan|"
+                           r"Sweden|Stockholm|Denmark|Copenhagen|Switzerland|Zurich|Zürich|Israel|Tel Aviv|Singapore|Japan|Tokyo|China|Shanghai|Beijing|Shenzhen|Hong Kong|"
+                           r"Taiwan|Taipei|South Korea|Seoul|Australia|Sydney|Melbourne|Mexico|Brazil|Argentina|Romania|Czech Republic|Czechia|Prague|Hungary|Budapest|"
+                           r"Ukraine|Estonia|Finland|Norway|Belgium|Philippines|Vietnam|Malaysia|EMEA|APAC|LATAM)\b|,\s*(ON|BC|QC|AB|MB|SK|NS|NB|NL|PE)\b")
+US_PLACE = re.compile(r"\b(United States|USA|U\.S\.A?\.?|US|NYC|SF|Bay Area|" + "|".join(applying.STATES.values()) + r")\b|,\s*(" + "|".join(applying.STATES) + r")\b")
+
+
+def outside_us(text: str) -> bool:
+    """The text names a place outside the U.S. and none inside it."""
+    return bool(FOREIGN_PLACE.search(text or "")) and not US_PLACE.search(text or "")
+
+
+def lives_in_us(p: dict) -> bool:
+    return bool(re.fullmatch(r"(the )?(united states( of america)?|usa?|u\.s\.a?\.?)", (p.get("country") or "").strip().lower()))
+
+
+def batch_decision(p: dict, text: str = "", title: str = "", company: str = "", description: str = "", url: str = "") -> str:
     """Why a posting is skipped ("" to apply), from its list row or, once open, the posting itself."""
     named = f"{title} {company} {text}"
     if SKIP_QUANT.search(named) or QUANT_POSTING.search(description or ""):
         return "Quant or trading"
     if skips_wave_one(p) and (WAVE_ONE_ROW.search(text or "") or (company and re.search(BIG_TECH, company.lower()))):
         return "Wave 1 company"
+    # Only outside the U.S. (the user is authorized to work in the U.S. alone): from the
+    # list row, or once open, the posting's places, its opening, and its address.
+    if lives_in_us(p):
+        opening = " ".join([title or "", (description or "")[:800], unquote(urlparse(url or "").path).replace("-", " ")])
+        if (text and outside_us(text)) or (not applying.listing_locations(title, description, url) and description and outside_us(opening)):
+            return "Outside the U.S."
     # 🎓 on internship lists: a master's or PhD is required.
     if "🎓" in (text or "") and not re.search(r"master|m\.?s\.? |ph\.?d|doctor", (p.get("degree") or "").lower()):
         return "Needs a master's or PhD"
@@ -1593,7 +1619,8 @@ def api_batch_check():
         item = conn.execute("SELECT * FROM batch_items WHERE id=?", (item_id,)).fetchone()
     if not row or not item:
         return {"apply": True, "reason": ""}
-    reason = batch_decision(profile(), text=item["list_text"] or "", title=row["title"] or "", company=row["company"] or "", description=row["description"] or "")
+    reason = batch_decision(profile(), text=item["list_text"] or "", title=row["title"] or "", company=row["company"] or "",
+                            description=row["description"] or "", url=row["url"] or "")
     if not reason and applying.posting_key(row["url"] or "") in applied_keys():
         reason = "Already applied"
     with db() as conn:

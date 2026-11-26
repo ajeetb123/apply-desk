@@ -1335,6 +1335,21 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.client.post("/profile", data={"role_campaigns": "Wave 2, Wave 3, Defense"})
         self.assertEqual(decided(), ["Wave 1 company", "Wave 1 company", "Wave 1 company", "", "Needs a master's or PhD"])
 
+    def test_batch_skips_postings_only_outside_the_us(self):
+        rows = [{"url": f"https://jobs.example.com/jobs/{n}-intern", "text": text} for n, text in enumerate([
+            "Acme Software Engineer Intern London, UK 5d", "Acme Software Developer Intern Mississauga, ON, Canada 15d",
+            "Acme Software Engineer Intern London, KY 3d", "Acme Research Intern Canada Santa Clara, CA United States",
+            "Acme Applied AI Intern Remote in USA 14d", "Acme Software Engineering Intern 5 locations 5d"])]
+        decided = lambda: [item["reason"] for item in self.client.post("/api/batch/start", json={"items": rows}).json["items"]]
+        self.client.post("/profile", data={"country": "Canada"})
+        self.assertEqual(decided(), [""] * 6)   # someone outside the U.S.: nothing is skipped for it
+        self.client.post("/profile", data={"country": "United States of America"})
+        self.assertEqual(decided(), ["Outside the U.S.", "Outside the U.S.", "", "", "", ""])
+        # Once open: a posting whose only place is abroad.
+        self.assertEqual(application.batch_decision(application.profile(), title="Software Engineer Intern", description="Software Engineer Intern\nReading, United Kingdom\nAbout the role",
+                                                    url="https://acme.wd5.myworkdayjobs.com/Acme/job/GB---Reading-United-Kingdom/Intern_R1"), "Outside the U.S.")
+        self.assertEqual(application.batch_decision(application.profile(), title="Software Engineer Intern", description="Location\n\nAustin, TX\nWe also have an office in London."), "")
+
     def test_clean_record_and_asking_before_auto_submit(self):
         items = self.client.post("/api/batch/start", json={"items": [{"url": f"https://jobs.lever.co/acme/{n}-intern", "text": "Acme Software Intern"} for n in range(12)]}).json["items"]
         clean = [{"question": "First Name", "value": "Riley", "flag": ""}, {"question": "Gender", "value": "Male", "flag": "Your self-identification answer from Profile"}]
