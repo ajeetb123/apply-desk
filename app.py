@@ -1474,7 +1474,7 @@ INTERNSHIP = re.compile(r"\bintern(ship)?s?\b|\bco-?op\b|summer (analyst|associa
 
 # Wave 1: the most sought-after companies (big tech, and the 🔥 "FAANG+" mark
 # on internship lists). Case-sensitive in a list row, where the company leads.
-WAVE_ONE_ROW = re.compile(r"🔥|^\W*(Google|Alphabet|Meta|Apple|Amazon|AWS|Microsoft|Netflix|NVIDIA|Nvidia|OpenAI|Stripe|Airbnb|Uber|Lyft|LinkedIn|Salesforce|Adobe|"
+WAVE_ONE_ROW = re.compile(r"🔥|^\W*(?:\d+\.?\s+)?(Google|Alphabet|Meta|Apple|Amazon|AWS|Microsoft|Netflix|NVIDIA|Nvidia|OpenAI|Stripe|Airbnb|Uber|Lyft|LinkedIn|Salesforce|Adobe|"
                           r"Databricks|Snowflake|Palantir|Tesla|SpaceX|Bloomberg|Coinbase|Robinhood|DoorDash|Pinterest|Snap|Spotify|Shopify|Roblox|Figma|Ramp|Scale AI|Anduril)\b")
 
 
@@ -1558,6 +1558,8 @@ def api_batch_start():
     batch = datetime.now().isoformat(timespec="seconds")
     lead_wave_one = False
     with db() as conn:
+        # Already waiting from another list: one posting is applied to once.
+        seen |= {applying.posting_key(r[0]) for r in conn.execute("SELECT url FROM batch_items WHERE status IN ('queued','working','needs_you')")}
         for item in items[:150]:
             url = safe_http_url(str(item.get("url", "")))
             text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()[:400]
@@ -1592,13 +1594,15 @@ def api_batch_resume():
                             f"OR (status='needs_you' AND reason IN ({','.join('?' * len(BATCH_RETRY))})) ORDER BY id", BATCH_RETRY).fetchall()
         now, p, kept = datetime.now().isoformat(timespec="minutes"), profile(), []
         # Decided again with today's rules: a "↳" row follows the row above it.
-        lead_wave_one, waiting = False, {row["id"] for row in rows}
+        lead_wave_one, waiting, queued_keys = False, {row["id"] for row in rows}, set()
         for row in conn.execute("SELECT id, list_text FROM batch_items ORDER BY id").fetchall():
             if not row["list_text"].startswith("↳"):
                 lead_wave_one = bool(WAVE_ONE_ROW.search(row["list_text"]))
             if row["id"] not in waiting:
                 continue
-            reason = batch_decision(p, text=("🔥 " if row["list_text"].startswith("↳") and lead_wave_one else "") + row["list_text"])
+            key = applying.posting_key(next(r["url"] for r in rows if r["id"] == row["id"]))
+            reason = "Listed twice" if key in queued_keys else batch_decision(p, text=("🔥 " if row["list_text"].startswith("↳") and lead_wave_one else "") + row["list_text"])
+            queued_keys.add(key)
             conn.execute("UPDATE batch_items SET status=?, reason=?, updated=? WHERE id=?", ("skipped" if reason else "queued", reason, now, row["id"]))
             if not reason:
                 kept.append(row["id"])
@@ -1672,9 +1676,11 @@ def api_batch_auto_submit():
 @app.route("/batch")
 def batch_page():
     with db() as conn:
-        latest = conn.execute("SELECT batch FROM batch_items ORDER BY id DESC LIMIT 1").fetchone()
+        # Every list with something left to do (two lists can run as one batch), and the latest.
+        batches = [r[0] for r in conn.execute("SELECT DISTINCT batch FROM batch_items WHERE status IN ('queued','working','needs_you','ready') "
+                                               "UNION SELECT batch FROM (SELECT batch FROM batch_items ORDER BY id DESC LIMIT 1)")]
         rows = [dict(r) for r in conn.execute(
-            "SELECT b.*, j.title, j.company FROM batch_items b LEFT JOIN jobs j ON j.id=b.job_id WHERE b.batch=? ORDER BY b.id", (latest[0],))] if latest else []
+            f"SELECT b.*, j.title, j.company FROM batch_items b LEFT JOIN jobs j ON j.id=b.job_id WHERE b.batch IN ({','.join('?' * len(batches))}) ORDER BY b.id", batches)]
     groups = [(status, title, [r for r in rows if r["status"] == status]) for status, title in
               (("ready", "Ready for you to submit"), ("needs_you", "Needs you"), ("working", "Working on it"), ("queued", "Up next"),
                ("submitted", "Submitted"), ("skipped", "Skipped"), ("closed", "Closed"), ("failed", "Couldn't finish"))]
