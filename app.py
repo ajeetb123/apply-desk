@@ -51,7 +51,7 @@ LINK_FIELDS = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("website", "Port
 # Values the Mac app may type into clearly labeled, empty application fields.
 AUTOFILL_FIELDS = [key for key, _ in CONTACT_FIELDS + EDUCATION_FIELDS + LINK_FIELDS]
 PROFILE_FIELDS = AUTOFILL_FIELDS + ["target_roles", "skills", "career_goals", "role_campaigns", "larp"] + [
-    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS] + applying.DISCLOSURE_KEYS + ["agree_terms", "use_model", "no_linkedin", "auto_submit_clean"] + applying.BACKGROUND_KEYS
+    key for key in applying.STANDARD_KEYS if key not in AUTOFILL_FIELDS] + applying.DISCLOSURE_KEYS + ["agree_terms", "use_model", "no_linkedin", "auto_submit_clean", "sign_in_mode"] + applying.BACKGROUND_KEYS
 # A model running on this Mac (Ollama). Only this address is ever used, so
 # nothing the user has entered leaves the computer.
 OLLAMA = "http://127.0.0.1:11434"
@@ -1472,11 +1472,28 @@ ACTIVE_CLEARANCE = re.compile(r"\b(active|current)\b.{0,40}\b(ts/sci|top secret|
 INTERNSHIP = re.compile(r"\bintern(ship)?s?\b|\bco-?op\b|summer (analyst|associate|20\d\d)", re.I)
 
 
+# Wave 1: the most sought-after companies (big tech, and the 🔥 "FAANG+" mark
+# on internship lists). Case-sensitive in a list row, where the company leads.
+WAVE_ONE_ROW = re.compile(r"🔥|^\W*(Google|Alphabet|Meta|Apple|Amazon|AWS|Microsoft|Netflix|NVIDIA|Nvidia|OpenAI|Stripe|Airbnb|Uber|Lyft|LinkedIn|Salesforce|Adobe|"
+                          r"Databricks|Snowflake|Palantir|Tesla|SpaceX|Bloomberg|Coinbase|Robinhood|DoorDash|Pinterest|Snap|Spotify|Shopify|Roblox|Figma|Ramp|Scale AI|Anduril)\b")
+
+
+def skips_wave_one(p: dict) -> bool:
+    """The user's search campaigns name waves but not Wave 1 ("Wave 2, Wave 3, Defense")."""
+    waves = [c.strip().lower() for c in (p.get("role_campaigns") or "").split(",") if c.strip().lower().startswith("wave")]
+    return bool(waves) and "wave 1" not in waves
+
+
 def batch_decision(p: dict, text: str = "", title: str = "", company: str = "", description: str = "") -> str:
     """Why a posting is skipped ("" to apply), from its list row or, once open, the posting itself."""
     named = f"{title} {company} {text}"
     if SKIP_QUANT.search(named) or QUANT_POSTING.search(description or ""):
         return "Quant or trading"
+    if skips_wave_one(p) and (WAVE_ONE_ROW.search(text or "") or (company and re.search(BIG_TECH, company.lower()))):
+        return "Wave 1 company"
+    # 🎓 on internship lists: a master's or PhD is required.
+    if "🎓" in (text or "") and not re.search(r"master|m\.?s\.? |ph\.?d|doctor", (p.get("degree") or "").lower()):
+        return "Needs a master's or PhD"
     if (p.get("has_clearance") or "").lower() != "yes" and ACTIVE_CLEARANCE.search(f"{text} {description}"):
         return "Needs an active clearance"
     known = title or text
@@ -1513,14 +1530,19 @@ def api_batch_start():
     items = (request.get_json(silent=True) or {}).get("items") or []
     p, done, seen, out = profile(), applied_keys(), set(), []
     batch = datetime.now().isoformat(timespec="seconds")
+    lead_wave_one = False
     with db() as conn:
         for item in items[:150]:
             url = safe_http_url(str(item.get("url", "")))
             text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()[:400]
             if not url:
                 continue
+            # "↳ Software Engineer Intern": another role at the company in the row above.
+            if not text.startswith("↳"):
+                lead_wave_one = bool(WAVE_ONE_ROW.search(text))
+            decided = ("🔥 " if text.startswith("↳") and lead_wave_one else "") + text
             key = applying.posting_key(url)
-            reason = "Listed twice" if key in seen else "Already applied" if key in done else batch_decision(p, text=text)
+            reason = "Listed twice" if key in seen else "Already applied" if key in done else batch_decision(p, text=decided)
             seen.add(key)
             status = "skipped" if reason else "queued"
             now = datetime.now().isoformat(timespec="minutes")
@@ -1542,8 +1564,19 @@ def api_batch_resume():
     with db() as conn:
         rows = conn.execute("SELECT id, url, list_text FROM batch_items WHERE status IN ('queued','working') "
                             f"OR (status='needs_you' AND reason IN ({','.join('?' * len(BATCH_RETRY))})) ORDER BY id", BATCH_RETRY).fetchall()
-        now = datetime.now().isoformat(timespec="minutes")
-        conn.executemany("UPDATE batch_items SET status='queued', reason='', updated=? WHERE id=?", [(now, row["id"]) for row in rows])
+        now, p, kept = datetime.now().isoformat(timespec="minutes"), profile(), []
+        # Decided again with today's rules: a "↳" row follows the row above it.
+        lead_wave_one, waiting = False, {row["id"] for row in rows}
+        for row in conn.execute("SELECT id, list_text FROM batch_items ORDER BY id").fetchall():
+            if not row["list_text"].startswith("↳"):
+                lead_wave_one = bool(WAVE_ONE_ROW.search(row["list_text"]))
+            if row["id"] not in waiting:
+                continue
+            reason = batch_decision(p, text=("🔥 " if row["list_text"].startswith("↳") and lead_wave_one else "") + row["list_text"])
+            conn.execute("UPDATE batch_items SET status=?, reason=?, updated=? WHERE id=?", ("skipped" if reason else "queued", reason, now, row["id"]))
+            if not reason:
+                kept.append(row["id"])
+        rows = [row for row in rows if row["id"] in kept]
     if rows:
         log_activity("Batch continued", f"{len(rows)} postings left from an earlier batch")
     return {"items": [{"id": row["id"], "url": row["url"], "text": row["list_text"]} for row in rows],
@@ -1560,7 +1593,7 @@ def api_batch_check():
         item = conn.execute("SELECT * FROM batch_items WHERE id=?", (item_id,)).fetchone()
     if not row or not item:
         return {"apply": True, "reason": ""}
-    reason = batch_decision(profile(), title=row["title"] or "", company=row["company"] or "", description=row["description"] or "")
+    reason = batch_decision(profile(), text=item["list_text"] or "", title=row["title"] or "", company=row["company"] or "", description=row["description"] or "")
     if not reason and applying.posting_key(row["url"] or "") in applied_keys():
         reason = "Already applied"
     with db() as conn:
@@ -1830,6 +1863,7 @@ def api_fill_plan():
         learned = [{"question": r["question"], "answer": r["answer"]} for r in conn.execute("SELECT question, answer FROM answers")]
     contact = {key: p.get(key, "") for key in AUTOFILL_FIELDS}
     contact["state_options"] = applying.state_options(p.get("state", ""))
+    contact["us_states"] = applying.STATES   # "reside in the state of New York?"
     contact["no_linkedin"] = p.get("no_linkedin", "")
     contact["graduation_dates"] = applying.date_formats(applying.parse_month_year(p.get("graduation", "")))
     education = applying.education_entries(sections, p)
@@ -1905,6 +1939,10 @@ def api_fill_plan():
             # The user's choice in Profile: tick required terms boxes and sign
             # with their name, for them to read before they submit.
             "agree_terms": p.get("agree_terms") == "Yes",
+            # Profile → Signing in: "google" (Google when offered, else an account),
+            # "create" (accounts only), or "" (the user signs in). The Mac app
+            # keeps any password in the Keychain; it never reaches this service.
+            "sign_in": p.get("sign_in_mode") or "",
             # The model on this Mac to ask about what's left, when the user turned that on ("" otherwise).
             "model": chosen_model(p), "model_wanted": p.get("use_model") == "Yes",
             "never": applying.NEVER, "role": role}

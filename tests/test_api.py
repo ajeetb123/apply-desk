@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import re
 import tempfile
 import unittest
@@ -401,6 +402,15 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(experience, ["Example Labs", "Acme"])  # experience keeps the resume's order
         self.assertEqual(application.tailoring.job_type("Software Engineering Intern", "Build REST APIs and backend services. " * 2), "backend")
         self.assertEqual(application.tailoring.job_type("Software Engineering Intern", "Join our team."), "general")
+
+    def test_fill_plan_carries_the_sign_in_choice_and_never_a_password(self):
+        self.assertEqual(self.client.get("/api/fill-plan").json["sign_in"], "")   # off on a new install
+        self.client.post("/profile", data={"email": "riley@example.com", "sign_in_mode": "google"})
+        plan = self.client.get("/api/fill-plan").json
+        self.assertEqual(plan["sign_in"], "google")
+        plan.pop("never")   # the words never filled, "password" among them
+        self.assertNotIn("password", json.dumps(plan).lower())
+        self.assertEqual(plan["profile"]["us_states"]["NY"], "New York")
 
     def test_fill_plan_skills_come_from_the_whole_resume(self):
         resume = ("Riley Chen\nEXPERIENCE\nExample Labs    2026 – Present\nSWE Intern    Remote\n• Cleaned data in SQL and Excel\n"
@@ -1313,6 +1323,17 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in resumed["items"]], [ids[1], ids[3], ids[4]])
         self.assertEqual(resumed["items"][0]["text"], "Acme Software Intern 1")
         self.assertEqual(self.client.post("/api/batch/resume", json={}).json["items"][0]["id"], ids[1])   # still queued until opened
+
+    def test_batch_skips_wave_one_when_campaigns_leave_it_out(self):
+        rows = [{"url": "https://jobs.example.com/jobs/1-intern", "text": "🔥 Example Big Software Engineer Intern Seattle, WA 3d"},
+                {"url": "https://jobs.example.com/jobs/2-intern", "text": "↳ Data Engineer Intern Seattle, WA 3d"},
+                {"url": "https://nvidia.wd5.myworkdayjobs.com/External/job/3-intern", "text": "NVIDIA Software Engineering Intern Santa Clara, CA"},
+                {"url": "https://jobs.example.com/jobs/4-intern", "text": "Acme Power Software Intern - AWS tooling Little Rock, AR"},
+                {"url": "https://jobs.example.com/jobs/5-intern", "text": "Acme Labs Research Intern 🎓 Columbus, OH"}]
+        decided = lambda: [item["reason"] for item in self.client.post("/api/batch/start", json={"items": rows}).json["items"]]
+        self.assertEqual(decided(), ["", "", "", "", "Needs a master's or PhD"])   # no waves named: every company counts
+        self.client.post("/profile", data={"role_campaigns": "Wave 2, Wave 3, Defense"})
+        self.assertEqual(decided(), ["Wave 1 company", "Wave 1 company", "Wave 1 company", "", "Needs a master's or PhD"])
 
     def test_clean_record_and_asking_before_auto_submit(self):
         items = self.client.post("/api/batch/start", json={"items": [{"url": f"https://jobs.lever.co/acme/{n}-intern", "text": "Acme Software Intern"} for n in range(12)]}).json["items"]
