@@ -53,6 +53,15 @@ enum Autofill {
     /// What the user has changed by hand since the last check, taken out of the tab so it's sent once.
     static let correctionsScript = "(() => { try { const seen = sessionStorage.getItem('applyDeskSeen'); if (seen) sessionStorage.removeItem('applyDeskSeen'); return seen || ''; } catch (error) { return ''; } })()"
 
+    /// After a fill, one call per check: the user's corrections (see correctionsScript)
+    /// and whether the tab now shows an application-submitted confirmation.
+    static var afterFillScript: String? {
+        batchScript("confirmed()").map { _ in
+            (Bundle.main.url(forResource: "batch", withExtension: "js").flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "")
+                + "\nJSON.stringify({ seen: \(correctionsScript), confirmed: window.__applyDeskBatch.confirmed() })"
+        }
+    }
+
     /// Batch mode's helpers (batch.js) and one call to them: "collect()", "confirmed()", or "submit()".
     static func batchScript(_ call: String) -> String? {
         guard let source = Bundle.main.url(forResource: "batch", withExtension: "js").flatMap({ try? String(contentsOf: $0, encoding: .utf8) }) else { return nil }

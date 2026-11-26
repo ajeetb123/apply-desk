@@ -35,9 +35,12 @@
   <p class="odds-help"><b>What would help most:</b> {{ odds.helps }}</p>
 </section>
 
-{% if applications %}
+{% if applications or submission %}
 <section class="panel sent" data-reveal style="--i:3">
-  <header class="panel-head"><div><p class="eyebrow">{{ ui.icon('check') }} Your copies</p><h2>What you sent</h2><p class="sub">The exact resume Apply Desk attached or saved for this role, kept even if your resume changes later.</p></div></header>
+  <header class="panel-head"><div><p class="eyebrow">{{ ui.icon('check') }} Your copies</p><h2>{{ 'What you sent' if submission else 'What Apply Desk filled' }}</h2>
+    <p class="sub">{% if submission %}Submitted <time datetime="{{ submission.submitted }}">{{ submission.submitted.replace('T', ' ') }}</time>{% if submission.via %} · {{ 'you marked it' if submission.via == 'you' else 'from ' + submission.via }}{% endif %}.{% else %}Filled, not submitted yet. It counts as an application once you submit it.{% endif %}
+      The exact resume Apply Desk attached or saved is kept even if your resume changes later.</p></div>
+    <form action="/job/{{ job.id }}/submitted" method="post" class="inline">{% if submission %}<input type="hidden" name="undo" value="1"><button class="button ghost" type="submit">Not submitted</button>{% else %}<button class="button" type="submit">I submitted it</button>{% endif %}</form></header>
   <ul class="copies">
     {% for a in applications %}
     <li><span class="copy-mark {{ 'is-sent' if a.attached }}">{{ ui.icon('resume') }}</span>

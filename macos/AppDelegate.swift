@@ -41,6 +41,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var fills: [String: Date] = [:]            // tab id → when its fill started; pressing ` in that tab stops it
     private var stopping: Set<String> = []             // tabs where ` was pressed to stop the fill
     private var learningTabs: [String: Date] = [:]     // tab id → when its last fill ended; the user's corrections are collected from it
+    private var learningRoles: [String: Int] = [:]     // tab id → the role filled there, recorded as submitted once the page confirms it
+    private var learningBusy = false                   // a check is running (Apple Events can run timers inside a call)
+    private var learningTurn = 0
     private var learningTimer: Timer?
     private var resumeMakers: [String: ResumePDF] = [:] // tab id → the resume being rendered for its fill
     // Batch mode (⇧` on a page of postings): each posting it applies to opens in
@@ -83,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fillHotKey = HotKey(keyCode: kVK_ANSI_Grave, modifiers: 0) { [weak self] in self?.fillApplication() }
         // ⇧`, also only while Chrome is in front: apply to every posting on a page of many.
         batchHotKey = HotKey(keyCode: kVK_ANSI_Grave, modifiers: shiftKey) { [weak self] in self?.applyToList() }
+        startDailyBatch()
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 if !Chrome.isFrontmost { self?.fillHotKey?.isEnabled = false; self?.batchHotKey?.isEnabled = false }
@@ -810,23 +814,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// What the user changes after a fill is how Apply Desk learns, and they may
     /// submit without pressing ` again, so a filled tab is checked for a while after its run.
-    private func watchCorrections(_ tabID: String) {
+    private func watchCorrections(_ tabID: String, role: Int? = nil) {
         learningTabs[tabID] = Date()
+        if let role = role { learningRoles[tabID] = role }
         guard learningTimer == nil else { return }
         learningTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in self?.collectCorrections() }
     }
 
+    /// Every 4s: one call lists the tabs, then up to four filled tabs (in turn) are
+    /// read for the user's corrections and for a "thank you for applying" page,
+    /// which records the role as submitted. Checking every tab each time, two
+    /// calls each, froze the app with dozens of batch tabs open.
     private func collectCorrections() {
-        guard Chrome.isRunning else { learningTabs.removeAll(); learningTimer?.invalidate(); learningTimer = nil; return }
-        for (tabID, started) in learningTabs {
-            guard Date().timeIntervalSince(started) < 6 * 3600, Chrome.tab(id: tabID) != nil else { learningTabs[tabID] = nil; continue }
-            guard fills[tabID] == nil,   // a running fill reads these itself
-                  let raw = Chrome.runJavaScript(Autofill.correctionsScript, tabID: tabID), !raw.isEmpty,
-                  let seen = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: String], !seen.isEmpty else { continue }
-            let answers = seen.map { ["question": $0.key, "answer": $0.value, "corrected": "yes"] }
-            backend.send("api/answers", json: ["answers": answers]) { _ in }
-            // The user changed something on a batch application: it no longer counts as submitted exactly as filled.
-            if let item = batchTabs[tabID] { backend.send("api/batch/update", json: ["item": item.id, "status": item.status, "changed": true]) { _ in } }
+        guard Chrome.isRunning else { learningTabs.removeAll(); learningRoles.removeAll(); learningTimer?.invalidate(); learningTimer = nil; return }
+        guard !learningBusy, let open = Chrome.tabList().map({ Set($0.map { $0.id }) }) else { return }
+        learningBusy = true
+        defer { learningBusy = false }
+        for (tabID, started) in learningTabs where Date().timeIntervalSince(started) >= 6 * 3600 || !open.contains(tabID) {
+            learningTabs[tabID] = nil
+            learningRoles[tabID] = nil
+        }
+        let tabs = learningTabs.keys.filter { fills[$0] == nil }.sorted()   // a running fill reads these itself
+        learningTurn += 1
+        let some = tabs.isEmpty ? [] : Array(Set((0..<min(4, tabs.count)).map { tabs[(learningTurn * 4 + $0) % tabs.count] }))
+        for tabID in some {
+            guard let script = Autofill.afterFillScript, let raw = Chrome.runJavaScript(script, tabID: tabID),
+                  let found = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] else { continue }
+            if let text = found["seen"] as? String, !text.isEmpty,
+               let seen = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: String], !seen.isEmpty {
+                let answers = seen.map { ["question": $0.key, "answer": $0.value, "corrected": "yes"] }
+                backend.send("api/answers", json: ["answers": answers]) { _ in }
+                // The user changed something on a batch application: it no longer counts as submitted exactly as filled.
+                if let item = batchTabs[tabID] { backend.send("api/batch/update", json: ["item": item.id, "status": item.status, "changed": true]) { _ in } }
+            }
+            // Submitted (batch tabs are recorded by the batch watch): the role counts as applied to from now on.
+            if found["confirmed"] as? Bool == true, batchTabs[tabID] == nil {
+                if let role = learningRoles[tabID] {
+                    backend.send("api/submitted", json: ["job_id": role, "via": "confirmation page"]) { _ in }
+                    toasts.show(Toast(title: "Recorded as submitted", detail: "The page confirmed your application, so the role now shows as submitted.", symbol: "paperplane"))
+                }
+                learningTabs[tabID] = nil
+                learningRoles[tabID] = nil
+            }
         }
         if learningTabs.isEmpty { learningTimer?.invalidate(); learningTimer = nil }
     }
@@ -906,7 +935,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func finishFill(_ result: Autofill.Result?, tab: Chrome.Tab, role: Int?, resume: ResumePDF.Output?, label: String) {
         fills[tab.id] = nil
         let wasStopped = stopping.remove(tab.id) != nil
-        watchCorrections(tab.id)
+        watchCorrections(tab.id, role: role)
         if wasStopped, result?.done != true {
             batchEnded(tab.id, status: "needs_you", reason: "You stopped it")
             return toasts.show(Toast(title: "Stopped \(label)", detail: "Press ` to continue where it left off.", symbol: "pause.circle"))
@@ -1069,23 +1098,34 @@ extension AppDelegate {
             if batchQueue.isEmpty && batchFilling.isEmpty { return continueBatch() }
             return toasts.show(Toast(title: "No list of postings here", detail: "On a single posting or application, press ` instead. ⇧` is for a page with many postings.", symbol: "list.bullet"))
         }
+        // How many to apply to, and over how many days: the best fits first, the same number each day.
+        guard let (limit, days) = askBatchSize(postings: found.count) else { return }
         if batchFilling.isEmpty && batchQueue.isEmpty { batchCounts = (0, 0, 0, 0) }
-        backend.send("api/batch/start", json: ["items": found]) { [weak self] result in
+        backend.send("api/batch/start", json: ["items": found, "limit": limit, "days": days]) { [weak self] result in
             guard let self = self, let items = result?["items"] as? [[String: Any]] else {
                 self?.toasts.show(Toast(title: "Couldn't reach the local service", detail: "Try ⇧` again in a moment.", symbol: "exclamationmark.triangle"))
                 return
             }
             self.batchAutoSubmit = result?["auto_submit"] as? Bool ?? false
-            let picked = items.filter { $0["apply"] as? Bool == true }.compactMap { item -> BatchItem? in
+            // Best fit first (the list's own order breaks ties).
+            let chosen = items.enumerated().filter { $0.element["apply"] as? Bool == true }
+                .sorted { ($0.element["fit"] as? Double ?? 0, -$0.offset) > ($1.element["fit"] as? Double ?? 0, -$1.offset) }.map { $0.element }
+            // Today's share now; the rest wait for their day (Apply Desk starts each day's share by itself).
+            let picked = chosen.filter { $0["today"] as? Bool != false }.compactMap { item -> BatchItem? in
                 guard let id = item["id"] as? Int, let url = item["url"] as? String else { return nil }
                 return BatchItem(id: id, url: url, label: String((item["text"] as? String ?? url).prefix(60)))
             }
-            let skipped = items.count - picked.count
+            let skipped = items.count - chosen.count, later = chosen.count - picked.count
             self.batchCounts.skipped += skipped
             self.batchQueue += picked
-            self.toasts.show(Toast(title: "Applying to \(picked.count) of \(items.count) postings",
-                                   detail: "Each opens in its own tab, two at a time, and stops at Review. Press ⇧` to stop. Skipped \(skipped): wave 1, quant or trading, an active clearance, not an internship, or already applied.",
-                                   symbol: "square.stack.3d.down.forward", actionTitle: "Show List", action: { [weak self] in self?.openBatchList() }), for: 14)
+            if later > 0 {
+                UserDefaults.standard.set(Date().addingTimeInterval(Double(days) * 86_400), forKey: "batchPacedUntil")
+                UserDefaults.standard.set(ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate]), forKey: "batchStartedDay")
+            }
+            self.toasts.show(Toast(title: later > 0 ? "Applying to \(picked.count) today, \(later) more over the next \(days - 1) day\(days == 2 ? "" : "s")"
+                                                    : "Applying to the top \(picked.count) of \(items.count) postings",
+                                   detail: "Best fits for backend and forward deployed work first. Each opens in its own tab, two at a time, and stops at Review. Press ⇧` to stop. Skipped \(skipped): not in your top \(limit > 0 ? String(limit) : "picks"), wave 1, under $30/hr, religious, quant, clearance, not an internship, or already applied.",
+                                   symbol: "square.stack.3d.down.forward", actionTitle: "Show List", action: { [weak self] in self?.openBatchList() }), for: 16)
             self.batchNext()
             self.startBatchWatch()
         }
@@ -1142,6 +1182,10 @@ extension AppDelegate {
                         self.batchFilling[tabID] = nil
                         self.batchTabs[tabID] = nil
                         self.batchCounts.skipped += 1
+                        // The next best posting from the same list takes its place.
+                        if let spare = check?["replacement"] as? [String: Any], let id = spare["id"] as? Int, let url = spare["url"] as? String {
+                            self.batchQueue.insert(BatchItem(id: id, url: url, label: String((spare["text"] as? String ?? url).prefix(60))), at: 0)
+                        }
                         return self.batchNext()
                     }
                     let title = check?["title"] as? String ?? "", company = check?["company"] as? String ?? ""
@@ -1325,6 +1369,49 @@ extension AppDelegate {
         fixChromeAccess()
     }
 
+    /// "Apply to the top [10] of 150 over [3] days", filled in with the last choice. Nil when cancelled.
+    private func askBatchSize(postings: Int) -> (Int, Int)? {
+        NSApp.activate(ignoringOtherApps: true)
+        let defaults = UserDefaults.standard
+        let alert = NSAlert()
+        alert.messageText = "How many of these \(postings) postings?"
+        alert.informativeText = "Apply Desk ranks them by fit for backend and forward deployed work and your resume, skips the ones it never applies to (wave 1, under $30/hr, religious, quant, already applied), and applies to the best ones, the same number each day."
+        let top = NSTextField(string: String(defaults.integer(forKey: "batchLimit") > 0 ? defaults.integer(forKey: "batchLimit") : 10))
+        let days = NSTextField(string: String(max(1, defaults.integer(forKey: "batchDays"))))
+        for field in [top, days] { field.alignment = .right; field.widthAnchor.constraint(equalToConstant: 54).isActive = true }
+        let row = NSStackView(views: [NSTextField(labelWithString: "Apply to the top"), top, NSTextField(labelWithString: "over"), days, NSTextField(labelWithString: "day(s)")])
+        row.spacing = 8
+        row.frame = NSRect(x: 0, y: 0, width: 330, height: 26)
+        alert.accessoryView = row
+        alert.addButton(withTitle: "Start")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = top
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let limit = max(1, min(postings, Int(top.stringValue.trimmingCharacters(in: .whitespaces)) ?? 10))
+        let spread = max(1, min(30, Int(days.stringValue.trimmingCharacters(in: .whitespaces)) ?? 1))
+        defaults.set(limit, forKey: "batchLimit")
+        defaults.set(spread, forKey: "batchDays")
+        return (limit, spread)
+    }
+
+    /// A batch spread over days: each new day, while Apply Desk is open and nothing
+    /// else is running, that day's share starts by itself.
+    func startDailyBatch() {
+        Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.dailyBatchTick() }
+        }
+    }
+
+    private func dailyBatchTick() {
+        let defaults = UserDefaults.standard
+        guard let until = defaults.object(forKey: "batchPacedUntil") as? Date, Date() < until, Chrome.isRunning,
+              batchQueue.isEmpty, batchFilling.isEmpty, !batchPaused else { return }
+        let today = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate])
+        guard defaults.string(forKey: "batchStartedDay") != today else { return }
+        defaults.set(today, forKey: "batchStartedDay")
+        continueBatch()
+    }
+
     /// Stops opening postings; tabs already filling finish, and the rest stay saved for Continue.
     @objc private func stopBatch() {
         let left = batchQueue.count
@@ -1355,7 +1442,9 @@ extension AppDelegate {
             self.batchAutoSubmit = result?["auto_submit"] as? Bool ?? false
             self.batchCounts = (0, 0, 0, 0)
             self.batchQueue = items
-            self.toasts.show(Toast(title: "Continuing your batch: \(items.count) postings", detail: "Postings already open in Chrome are filled in their own tabs. Each stops at Review.",
+            let later = result?["later"] as? Int ?? 0
+            self.toasts.show(Toast(title: "Continuing your batch: \(items.count) postings", detail: "Postings already open in Chrome are filled in their own tabs. Each stops at Review."
+                                       + (later > 0 ? " \(later) more are set for the coming days." : ""),
                                    symbol: "play.circle", actionTitle: "Show List", action: { [weak self] in self?.openBatchList() }), for: 10)
             self.batchNext()
             self.startBatchWatch()

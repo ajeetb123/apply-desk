@@ -23,7 +23,7 @@
     {% for r in rows %}
     <li>
       <b>{% if r.title %}{{ r.title }}{% else %}{{ (r.list_text or r.url)[:90] }}{% endif %}</b>
-      <span>{{ r.company or '' }}{% if r.reason %}{% if r.company %} · {% endif %}{{ r.reason }}{% endif %}{% if r.auto %} · submitted by Apply Desk{% endif %}</span>
+      <span>{{ r.company or '' }}{% if r.reason %}{% if r.company %} · {% endif %}{{ r.reason }}{% endif %}{% if r.auto %} · submitted by Apply Desk{% endif %}{% if r.status == 'queued' and r.due and r.due > today %} · set for {{ r.due }}{% endif %}</span>
       <span class="batch-links">{% if r.job_id %}<a href="/job/{{ r.job_id }}">Role</a>{% endif %}<a href="{{ r.url }}" target="_blank" rel="noopener" data-web-only>Posting</a></span>
     </li>
     {% endfor %}

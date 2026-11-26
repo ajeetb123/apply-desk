@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% import '_ui.html' as ui %}
+{% block body %}
+<section class="page-head">
+  <p class="eyebrow" data-reveal>Applied</p>
+  <h1 data-reveal style="--i:1">What you've submitted</h1>
+  <p class="lede" data-reveal style="--i:2">Only applications you actually submitted: confirmed by the page after a fill, by the confirmation in your email, or marked on the role page. A fill you never sent isn't here.</p>
+</section>
+{% if not rows %}
+<div class="panel">{{ ui.empty('Nothing submitted yet', 'Submit an application after Apply Desk fills it, and it shows up here once the page confirms it.') }}</div>
+{% else %}
+<section class="panel batch-group batch-submitted" data-reveal style="--i:3">
+  <header class="panel-head"><div><h2>Submitted <em class="batch-count">{{ rows|length }}</em></h2></div></header>
+  <ul class="batch-list">
+    {% for r in rows %}
+    <li>
+      <b>{{ r.title or r.company }}</b>
+      <span>{{ r.company }} · <time datetime="{{ r.submitted }}">{{ r.submitted.replace('T', ' ') }}</time>{% if r.via %} · {{ 'you marked it' if r.via == 'you' else 'from ' + r.via }}{% endif %}{% if r.note %} · {{ r.note }}{% endif %}</span>
+      <span class="batch-links">{% if r.job_id %}<a href="/job/{{ r.job_id }}">Role</a>{% endif %}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

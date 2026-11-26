@@ -16,7 +16,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -94,6 +94,11 @@ def init_db():
         CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL, created TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', attached INTEGER NOT NULL DEFAULT 0, filled TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, extension TEXT NOT NULL, pdf BLOB, pages INTEGER NOT NULL DEFAULT 1, changes TEXT NOT NULL DEFAULT '[]');
         -- Postings from a page of many that Apply Desk applies to one by one
         -- (status: queued, skipped, working, ready, needs_you, submitted, closed).
+        -- Applications the user actually submitted (a fill isn't one): from the confirmation
+        -- page after a fill, their email's confirmations, or the user saying so on the role page.
+        CREATE TABLE IF NOT EXISTS submissions (id INTEGER PRIMARY KEY, job_id INTEGER, company TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '',
+            submitted TEXT NOT NULL, via TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created TEXT NOT NULL);
+        CREATE UNIQUE INDEX IF NOT EXISTS submissions_job ON submissions(job_id) WHERE job_id IS NOT NULL;
         CREATE TABLE IF NOT EXISTS batch_items (id INTEGER PRIMARY KEY, batch TEXT NOT NULL, url TEXT NOT NULL, list_text TEXT NOT NULL DEFAULT '',
             job_id INTEGER, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', clean INTEGER NOT NULL DEFAULT 0, changed INTEGER NOT NULL DEFAULT 0,
             auto INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL, updated TEXT NOT NULL);
@@ -135,6 +140,11 @@ def init_db():
         for column in ("wave", "sector", "funding_stage"):
             if column not in columns:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        # A batch's postings: the day each is due (a batch spread over days) and its fit rank.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(batch_items)")}
+        for column, kind in (("due", "TEXT NOT NULL DEFAULT ''"), ("fit", "REAL NOT NULL DEFAULT 0")):
+            if columns and column not in columns:
+                conn.execute(f"ALTER TABLE batch_items ADD COLUMN {column} {kind}")
         # One fill run (every page of an application) is one record, with its review.
         columns = {row[1] for row in conn.execute("PRAGMA table_info(applications)")}
         for column, default in (("run", "''"), ("review", "'[]'")):
@@ -1132,7 +1142,8 @@ def campaign_options(p=None):
 
 def scored_jobs():
     with db() as conn:
-        jobs = [dict(r) for r in conn.execute("SELECT jobs.*, (SELECT MAX(attached) FROM applications WHERE job_id=jobs.id) AS sent FROM jobs ORDER BY id DESC")]
+        jobs = [dict(r) for r in conn.execute("SELECT jobs.*, (SELECT submitted FROM submissions WHERE job_id=jobs.id) AS sent, "
+                                              "(SELECT MAX(attached) FROM applications WHERE job_id=jobs.id) AS filled_in FROM jobs ORDER BY id DESC")]
     for item in jobs:
         item["match"] = match_role(item["description"], item["title"], item.get("wave", ""), item.get("sector", ""), item.get("funding_stage", ""))
         item["score"] = item["match"]["score"]
@@ -1145,7 +1156,8 @@ def navigation_counts():
     with db() as conn:
         roles = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
         has_resume = conn.execute("SELECT COUNT(*) FROM resume").fetchone()[0] > 0
-    return {"nav": {"roles": roles, "resume": has_resume}}
+        applied = conn.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]
+    return {"nav": {"roles": roles, "resume": has_resume, "applied": applied}}
 
 
 def save_resume_upload():
@@ -1294,6 +1306,7 @@ def job(job_id):
     p = profile()
     with db() as conn:
         sent = [dict(r) for r in conn.execute("SELECT id, created, url, attached, filled, extension, pages, review, pdf IS NOT NULL AS has_pdf FROM applications WHERE job_id=? ORDER BY id DESC", (job_id,))]
+        submission = conn.execute("SELECT submitted, via, note FROM submissions WHERE job_id=?", (job_id,)).fetchone()
     for application in sent:
         application["host"] = urlparse(application["url"]).netloc
         application["review"] = json.loads(application["review"] or "[]")
@@ -1305,7 +1318,61 @@ def job(job_id):
     odds = role_odds(item, match, p, resume_plain(resume["text"]) if resume else "")
     return render_template("job.html", page="job", title=item["title"] or "Role", job=item, report=report, match=match, resume=resume, odds=odds,
                            tuned=tuned, profile=p, voice=voice, voice_note=voice_note, campaign_options=campaign_options(p),
-                           applications=sent, pdf_name=resume_pdf_name())
+                           applications=sent, pdf_name=resume_pdf_name(), submission=dict(submission) if submission else None)
+
+
+def mark_submitted(job_id: int, when: str = "", via: str = "", note: str = "", conn=None) -> bool:
+    """Record that the user submitted this role's application (once per role; the earliest date stays)."""
+    def write(c):
+        row = c.execute("SELECT company, title FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            return False
+        when_ = when or datetime.now().isoformat(timespec="minutes")
+        existing = c.execute("SELECT submitted FROM submissions WHERE job_id=?", (job_id,)).fetchone()
+        if existing:
+            if when_ < existing[0]:
+                c.execute("UPDATE submissions SET submitted=?, via=?, note=? WHERE job_id=?", (when_, via, note, job_id))
+            return True
+        c.execute("INSERT INTO submissions(job_id, company, title, submitted, via, note, created) VALUES(?,?,?,?,?,?,?)",
+                  (job_id, row["company"] or "", row["title"] or "", when_, via, note, datetime.now().isoformat(timespec="minutes")))
+        return True
+    if conn is not None:
+        return write(conn)
+    with db() as c:
+        done = write(c)
+    if done:
+        log_activity("Application submitted", f"Recorded from the {via}" if via else "Recorded")
+    return done
+
+
+@app.post("/api/submitted")
+def api_submitted():
+    """The Mac app saw a submission confirmation after a fill (or another source reports one)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        job_id = int(data.get("job_id") or 0)
+    except (TypeError, ValueError):
+        job_id = 0
+    if not job_id and data.get("url"):
+        with db() as conn:
+            found = find_role(conn, {"url": str(data["url"]), "title": "", "company": "", "description": ""})
+        job_id = found["id"] if found else 0
+    if not job_id:
+        return {"error": "No role for that application."}, 400
+    return {"ok": mark_submitted(job_id, str(data.get("when") or "")[:16], str(data.get("via") or "")[:40], str(data.get("note") or "")[:200])}
+
+
+@app.route("/job/<int:job_id>/submitted", methods=["POST"])
+def job_submitted(job_id):
+    """The user says they submitted it (or didn't, with undo)."""
+    if request.form.get("undo"):
+        with db() as conn:
+            conn.execute("DELETE FROM submissions WHERE job_id=?", (job_id,))
+        flash("Marked as not submitted.", "success")
+    else:
+        mark_submitted(job_id, via="you")
+        flash("Marked as submitted.", "success")
+    return redirect(url_for("job", job_id=job_id))
 
 
 @app.route("/job/<int:job_id>/delete", methods=["POST"])
@@ -1478,6 +1545,42 @@ WAVE_ONE_ROW = re.compile(r"🔥|^\W*(?:\d+\.?\s+)?(Google|Alphabet|Meta|Apple|A
                           r"Databricks|Snowflake|Palantir|Tesla|SpaceX|Bloomberg|Coinbase|Robinhood|DoorDash|Pinterest|Snap|Spotify|Shopify|Roblox|Figma|Ramp|Scale AI|Anduril)\b")
 
 
+# How well a posting's title fits the user's goal (backend software engineering and
+# forward deployed engineering): the best kind of work it names, less when it's
+# off that path (frontend, mobile, hardware, support, non-engineering).
+GOAL_TERMS = [(re.compile(r"forward[- ]deployed|\bfde\b|deployment engineer|solutions engineer", re.I), 45),
+              (re.compile(r"back[- ]?end|\bserver\b|platform|infrastructure|distributed|\bapis?\b|cloud|data (platform|infrastructure|engineer)|devops|"
+                          r"site reliability|\bsre\b|systems (software|engineer)", re.I), 32),
+              (re.compile(r"full[- ]?stack", re.I), 20),
+              (re.compile(r"software (engineer|engineering|developer|development)|\bswe\b|\bsde\b|developer|programm", re.I), 15),
+              (re.compile(r"\bai\b|machine learning|\bml\b|\bllms?\b|agents?\b|automation", re.I), 10)]
+OFF_GOAL = re.compile(r"front[- ]?end|\bui\b|\bux\b|design(er)?\b|\bios\b|android|mobile|\bgames?\b|animation|cinematic|graphics|hardware|firmware|embedded|"
+                      r"fpga|asic|mechanical|electrical|\bqa\b|quality assurance|test engineer|it (support|operations)|help ?desk|technical support|support engineer|"
+                      r"\banalyst\b|business|marketing|sales|finance|accounting|human resources|\bhr\b|recruit|web design|research scientist", re.I)
+
+
+def goal_fit(text: str) -> float:
+    """0-100: how close a posting's title (or list row) is to backend / forward deployed work."""
+    found = [weight for pattern, weight in GOAL_TERMS if pattern.search(text or "")]
+    score = (max(found) + 4 * (len(found) - 1)) if found else 5
+    return max(0.0, min(100.0, score - (30 if OFF_GOAL.search(text or "") else 0)))
+
+
+def pay_ceiling(text: str) -> float | None:
+    """The most an hour the text says a role pays (a yearly salary over 2,080 hours), or None when it states no pay."""
+    rates = []
+    for low, high in re.findall(r"\$\s?(\d{2,3}(?:\.\d{1,2})?)\s*(?:(?:-|–|—|to)\s*\$?\s?(\d{2,3}(?:\.\d{1,2})?))?\s*(?:/|per|an|a)\s*(?:hr|hour)\b", text or "", re.I):
+        rates.append(float(high or low))
+    for low, high in re.findall(r"\$\s?(\d{2,3},\d{3})(?:\.\d\d)?\s*(?:(?:-|–|—|to)\s*\$?\s?(\d{2,3},\d{3}))?[^.\n]{0,30}\b(?:year|annual|annually|yr)\b", text or "", re.I):
+        rates.append(float((high or low).replace(",", "")) / 2080)
+    return max(rates) if rates else None
+
+
+# Faith-based employers, by what they say about themselves (never an EEO line's "religion").
+RELIGIOUS = re.compile(r"\b(christian|church|ministry|ministries|bible|biblical|gospel|faith[- ]based|catholic|baptist|lutheran|methodist|presbyterian|"
+                       r"evangelical|jesus|christ|islamic|synagogue|mosque|seminary|lifeway)\b", re.I)
+
+
 def skips_wave_one(p: dict) -> bool:
     """The user's search campaigns name waves but not Wave 1 ("Wave 2, Wave 3, Defense")."""
     waves = [c.strip().lower() for c in (p.get("role_campaigns") or "").split(",") if c.strip().lower().startswith("wave")]
@@ -1509,6 +1612,11 @@ def batch_decision(p: dict, text: str = "", title: str = "", company: str = "", 
     named = f"{title} {company} {text}"
     if SKIP_QUANT.search(named) or QUANT_POSTING.search(description or ""):
         return "Quant or trading"
+    if RELIGIOUS.search(f"{company} {text}") or (description and len(RELIGIOUS.findall(description[:6000])) >= 2):
+        return "Religious organization"
+    ceiling = pay_ceiling(f"{text}\n{description}")
+    if ceiling is not None and ceiling < 30:
+        return "Pays under $30/hr"
     if skips_wave_one(p) and (WAVE_ONE_ROW.search(text or "") or (company and re.search(BIG_TECH, company.lower()))):
         return "Wave 1 company"
     # Only outside the U.S. (the user is authorized to work in the U.S. alone): from the
@@ -1545,7 +1653,8 @@ def batch_clean(items: list) -> bool:
 
 def applied_keys() -> set:
     with db() as conn:
-        urls = [r[0] for r in conn.execute("SELECT jobs.url FROM applications JOIN jobs ON jobs.id=applications.job_id WHERE applications.attached=1")]
+        # Applied means submitted: a fill the user never sent doesn't count.
+        urls = [r[0] for r in conn.execute("SELECT jobs.url FROM submissions JOIN jobs ON jobs.id=submissions.job_id")]
         urls += [r[0] for r in conn.execute("SELECT url FROM batch_items WHERE status IN ('ready','submitted')")]
     return {applying.posting_key(url) for url in urls if url}
 
@@ -1553,10 +1662,15 @@ def applied_keys() -> set:
 @app.post("/api/batch/start")
 def api_batch_start():
     """A page's postings → which ones Apply Desk applies to, and why it skips the rest."""
-    items = (request.get_json(silent=True) or {}).get("items") or []
-    p, done, seen, out = profile(), applied_keys(), set(), []
+    data = request.get_json(silent=True) or {}
+    items = data.get("items") or []
+    try:
+        limit, days = max(0, int(data.get("limit") or 0)), max(1, int(data.get("days") or 1))
+    except (TypeError, ValueError):
+        limit, days = 0, 1
+    p, done, seen, rows = profile(), applied_keys(), set(), []
     batch = datetime.now().isoformat(timespec="seconds")
-    lead_wave_one = False
+    lead_wave_one, lead_text = False, ""
     with db() as conn:
         # Already waiting from another list: one posting is applied to once.
         seen |= {applying.posting_key(r[0]) for r in conn.execute("SELECT url FROM batch_items WHERE status IN ('queued','working','needs_you')")}
@@ -1567,19 +1681,36 @@ def api_batch_start():
                 continue
             # "↳ Software Engineer Intern": another role at the company in the row above.
             if not text.startswith("↳"):
-                lead_wave_one = bool(WAVE_ONE_ROW.search(text))
+                lead_wave_one, lead_text = bool(WAVE_ONE_ROW.search(text)), text
             decided = ("🔥 " if text.startswith("↳") and lead_wave_one else "") + text
             key = applying.posting_key(url)
             reason = "Listed twice" if key in seen else "Already applied" if key in done else batch_decision(p, text=decided)
+            if not reason and text.startswith("↳") and RELIGIOUS.search(lead_text):
+                reason = "Religious organization"
             seen.add(key)
-            status = "skipped" if reason else "queued"
-            now = datetime.now().isoformat(timespec="minutes")
-            item_id = conn.execute("INSERT INTO batch_items(batch,url,list_text,status,reason,created,updated) VALUES(?,?,?,?,?,?,?)",
-                                   (batch, url, text, status, reason, now, now)).lastrowid
-            out.append({"id": item_id, "url": url, "text": text, "apply": not reason, "reason": reason})
+            rows.append({"url": url, "text": text, "reason": reason, "fit": goal_fit(text)})
+        # The best fits for the user's goal, best first (list order breaks ties); with a limit, only that many.
+        ranked = sorted((row for row in rows if not row["reason"]), key=lambda row: -row["fit"])
+        if limit:
+            for row in ranked[limit:]:
+                row["reason"] = f"Not in your top {limit}"
+            ranked = ranked[:limit]
+        # Spread over the days asked for: the same number each day, best first.
+        per_day = max(1, -(-len(ranked) // days))
+        today = date.today()
+        for position, row in enumerate(ranked):
+            row["due"] = (today + timedelta(days=position // per_day)).isoformat()
+        now = datetime.now().isoformat(timespec="minutes")
+        out = []
+        for row in rows:
+            status = "skipped" if row["reason"] else "queued"
+            item_id = conn.execute("INSERT INTO batch_items(batch,url,list_text,status,reason,created,updated,due,fit) VALUES(?,?,?,?,?,?,?,?,?)",
+                                   (batch, row["url"], row["text"], status, row["reason"], now, now, row.get("due", ""), row["fit"])).lastrowid
+            out.append({"id": item_id, "url": row["url"], "text": row["text"], "apply": not row["reason"], "reason": row["reason"],
+                        "due": row.get("due", ""), "fit": row["fit"], "today": row.get("due", "") <= today.isoformat()})
     applying_count = sum(1 for item in out if item["apply"])
-    log_activity("Batch started", f"Applying to {applying_count} of {len(out)} postings on a page")
-    return {"batch": batch, "items": out, "auto_submit": p.get("auto_submit_clean") == "Yes"}
+    log_activity("Batch started", f"Applying to {applying_count} of {len(out)} postings on a page" + (f" over {days} days" if days > 1 else ""))
+    return {"batch": batch, "items": out, "auto_submit": p.get("auto_submit_clean") == "Yes", "per_day": per_day}
 
 
 BATCH_RETRY = ("This page wouldn't run Apply Desk",)
@@ -1590,8 +1721,9 @@ def api_batch_resume():
     """Postings a batch never got to (Apply Desk quit or was stopped, or Chrome
     refused to run it), in list order, queued again for the Mac app."""
     with db() as conn:
-        rows = conn.execute("SELECT id, url, list_text FROM batch_items WHERE status IN ('queued','working') "
-                            f"OR (status='needs_you' AND reason IN ({','.join('?' * len(BATCH_RETRY))})) ORDER BY id", BATCH_RETRY).fetchall()
+        rows = conn.execute("SELECT id, url, list_text FROM batch_items WHERE (due='' OR due<=?) AND (status IN ('queued','working') "
+                            f"OR (status='needs_you' AND reason IN ({','.join('?' * len(BATCH_RETRY))}))) ORDER BY fit DESC, id",
+                            (date.today().isoformat(), *BATCH_RETRY)).fetchall()
         now, p, kept = datetime.now().isoformat(timespec="minutes"), profile(), []
         # Decided again with today's rules: a "↳" row follows the row above it.
         lead_wave_one, waiting, queued_keys = False, {row["id"] for row in rows}, set()
@@ -1609,8 +1741,10 @@ def api_batch_resume():
         rows = [row for row in rows if row["id"] in kept]
     if rows:
         log_activity("Batch continued", f"{len(rows)} postings left from an earlier batch")
+    with db() as conn:
+        later = conn.execute("SELECT COUNT(*) FROM batch_items WHERE status='queued' AND due>?", (date.today().isoformat(),)).fetchone()[0]
     return {"items": [{"id": row["id"], "url": row["url"], "text": row["list_text"]} for row in rows],
-            "auto_submit": profile().get("auto_submit_clean") == "Yes"}
+            "auto_submit": profile().get("auto_submit_clean") == "Yes", "later": later}
 
 
 @app.post("/api/batch/check")
@@ -1627,10 +1761,19 @@ def api_batch_check():
                             description=row["description"] or "", url=row["url"] or "")
     if not reason and applying.posting_key(row["url"] or "") in applied_keys():
         reason = "Already applied"
+    replacement = None
     with db() as conn:
         conn.execute("UPDATE batch_items SET job_id=?, status=?, reason=?, updated=? WHERE id=?",
                      (job_id, "skipped" if reason else "working", reason, datetime.now().isoformat(timespec="minutes"), item_id))
-    return {"apply": not reason, "reason": reason, "title": row["title"] or "", "company": row["company"] or ""}
+        # A top pick that turns out to be a skip: the next best from the same list takes its place, today.
+        if reason:
+            spare = conn.execute("SELECT id, url, list_text FROM batch_items WHERE batch=? AND status='skipped' AND reason LIKE 'Not in your top %' "
+                                 "ORDER BY fit DESC, id LIMIT 1", (item["batch"],)).fetchone()
+            if spare:
+                conn.execute("UPDATE batch_items SET status='queued', reason='', due=?, updated=? WHERE id=?",
+                             (date.today().isoformat(), datetime.now().isoformat(timespec="minutes"), spare["id"]))
+                replacement = {"id": spare["id"], "url": spare["url"], "text": spare["list_text"]}
+    return {"apply": not reason, "reason": reason, "title": row["title"] or "", "company": row["company"] or "", "replacement": replacement}
 
 
 @app.post("/api/batch/update")
@@ -1653,6 +1796,8 @@ def api_batch_update():
         conn.execute("UPDATE batch_items SET status=?, reason=?, clean=?, changed=?, auto=?, updated=? WHERE id=?",
                      (status, str(data.get("reason") or "")[:300], int(clean), int(changed), int(bool(data.get("auto")) or bool(item["auto"])), now, item_id))
         streak = int(p.get("clean_streak") or 0)
+        if status == "submitted" and item["job_id"]:
+            mark_submitted(item["job_id"], via="confirmation page", conn=conn)
         if status == "submitted" and item["status"] != "submitted":
             streak = streak + 1 if clean and not changed else 0
             conn.execute("INSERT INTO profile(key,value) VALUES('clean_streak',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(streak),))
@@ -1673,6 +1818,14 @@ def api_batch_auto_submit():
     return {"auto_submit": enabled}
 
 
+@app.route("/applied")
+def applied_page():
+    with db() as conn:
+        rows = [dict(r) for r in conn.execute("SELECT s.*, COALESCE(NULLIF(j.company, ''), s.company) AS company, COALESCE(NULLIF(j.title, ''), s.title) AS title "
+                                              "FROM submissions s LEFT JOIN jobs j ON j.id=s.job_id ORDER BY s.submitted DESC")]
+    return render_template("applied.html", page="applied", title="Applied", rows=rows)
+
+
 @app.route("/batch")
 def batch_page():
     with db() as conn:
@@ -1685,7 +1838,7 @@ def batch_page():
               (("ready", "Ready for you to submit"), ("needs_you", "Needs you"), ("working", "Working on it"), ("queued", "Up next"),
                ("submitted", "Submitted"), ("skipped", "Skipped"), ("closed", "Closed"), ("failed", "Couldn't finish"))]
     p = profile()
-    return render_template("batch.html", page="batch", title="Applying to a list", groups=[g for g in groups if g[2]], total=len(rows),
+    return render_template("batch.html", page="batch", title="Applying to a list", groups=[g for g in groups if g[2]], total=len(rows), today=date.today().isoformat(),
                            streak=int(p.get("clean_streak") or 0), trust=BATCH_TRUST, auto_submit=p.get("auto_submit_clean") == "Yes")
 
 
@@ -1848,6 +2001,17 @@ def resume_skills(sections) -> list[str]:
     return unique
 
 
+def other_roles(row) -> list[str]:
+    """Other roles at this company the user has applied to or queued in a batch."""
+    if not row or not (row["company"] or "").strip():
+        return []
+    with db() as conn:
+        found = conn.execute("SELECT DISTINCT j.title FROM jobs j WHERE j.company=? AND j.id<>? AND (j.id IN (SELECT job_id FROM applications) "
+                             "OR j.id IN (SELECT job_id FROM batch_items WHERE job_id IS NOT NULL AND status IN ('working','ready','needs_you','submitted')))",
+                             (row["company"], row["id"])).fetchall()
+    return [r[0] for r in found if r[0]][:4]
+
+
 def coursework_topics(sections) -> list[str]:
     """Courses on the resume that are skills in their own right ("Data Structures", "Linear Algebra")."""
     topics = []
@@ -1968,7 +2132,7 @@ def api_fill_plan():
             "experience": experience, "education": education, "skills": skills,
             # Other names a form's skills list may use ("Retrieval-Augmented Generation" for RAG).
             "skill_aliases": {name: tailoring.skill_aliases(name) for name in skills if tailoring.skill_aliases(name)}, "start": {**start, "source": start_source},
-            "drafts": applying.drafts(hints, education, experience, skills, role, posting, stories, applying.honor_lines(sections)),
+            "drafts": applying.drafts(hints, education, experience, skills, role, posting, stories, applying.honor_lines(sections), other_roles(row)),
             # The user's choice in Profile: tick required terms boxes and sign
             # with their name, for them to read before they submit.
             "agree_terms": p.get("agree_terms") == "Yes",
@@ -2020,7 +2184,8 @@ def model_facts(p) -> list[str]:
     facts = [f"{question['label']}: {p[question['key']]}" for question in applying.STANDARD_QUESTIONS
              if (p.get(question["key"]) or "").strip() and question["key"] not in {"gpa", "heard_about", "phone_type", "country_code"}]
     facts += [f"{label}: {p[key]}" for key, label in (("school", "School"), ("degree", "Degree"), ("graduation", "Expected graduation"),
-                                                      ("city", "Lives in"), ("state", "State")) if (p.get(key) or "").strip()]
+                                                      ("city", "Lives in"), ("state", "State"), ("career_goals", "Career goal"),
+                                                      ("target_roles", "Roles they're looking for")) if (p.get(key) or "").strip()]
     gpa = (p.get("gpa") or "").strip()
     facts.append("GPA: none yet" if gpa.lower() in {"", "n/a", "na", "none"} else f"GPA: {gpa}")
     with db() as conn:

@@ -568,9 +568,9 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertNotIn(b"\\resumeItem", self.client.get(f"/job/{job_id}/applications/{copy_id}.txt").data)
         self.assertEqual(self.client.get(f"/job/{job_id + 1}/applications/{copy_id}.pdf").status_code, 404)
         page = self.client.get(f"/job/{job_id}").data
-        self.assertIn(b"What you sent", page)
+        self.assertIn(b"What Apply Desk filled", page)   # filled, not submitted
         self.assertIn(b"Attached to your application", page)
-        self.assertIn(b"Resume sent", self.client.get("/").data)
+        self.assertIn(b"Filled, not submitted", self.client.get("/").data)
         self.client.post(f"/job/{job_id}/delete")
         import sqlite3
         with sqlite3.connect(application.DB) as conn:
@@ -1315,8 +1315,32 @@ class ApplyDeskApiTests(unittest.TestCase):
                                                       "description": "Software engineering internship building Python services. " * 8}).json
         self.client.post("/api/applications", json={"job_id": job["saved_job_id"], "url": "https://boards.greenhouse.io/acme/jobs/1234567", "attached": True,
                                                      "fields": ["email"], "pages": 1, "pdf": base64.b64encode(b"%PDF-1.4 test").decode()})
-        again = self.client.post("/api/batch/start", json={"items": self.BATCH_ITEMS[:1]}).json["items"][0]
-        self.assertEqual(again["reason"], "Already applied")
+        # Filled but never submitted: not applied yet.
+        self.assertEqual(self.fresh_batch(self.BATCH_ITEMS[:1]), [""])
+        self.client.post("/api/submitted", json={"job_id": job["saved_job_id"], "via": "confirmation page"})
+        self.assertEqual(self.fresh_batch(self.BATCH_ITEMS[:1]), ["Already applied"])
+
+    def test_submissions_are_only_what_was_submitted(self):
+        self.add_resume("Riley Chen\nEXPERIENCE\nExample Labs    2026 – Present\nSWE Intern    Remote\n• Built tools in Python")
+        job = self.client.post("/api/evaluate", json={"title": "Backend Intern", "company": "Acme", "url": "https://jobs.lever.co/acme/42-intern",
+                                                      "description": "Backend internship building Python services. " * 8}).json["saved_job_id"]
+        self.client.post("/api/applications", json={"job_id": job, "url": "https://jobs.lever.co/acme/42-intern/apply", "attached": True,
+                                                     "fields": ["email"], "pages": 1, "pdf": base64.b64encode(b"%PDF-1.4 test").decode()})
+        self.assertIn("Filled, not submitted", self.client.get("/").get_data(as_text=True))
+        self.assertIn("What Apply Desk filled", self.client.get(f"/job/{job}").get_data(as_text=True))
+        # The user says so on the role page, then takes it back.
+        self.client.post(f"/job/{job}/submitted")
+        page = self.client.get(f"/job/{job}").get_data(as_text=True)
+        self.assertIn("What you sent", page)
+        self.assertIn("you marked it", page)
+        self.assertIn(">Submitted<", self.client.get("/").get_data(as_text=True))
+        self.client.post(f"/job/{job}/submitted", data={"undo": "1"})
+        self.assertIn("What Apply Desk filled", self.client.get(f"/job/{job}").get_data(as_text=True))
+        # The confirmation page after a fill; an earlier date (an email) wins.
+        self.assertTrue(self.client.post("/api/submitted", json={"job_id": job, "via": "confirmation page"}).json["ok"])
+        self.client.post("/api/submitted", json={"job_id": job, "when": "2026-11-20T10:00", "via": "Gmail"})
+        with application.db() as conn:
+            self.assertEqual(tuple(conn.execute("SELECT submitted, via FROM submissions WHERE job_id=?", (job,)).fetchone()), ("2026-11-20T10:00", "Gmail"))
 
     def test_batch_resume_picks_up_what_never_ran(self):
         items = self.client.post("/api/batch/start", json={"items": [{"url": f"https://jobs.lever.co/acme/{n}-intern", "text": f"Acme Software Intern {n}"} for n in range(5)]}).json["items"]
@@ -1374,6 +1398,30 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertIn("Globex Data Intern", page)
         resumed = self.client.post("/api/batch/resume", json={}).json["items"]
         self.assertEqual([item["text"] for item in resumed], ["Acme Software Intern 0", "Acme Software Intern 1", "Acme Software Intern 2", "#5 Globex Data Intern"])
+
+    def test_batch_takes_the_best_fits_and_spreads_them_over_days(self):
+        rows = [{"url": f"https://jobs.lever.co/acme/{n}-intern", "text": text} for n, text in enumerate([
+            "Acme Web Design Intern Austin, TX", "Acme Backend Software Engineer Intern Austin, TX", "Acme IT Help Desk Intern Austin, TX",
+            "Acme Forward Deployed Engineer Intern Austin, TX", "Acme Software Engineer Intern Austin, TX", "Acme Platform Engineer Intern $25/hr Austin, TX",
+            "Grace Bible Church Software Intern Austin, TX", "Acme Data Engineer Intern Austin, TX"])]
+        result = self.client.post("/api/batch/start", json={"items": rows, "limit": 4, "days": 2}).json
+        best = sorted((item for item in result["items"] if item["apply"]), key=lambda item: -item["fit"])
+        self.assertEqual([item["text"].split(" Intern")[0] for item in best], ["Acme Forward Deployed Engineer", "Acme Backend Software Engineer", "Acme Data Engineer", "Acme Software Engineer"])
+        reasons = {item["text"].split(" Intern")[0]: item["reason"] for item in result["items"]}
+        self.assertEqual(reasons["Acme Platform Engineer"], "Pays under $30/hr")
+        self.assertEqual(reasons["Grace Bible Church Software"], "Religious organization")
+        self.assertEqual(reasons["Acme Web Design"], "Not in your top 4")
+        self.assertEqual([item["today"] for item in best], [True, True, False, False])   # two a day, best first
+        # Continuing today brings only today's share; the other two wait for tomorrow.
+        resumed = self.client.post("/api/batch/resume", json={}).json
+        self.assertEqual(len(resumed["items"]), 2)
+        self.assertEqual(resumed["later"], 2)
+        # A top pick that turns out to be a skip once open: the next best takes its place.
+        first = best[0]
+        job = self.client.post("/api/evaluate", json={"title": "Forward Deployed Engineer Intern", "company": "Acme", "url": first["url"],
+                                                      "description": "Quantitative trading research internship building trading signals. " * 6}).json
+        check = self.client.post("/api/batch/check", json={"item": first["id"], "job_id": job["saved_job_id"]}).json
+        self.assertEqual((check["apply"], check["replacement"]["text"]), (False, "Acme Web Design Intern Austin, TX"))
 
     def test_clean_record_and_asking_before_auto_submit(self):
         items = self.client.post("/api/batch/start", json={"items": [{"url": f"https://jobs.lever.co/acme/{n}-intern", "text": "Acme Software Intern"} for n in range(12)]}).json["items"]
