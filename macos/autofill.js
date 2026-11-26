@@ -128,7 +128,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // A container's text without its options: option labels (wrapping an option
   // or pointing at it) aren't the question.
   function textAround(node, options) {
-    const ids = new Set(options.length > 1 ? options.map(option => option.id).filter(Boolean) : []);
+    // A lone tick box's label is its question ("I agree..."); a lone radio's is its one option ("Summer 2027").
+    const ids = new Set(options.length > 1 || (options[0] && options[0].type === 'radio') ? options.map(option => option.id).filter(Boolean) : []);
     return textWithout(node, part => controlPart(part) || part.matches('[role="radio"], [role="checkbox"]')
       || (part.matches('label') && (!!part.querySelector('input') || ids.has(part.htmlFor))));
   }
@@ -1105,6 +1106,12 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     // "Are you able to work in Greensboro, NC May 2027 through August 2027?" as choices:
     // Yes where the user lives; anywhere else their relocation answer, with the
     // form's "I plan to relocate" when it has one.
+    // "Do you currently reside in the state of New York?": Yes only for the user's own state.
+    const reside = !isText(el) && q.match(/\b(?:reside|live|located|based) in (?:the state of )?([a-z .]{2,30}?)(?:\?|$| or |,)/);
+    const named = reside && reside[1].trim();
+    const resideState = named && Object.entries(p.us_states || {}).map(([code, name]) => [norm(code), norm(name)])
+      .find(([code, name]) => named === name || named === code || named.endsWith(` ${name}`));
+    if (resideState) return { values: [resideState.some(word => placeStates.includes(word)) ? 'Yes' : 'No'], source: 'answer', key: 'reside_state' };
     const workIn = !isText(el) && !/united states|\bu\.?s\.?a?\b|\bus\b|countr|legal|authori|sponsor|remote/.test(q) && q.match(/\b(?:able|available|willing) to work (?:in|at|from|out of) ([^?]{3,120})/);
     if (workIn) {
       const place = ` ${workIn[1].replace(/,/g, ' ')} `.replace(/\s+/g, ' ');
@@ -1195,7 +1202,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   // Workday draws its date boxes (month, day, year) as tiny inputs under the date
   // it shows, so they're judged by that shown date, never taken for bot traps.
   const dateWrapper = el => el.closest('[data-automation-id="dateInputWrapper"]') || el.parentElement;
-  const controlsIn = root => [...root.querySelectorAll('input:not([type=hidden]):not([type=file]), select, textarea, button[aria-haspopup="listbox"], [role="combobox"][aria-haspopup="listbox"]:not(input)')]
+  const controlsIn = root => [...root.querySelectorAll('input:not([type=hidden]):not([type=file]):not([type=password]), select, textarea, button[aria-haspopup="listbox"], [role="combobox"][aria-haspopup="listbox"]:not(input)')]
     .filter(el => !el.disabled && !el.readOnly && el.getAttribute('aria-disabled') !== 'true' && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || isListbox(el))
       && (isDatePart(el) ? visible(dateWrapper(el)) : visible(el) && !isTrap(el)));
 
@@ -1802,7 +1809,10 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     return [...clickable(), ...document.querySelectorAll('a[href]')].filter(visible)
       .find(b => /^(apply( now| for this (job|position|role))?|apply to (this )?(job|position|role)|i'?m interested|start (my |your )?application)$/i.test(buttonText(b))) || null;
   };
-  const signInPage = () => [...document.querySelectorAll('input[type=password]')].some(visible);
+  // A password box, or a page asking for the code a site emailed (Oracle): the Mac
+  // app's sign-in helper (account.js) takes over, or the user does.
+  const signInPage = () => [...document.querySelectorAll('input[type=password]')].some(visible)
+    || (controls => controls.length <= 3 && controls.some(el => /verification code|one.time (pass(word|code)?|code)|security code|enter (the )?code|\d.digit code|passcode/i.test(questionOf(el))))(controlsIn(document));
   const onReview = () => /^review\b/i.test(pageTitle());
   const loading = () => [...document.querySelectorAll('[data-automation-id="loadingSpinner"], [aria-busy="true"], [role="progressbar"]')].some(visible);
   const isRequired = (el, question) => el.required || el.getAttribute('aria-required') === 'true' || /[*✱]\s*$/.test(question || '');

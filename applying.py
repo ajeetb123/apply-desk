@@ -28,7 +28,7 @@ STANDARD_QUESTIONS = [
     {"key": "authorized_us", "label": "Authorized to work in the U.S.", "default": "",
      "pattern": r"^(?!.*\b(uk|u\.k\.|united kingdom|britain|england|canada|canadian|europe|european|eu|eea|india|australia|germany|france|ireland|singapore|japan|china|mexico|netherlands|israel|switzerland|poland|spain|italy|brazil|korea)\b)(?!.{0,90}\b(require|requires|need|needs)\b.{0,40}sponsor).*(?:authori[sz]ed to work|eligib\w* (to work|for employment)|right to work|legally (able|permitted|eligible|entitled) to work|entitled to work|work authori[sz]ation)"},
     {"key": "needs_sponsorship", "label": "Will need visa sponsorship", "default": "",
-     "pattern": r"^(?!.*\b(uk|u\.k\.|united kingdom|britain|england|canada|canadian|europe|european|eu|eea|india|australia|germany|france|ireland|singapore|japan|china|mexico|netherlands|israel|switzerland|poland|spain|italy|brazil|korea)\b).*sponsor"},
+     "pattern": r"^(?!.*\b(uk|u\.k\.|united kingdom|britain|england|canada|canadian|europe|european|eu|eea|india|australia|germany|france|ireland|singapore|japan|china|mexico|netherlands|israel|switzerland|poland|spain|italy|brazil|korea)\b).*(sponsor|visa support)"},
     # Having taken one, not being willing to ("willing to undergo a polygraph" is left for the user).
     {"key": "polygraph", "label": "Ever taken a polygraph", "default": "",
      "pattern": r"(have you|had|taken|passed|completed|current|active|hold|possess)[^.]{0,40}polygraph|polygraph (status|type|level|completed|date|history)"},
@@ -248,6 +248,8 @@ FOLLOW_UPS = [
      "us_citizen", "Yes", "N/A", ["N/A", "Not applicable"]),
     ("international_followup", r"if international|\(international (applicants?|candidates?|students?)( only)?\)|international (applicants?|students?) only", "us_citizen", "Yes", "N/A", ["N/A", "Not applicable"]),
     ("sponsorship_followup", r"^if (yes|so)\b.{0,60}sponsor|type of (visa )?sponsorship", "needs_sponsorship", "No", "N/A", ["N/A", "Not applicable", "None"]),
+    ("work_authorization_status", r"work authori[sz]ation status|employment authori[sz]ation status", "authorized_us", "Yes", "Can work for any employer",
+     ["Can work for any employer", "Authorized to work for any employer", "U.S. Citizen", "US Citizen", "Citizen", "Authorized to work", "Yes"]),
     ("export_control", r"export control|\bu\.? ?s\.? person\b|\bitar\b|\bear\b.{0,20}regulat|lawful permanent resident|protected individual",
      "us_citizen", "Yes", "Yes", ["Yes", "A citizen of the U.S.", "U.S. Citizen", "US Citizen", "Citizen", "U.S. person"]),
     ("citizenship_country", r"countr(y|ies) of (current )?citizenship|citizenship countr|(which|what) countr(y|ies) .{0,30}(citizen|national)",
@@ -445,7 +447,7 @@ def presumed_answers(profile: dict, education: list[dict], experience: list[dict
         out.append({"key": "related_degree", "answer": "Yes", "options": YES, "assumed": False,
                     "pattern": r"(degree|major|majoring|studying|pursuing|enrolled).{0,100}(computer science|software engineering|computer engineering|related (technical |stem |engineering )?(field|discipline|major|degree))"})
     out.append({"key": "applied_before", "answer": "Yes" if applied_before else "No", "options": YES if applied_before else NO, "assumed": True,
-                "pattern": r"(previously|ever|before|already) applied|applied (to|for|with|at|here) .{0,60}(before|previously|in the past|past \d+)|have you applied|or applied before"})
+                "pattern": r"(previously|ever|before|already) (applied|interviewed)|applied (to|for|with|at|here) .{0,60}(before|previously|in the past|past \d+)|have you (applied|interviewed)|or applied before"})
     months = experience_months(experience)
     years = months / 12
     label = "Less than 1 year" if years < 1 else f"{round(years)} year{'s' if round(years) != 1 else ''}"
@@ -1025,7 +1027,7 @@ MODEL_SCHEMA = {"type": "object", "required": ["answers"], "properties": {"answe
     "type": "object", "required": ["id", "answer", "choices"],
     "properties": {"id": {"type": "integer"}, "answer": {"type": "string"}, "choices": {"type": "array", "items": {"type": "string"}}}}}}}
 # Never put to a model: self-identification, IDs, contact details, other people, pay, GPA, consent.
-MODEL_NEVER = NEVER + r"|linkedin|twitter|website|portfolio|github|\burl\b|e ?mail|phone|address|zip|postal|\bgpa\b|grade point|reference|emergency|agree|consent|certif|acknowledg"
+MODEL_NEVER = NEVER + r"|graduation (date|term|month|year)|(expected|anticipated|projected) graduation|when .{0,25}graduate|linkedin|twitter|website|portfolio|github|\burl\b|e ?mail|phone|address|zip|postal|\bgpa\b|grade point|reference|emergency|agree|consent|certif|acknowledg"
 ESSAY_TELLS = r"passion|leverag|excit|thrill|delv|\bhoned\b|stands? out|\balign|journey|\beager|confident|commitment|rigorous|fast.paced|cutting.edge|innovative|impactful|testament|i believe|resonat|leader in|industry.leading|world.class|renowned|prestigious|reputation"
 # Sentences that sum up or sell ("These projects show my ability to ...").
 ESSAY_CLOSERS = r"^(these|this|such|overall|ultimately|in (conclusion|short|summary)|all of this|together)\b.{0,60}\b(show|shows|showed|demonstrat\w+|reflect\w*|taught|teach\w*|help\w*|allow\w*|prepar\w+|ma(de|kes?) me|highlight\w*|prove\w*)\b"
@@ -1148,6 +1150,10 @@ def listing_locations(title: str, description: str, url: str) -> list[str]:
     for found in re.finditer(rf"\b([A-Z][a-zA-Z.'-]+(?: [A-Z][a-zA-Z.'-]+){{0,2}}),\s*({state})\b", text):
         city = re.sub(r"^(?:(?:Also|In|At|The|Our|Located|Based|From|To|And|Or|Near|Location|Locations|Office|Offices|Intern|Internship) )+", "", found.group(1))
         add(f"{city}, {found.group(2)}")
+    # Lever's header: "Torrance CA / Austin TX" (no commas, glued to the next word).
+    codes = "|".join(STATES)
+    for found in re.finditer(rf"(?m)(?:^|[/|•·]\s*)([A-Z][a-zA-Z.'-]+(?: [A-Z][a-zA-Z.'-]+)?) ({codes})(?=\s*[/|•·]|\s*$|[A-Z][a-z])", text):
+        add(f"{found.group(1)} {found.group(2)}")
     slug = re.search(r"/job/(?:US-+)?([A-Za-z-]+?)-+(" + "|".join(STATES) + r")/", unquote(url or ""))
     if slug and not places:
         add(f"{slug.group(1).replace('-', ' ')}, {slug.group(2)}")
