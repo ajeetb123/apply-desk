@@ -50,7 +50,7 @@ STANDARD_QUESTIONS = [
      "pattern": r"how did you (hear|learn|find)|how you (heard|learned|found)|hear about (us|this)|where did you (hear|find|learn)|referral source|^source$|candidate source"},
     # Before previously_employed: "relatives currently employed at Acme" is about relatives.
     {"key": "relatives", "label": "Relatives employed there", "default": "",
-     "pattern": r"relative|family members?|close personal relationship|member of your (immediate )?(family|household)|(immediate )?family or household|immediate family|household members?|members? of your household"},
+     "pattern": r"relative|family members?|spousal equivalent|close personal relationship|member of your (immediate )?(family|household)|(immediate )?family or household|immediate family|household members?|members? of your household"},
     {"key": "previously_employed", "label": "Previously worked for the employer", "default": "",
      "pattern": r"former .{0,40}(employee|contractor|intern)\b|(held|had|completed) (a |an |any )?(prior|previous|past) internship|^(?!.*\bapplied\b).*((previously|ever|formerly) (worked|interned|been employed|employed|work (for|at))|former employee)|worked (for|at) (this|our|the) (organization|company)|current or former (employee|intern)|(currently|presently) (employed|working) (by|for|at|with)"},
     {"key": "currently_employed", "label": "Currently employed", "default": "",
@@ -148,7 +148,7 @@ def disclosure_answers(profile: dict) -> list[dict]:
 
 
 # Labels that never get a saved answer and are never learned.
-NEVER = r"race|ethnic|hispanic|latin[oax]|gender|sex\b|lgbt|sexual orientation|transgender|accommodat|\bpronouns?\b|pronounc|pronunciation|disab|veteran|military status|social security|\bssn\b|date of birth|birth ?date|password|verification code|security code|one.?time (code|pass)|salary|compensation|pay expectation|signature|captcha"
+NEVER = r"race|ethnic|hispanic|latin[oax]|gender|sex\b|lgbt|sexual orientation|transgender|accommodat|\bpronouns?\b|pronounc|pronunciation|disab|veteran|military status|social security|\bssn\b|date of birth|birth ?date|password|verification code|security code|one.?time (code|pass)|salary|compensation|pay expectation|signature|captcha|submitted directly by the applicant|application verification|(not a|are you a) (bot|robot)|prove you.re (a )?human"
 
 ORG_WORDS = r"\b(university|college|institute|school|inc|llc|ltd|corp|corporation|company|co\.|labs?|laboratory|technologies|systems|group|foundation|department|library|center|centre|agency|bank|hospital)\b"
 TITLE_WORDS = r"\b(intern|engineer|developer|assistant|analyst|researcher|technician|lead|manager|associate|fellow|consultant|scientist|designer|tutor|instructor|specialist|coordinator|officer|president|founder|volunteer|representative|cashier|counselor)\b"
@@ -202,6 +202,10 @@ def option_variants(key: str, answer: str) -> list[str]:
         return [place.strip() for place in answer.split(";") if place.strip()]  # "Texas; Utah": each place on its own
     if key == "work_onsite" and yes:
         return ["Yes", "On-site", "Onsite", "Hybrid", "In person"]
+    # Willing to relocate: an option about relocating ("Yes, I will arrange my own relocation")
+    # over one that says they already live there.
+    if key == "relocate" and yes:
+        return ["relocat", "Yes, I will relocate", "Yes"]
     if key == "class_year":
         years = {"freshman": ["Freshman", "First Year", "First-year", "1st Year", "Year 1"], "sophomore": ["Sophomore", "Second Year", "Second-year", "2nd Year", "Year 2"],
                  "junior": ["Junior", "Third Year", "Third-year", "3rd Year", "Year 3"], "senior": ["Senior", "Fourth Year", "Fourth-year", "4th Year", "Year 4"]}
@@ -232,7 +236,11 @@ def standard_answers(profile: dict) -> list[dict]:
             options = [option for option in options if option not in {"0", gpa_range}] + [gpa_range]
         # Unanswered questions stay in the list so a later, looser pattern
         # can't claim them; the filler leaves them for the user.
-        out.append({"key": question["key"], "pattern": question["pattern"], "answer": answer, "options": options})
+        entry = {"key": question["key"], "pattern": question["pattern"], "answer": answer, "options": options}
+        # A text box takes the answer itself when the first option is only a hint for lists ("relocat").
+        if options and answer and options[0].lower() != answer.lower() and question["key"] == "relocate":
+            entry["text"] = answer
+        out.append(entry)
     return out
 
 
@@ -467,7 +475,11 @@ def normalize_question(text: str) -> str:
 def learnable(question: str, answer: str) -> bool:
     """Short, reusable answers the user typed; never essays or sensitive fields."""
     q, a = normalize_question(question), (answer or "").strip()
-    if not q or not a or len(q) < 3 or len(a) > 160 or a.lower() in {"select one", "select", "choose"}:
+    if not q or not a or len(q) < 3 or len(a) < 2 or len(q) > 220 or len(a) > 160 or a.lower() in {"select one", "select", "choose"}:
+        return False
+    # Not a question at all (an email shown as a label, a settings panel), alert settings,
+    # and the language or tool lists a person types per application ("git").
+    if "@" in q or re.search(r"\balerts?\b|how often|newsletter|marketing|(languages|technologies|tools|frameworks).{0,40}(worked with|used|experience)", q):
         return False
     return not (re.search(NEVER, q) or re.search(r"\bwhy\b|describe|statement|cover letter|tell us|essay|explain", q))
 
@@ -846,6 +858,10 @@ def state_options(state: str) -> list[str]:
 # Readable names for tailoring.THEMES, in the same order.
 THEME_NAMES = ["data", "AI", "automation", "web interfaces", "backend systems", "cloud infrastructure", "embedded systems", "mobile apps"]
 DRAFT_QUESTIONS = [
+    # Rule-written, so they're the same and true every time (checked before "why").
+    ("multiple", r"(applying|apply|applied|interested) (for|to|in) (more than one|multiple|other|several|another) (internships?|roles?|positions?|jobs?|openings?)|more than one (internship|role|position|opening)"),
+    ("anything_else", r"anything else (you('d| would) like|we should|you want|you'd like) (us )?to know|anything else (to|you('d| would) like to) (add|share|tell)|is there anything else"),
+    ("stack", r"(what|which) (programming )?(languages|technologies|tools|frameworks|tech stacks?)\b.{0,80}(worked with|used|experience|familiar|comfortable|proficient)|(languages|technologies) (and|&) (technologies|tools|frameworks) (you('ve| have)|have you)"),
     ("cover", r"cover letter|letter of (interest|motivation)|motivation letter"),
     ("about", r"tell (us|me) (a (little|bit) )?(more )?about yourself|about yourself|introduce yourself|describe yourself|personal (summary|statement)|professional summary|brief (bio|introduction)|summary of (your )?(background|experience|qualifications)"),
     ("accomplishments", r"accomplishment|achievement|proud(est)? of|strongest (technical )?(work|project)|technical (experience|background|projects)|relevant (experience|projects)|what have you built"),
@@ -930,7 +946,7 @@ def honor_lines(sections) -> list[str]:
 
 
 def drafts(profile: dict, education: list[dict], experience: list[dict], skills: list[str], role: dict | None, posting: str,
-           stories: list[dict] | None = None, honors: list[str] | None = None) -> list[dict]:
+           stories: list[dict] | None = None, honors: list[str] | None = None, others: list[str] | None = None) -> list[dict]:
     """Drafts for the questions that need writing ("why this role", "tell us
     about yourself", "your strongest accomplishments", a cover letter), in
     plain first person and built only from the user's profile, their resume's
@@ -996,7 +1012,31 @@ def drafts(profile: dict, education: list[dict], experience: list[dict], skills:
         proud.append(f"I also earned {honors[0]}.")
     add("accomplishments", "\n\n".join(proud), short=proud[0] if proud else "")
     add("project", " ".join([projects[0]["text"]] + projects[0]["sentences"][2:3]) if projects else "")
+    # Other roles the user is applying to at this company (from Apply Desk's own records).
+    if company:
+        # "Software Engineering Intern, Android, Subscriptions" beside this role's own title reads as "Android, Subscriptions".
+        mine_parts = [part.strip() for part in ((role or {}).get("title") or "").split(",")]
+        def team(name: str) -> str:
+            parts = [part.strip() for part in name.split(",")]
+            while len(parts) > 1 and mine_parts and parts[0] == mine_parts[0]:
+                parts = parts[1:]
+            return ", ".join(parts)
+        others = [team(name) for name in (others or []) if name]
+        listed = "; ".join(others[:-1]) + ("; and " if len(others) > 2 else " and ") + others[-1] if len(others) > 1 else (others[0] if others else "")
+        add("multiple", f"Yes. I'm also applying for {'another ' + company + ' internship' if len(others) == 1 else str(len(others)) + ' other ' + company + ' internships'}: {listed}. "
+                        "I'd be glad to be considered for whichever team is the best fit." if others else f"No, this is the only internship I'm applying for at {company}.")
+    add("anything_else", " ".join(part for part in (available, "Thank you for considering my application.") if part))
+    # The resume's own languages and tools, never coursework.
+    named = [name for name in skills if not re.search(r"structures|mathematics|algebra|statistics|calculus|algorithms|probability|theory|discrete", name, re.I)]
+    langs = [name for name in named if name.lower() in LANGUAGES]
+    tools = [name for name in named if name.lower() not in LANGUAGES][:10]
+    if langs or tools:
+        add("stack", "I've worked with " + ", along with ".join(part for part in (_join(langs) if langs else "", _join(tools) if tools else "") if part) + ".")
     return out
+
+
+LANGUAGES = {"python", "java", "sql", "typescript", "javascript", "c", "c++", "c#", "go", "golang", "rust", "swift", "kotlin", "ruby", "php", "scala", "r",
+             "matlab", "html", "css", "bash", "shell", "dart", "haskell", "lua", "perl", "julia"}
 
 
 # ---------------------------------------------------------------------------
@@ -1022,7 +1062,9 @@ ESSAYS are drafts the person will edit. Questions about interests, goals, reason
 - Use one or two specific things from the resume, and keep the resume's own wording for what was done. Do not upgrade it: "Team of 4 built" means "my team of 4 built", never "I led". Do not add results, numbers, tools, or feelings the resume doesn't state.
 - End on a concrete detail. No closing sentence that sums up, sells, or says what the experience shows or taught.
 - Never use: passionate, passion, leverage, excited, thrilled, delve, honed, stands out, aligns, journey, eager, confident, commitment, rigorous, fast-paced, cutting-edge, innovative, impactful, testament, I believe.
-- No em dashes, semicolons, bullet points, headings, or questions. Do not flatter the company or repeat its mission."""
+- No em dashes, semicolons, bullet points, headings, or questions.
+
+WHY THIS COMPANY (its mission, product, values, community, or why you want to work there): name one specific thing the JOB POSTING says the company makes, does, or values, in your own plain words, and connect it to one specific item from the resume or to the person's career goal. Never leave these empty. Don't praise the company, call it a leader, or say anything "resonates"."""
 MODEL_SCHEMA = {"type": "object", "required": ["answers"], "properties": {"answers": {"type": "array", "items": {
     "type": "object", "required": ["id", "answer", "choices"],
     "properties": {"id": {"type": "integer"}, "answer": {"type": "string"}, "choices": {"type": "array", "items": {"type": "string"}}}}}}}

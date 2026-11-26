@@ -408,7 +408,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     const wanted_ = when(year, month);
     const terms = { spring: [1, 5], summer: [6, 8], fall: [9, 12], autumn: [9, 12], winter: [12, 14] };
     const score = t => {
-      const named = [...t.matchAll(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,? (20\d{2})\b/g)].map(m => when(m[2], months.indexOf(m[1]) + 1));
+      // "May 2027", "May 31st, 2027", "Monday, June 7th, 2027".
+      const named = [...t.matchAll(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,? (?:\d{1,2}(?:st|nd|rd|th)?,? )?(20\d{2})\b/g)].map(m => when(m[2], months.indexOf(m[1]) + 1));
       const numeric = [...t.matchAll(/\b(\d{1,2})\/(20\d{2})\b/g)].map(m => when(m[2], Number(m[1])));
       const dates = named.length ? named : numeric;
       if (dates.length === 1) return dates[0] === wanted_ ? 3 : 0;
@@ -908,7 +909,10 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     ['email', /e ?mail/, [p.email]], ['phone', /phone number|^phone$|mobile|cell(ular)? number|telephone/, [p.phone]],
     ['linkedin', /linkedin/, [url(p.linkedin)]], ['github', /github/, [url(p.github)]],
     // Any other link field gets the personal site, or GitHub without one.
-    ['website', /website|portfolio|personal (site|url|page)|^url$/, [url(p.website), url(p.github)]], ['first', /first name|given name|preferred name|^first$/, [parts[0]]],
+    ['website', /website|portfolio|personal (site|url|page)|^url$/, [url(p.website), url(p.github)]],
+    // "First & Last Name", "First and last name": both, never one of them.
+    ['name', /first (name )?(and|&|\+|\/) last( name)?|last (name )?(and|&|\/) first( name)?/, [p.name]],
+    ['first', /first name|given name|preferred name|^first$/, [parts[0]]],
     ['last', /last name|family name|surname|^last$/, [parts.length > 1 ? parts.slice(1).join(' ') : '']],
     ['name', /full name|your name|legal name|^name$/, [p.name]],
     ['address', /address line 1|street address|address 1|^address$|^(mailing|home|current|permanent|residential) address( line 1)?$/, [p.address]],
@@ -927,7 +931,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const otherPeople = /\breferences?\b|emergency|supervisor|manager|guardian|parent|spouse|high school|extension|\breferr(al|er|ed) (name|email|by)|\b(alternate|alternative|secondary|additional|backup) (phone|email|contact|number)/;
   // A start date at a past job ("Government Civilian Start Date") is not the user's to invent.
   const pastJob = /government|military|civilian|clearance|served|service|former|previous|prior/;
-  const startDate = /(start|availability|available|work) date|^(date )?available to start$|availability to start|(preferred|desired) (start|work) (month|time)|when can you (start|begin)|earliest (start|date)|proposed start|date (you are )?available/;
+  const startDate = /(start|availability|available|work) date|available to (start|begin)|availability to start|(preferred|desired) (start|work) (month|time)|when can you (start|begin)|earliest (start|date)|proposed start|date (you are )?available/;
   const graduationDate = /when .{0,25}graduate|anticipated graduation|graduation date|(expected|anticipated|projected) graduation|graduation (month|year|term)|date of graduation|completion date/;
   // Marketing's exception: contact a form requires, about this application.
   const aboutThisApplication = /(regarding|about|related to|concerning|for) (my|your|this|the) (application|candidacy|interview)/;
@@ -936,7 +940,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const AGREE = ['Yes', 'I agree', 'Agree', 'I consent', 'I accept', 'Accept', 'I acknowledge', 'Acknowledge', 'I understand', 'True'];
   const consent = /agree|certif|acknowledg|consent|terms|attest|privacy|i understand|authori[sz]e (us|the company|.* to contact)|process (my |your )?personal (information|data)|data processing/;
   // Optional sign-ups that are never ticked, even with "agree to terms" on.
-  const marketing = /newsletter|marketing|promotion|sms|text message|texts|job alerts?|updates|subscribe|talent (community|network|pool)|future (opportunities|roles|openings)|other (roles|positions|opportunities)|contact me about/;
+  const marketing = /newsletter|marketing|promotion|sms|text message|texts|job alerts?|updates|subscribe|recruiting campaign|campaign communications|recruiting communications|promotional|talent (community|network|pool)|future (opportunities|roles|openings)|other (roles|positions|opportunities)|contact me about/;
   const todayDate = /^(today'?s )?date$|^date signed$|^signature date$/;
   // "gemma4:12b" → "Gemma"
   const modelName = (plan.model || '').split(':')[0].replace(/[\d.-]+$/, '').replace(/^[a-z]/, letter => letter.toUpperCase()) || 'The local model';
@@ -1067,11 +1071,20 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     // What the user chose on a form for this exact question beats every rule below.
     const chosen = (plan.learned || []).find(learned => norm(learned.question) === q);
     if (chosen) return { values: chosen.answer.split(/;\s*/), source: 'learned' };
-    if (el.tagName !== 'TEXTAREA' && startDate.test(q) && !pastJob.test(q)) return { date: plan.start, source: 'date' };
+    if (el.tagName !== 'TEXTAREA' && startDate.test(q) && !pastJob.test(q)) {
+      // Choices ("Monday May 31st, 2027" / "Monday, June 7th, 2027"): the one in the start month, never several.
+      const choice = el.type === 'radio' || el.type === 'checkbox' || el.tagName === 'SELECT' || el.tagName === 'BUTTON' || isListbox(el) || isCombo(el) || isSearchSelect(el);
+      if (choice && plan.start && plan.start.year) return { values: [`month of ${plan.start.year} ${plan.start.month}`], source: 'date', strict: 'prefix' };
+      return { date: plan.start, source: 'date' };
+    }
     if (el.tagName !== 'TEXTAREA' && todayDate.test(q) && plan.today) return { date: plan.today, source: 'date' };
     if (el.tagName !== 'TEXTAREA' && graduationDate.test(q) && !/high school/.test(q)) {
       const dated = p.graduation_dates || {};
-      const picks = el.tagName === 'SELECT' || isListbox(el) || isCombo(el) || el.type === 'radio' || el.tagName === 'BUTTON';
+      const picks = el.tagName === 'SELECT' || isListbox(el) || isCombo(el) || isSearchSelect(el) || el.type === 'radio' || el.tagName === 'BUTTON';
+      // "Graduation Month" / "Graduation Year" on their own: just that part ("December", "2028").
+      const monthName = dated.month ? new Date(2000, Number(dated.month) - 1, 1).toLocaleString('en-US', { month: 'long' }) : '';
+      if (/\bmonth\b/.test(q) && !/\byear\b/.test(q) && monthName) return picks ? { values: [monthName, monthName.slice(0, 3), dated.month], source: 'date', strict: 'prefix' } : { values: [monthName], source: 'date' };
+      if (/\byear\b/.test(q) && !/\bmonth\b/.test(q) && dated.year) return { values: [dated.year], source: 'date' };
       return picks ? { values: [`month of ${dated.year} ${dated.month}`], source: 'date' } : { date: dated, source: 'date' };
     }
     const window_ = graduatingBetween(q);
@@ -1085,12 +1098,13 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (!new RegExp(answer.pattern, 'i').test(q)) continue;
       if (!answer.answer) { claimed = true; break; }
       // A text box asking which location gets the listing's own place.
-      if (answer.text && isText(el) && !isCombo(el) && !isPrompt(el)) return { values: [answer.text], source: 'answer', key: answer.key };
+      if (answer.text && isText(el) && !isCombo(el) && !isPrompt(el) && !isSearchSelect(el)) return { values: [answer.text], source: 'answer', key: answer.key };
       return { values: answer.options.length ? answer.options : [answer.answer], source: 'answer', key: answer.key, open: !!answer.open,
                browse: answer.key === 'heard_about' || !!answer.open };
     }
     for (const learned of plan.learned || []) {
-      if (norm(learned.question) === q || similar(learned.question, q) >= 0.8) return { values: learned.answer.split(/;\s*/), source: 'learned' };
+      const numbers = text => (norm(text).match(/\d+/g) || []).join(' ');
+      if (norm(learned.question) === q || (similar(learned.question, q) >= 0.8 && numbers(learned.question) === numbers(q))) return { values: learned.answer.split(/;\s*/), source: 'learned' };
     }
     if (claimed) return null;
     // Screening questions: the user's own background answers (blank: left for
@@ -1110,11 +1124,17 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     // Yes where the user lives; anywhere else their relocation answer, with the
     // form's "I plan to relocate" when it has one.
     // "Do you currently reside in the state of New York?": Yes only for the user's own state.
-    const reside = !isText(el) && q.match(/\b(?:reside|live|located|based) in (?:the state of )?([a-z .]{2,30}?)(?:\?|$| or |,)/);
-    const named = reside && reside[1].trim();
-    const resideState = named && Object.entries(p.us_states || {}).map(([code, name]) => [norm(code), norm(name)])
-      .find(([code, name]) => named === name || named === code || named.endsWith(` ${name}`));
-    if (resideState) return { values: [resideState.some(word => placeStates.includes(word)) ? 'Yes' : 'No'], source: 'answer', key: 'reside_state' };
+    // "Do you currently reside in the state of New York?", "Do you live or go to school in Rolla, MO or the
+    // Kansas City metro?": Yes only when a state it names is the user's home state or their school's.
+    const reside = !isText(el) && q.match(/\b(?:reside|live|located|based|go to school|attend school|study)\b[^?]{0,25}?\bin (?:the state of )?([^?]{2,140})/);
+    if (reside && !/united states|\bu\.?s\.?a?\b|countr/.test(reside[1])) {
+      const states = Object.entries(p.us_states || {});
+      const named = states.filter(([code, name]) => ` ${reside[1].replace(/[,.]/g, ' ')} `.includes(` ${norm(name)} `)
+        || new RegExp(`,\\s*${code}\\b`).test(String(question)));
+      const schoolPlace = ((plan.education || [])[0] || {}).location || '';
+      const mine = [...placeStates, ...states.filter(([code]) => new RegExp(`,\\s*${code}\\b`, 'i').test(schoolPlace)).flatMap(([code, name]) => [norm(code), norm(name)])];
+      if (named.length) return { values: [named.some(([code, name]) => mine.includes(norm(code)) || mine.includes(norm(name))) ? 'Yes' : 'No'], source: 'answer', key: 'reside_state' };
+    }
     const workIn = !isText(el) && !/united states|\bu\.?s\.?a?\b|\bus\b|countr|legal|authori|sponsor|remote/.test(q) && q.match(/\b(?:able|available|willing) to work (?:in|at|from|out of) ([^?]{3,120})/);
     if (workIn) {
       const place = ` ${workIn[1].replace(/,/g, ' ')} `.replace(/\s+/g, ' ');
@@ -1132,7 +1152,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const draft = (plan.drafts || []).find(d => new RegExp(d.pattern, 'i').test(q));
       // Dates, a cover letter, and the user's own plans keep their rule-written
       // form (a model would guess intentions); other essays wait for the model when it's on.
-      if (draft && holdDrafts && el.tagName === 'TEXTAREA' && !['availability', 'cover', 'plans'].includes(draft.key)) return null;
+      if (draft && holdDrafts && el.tagName === 'TEXTAREA' && !['availability', 'cover', 'plans', 'multiple', 'anything_else', 'stack'].includes(draft.key)) return null;
       if (draft) return { values: [el.tagName === 'TEXTAREA' ? draft.text : draft.short || draft.text], source: 'draft' };
     }
     if (otherPeople.test(q)) return null;
@@ -1141,6 +1161,10 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (languages.length) return { values: [languages.join(', ')], source: 'profile' };
     }
     // A one-line question in a big box ("What is your preferred name?") is still that question.
+    // "What is the link to your portfolio/reel/code samples/website?": the link, even in a big box.
+    if (el.tagName === 'TEXTAREA' && /\blink\b.{0,40}(portfolio|code samples?|github|website)|(portfolio|github|website) (link|url)/.test(q) && (p.website || p.github)) {
+      return { values: [url(p.website) || url(p.github)], source: 'profile' };
+    }
     const contactInBigBox = el.tagName === 'TEXTAREA' && q.length < 60 && contact.some(([, pattern]) => pattern.test(q));
     if (el.tagName === 'TEXTAREA' && !sideNote.test(q) && !contactInBigBox) {
       const skill = skillExperience(q);
@@ -1253,6 +1277,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       // An entry starts at a field you type or pick in, never at a Yes/No
       // question that mentions a university ("...GPA at your university?").
       if (el.type === 'radio' || el.type === 'checkbox' || !firstField.test(norm(questionOf(el)))) continue;
+      // An entry's own field has a short label ("School", "Employer Name"), never a question
+      // ("What is the name of your university?" began a fake entry that swallowed Addepar's questions).
+      if (/\?/.test(questionOf(el)) || norm(questionOf(el)).length > 40) continue;
       let block = el.parentElement;
       while (block && block !== section && !controlsIn(block).some(other => other !== el && secondField.test(norm(questionOf(other))))) block = block.parentElement;
       if (block && !blocks.includes(block)) blocks.push(block);
@@ -1365,8 +1392,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const value = named ? answeredValue(named) : '';
       const question = `${kind === 'experience' ? 'Work experience' : 'Education'} ${i + 1}`;
       if (value) record({ page: pageNow, question, value, flag: "Not on your resume as a job or school. Delete it if Workday added it" });
-      // Its fields are an entry's, never something to fill from the profile.
-      for (const el of controlsIn(blocks[i])) if (el.type !== 'radio' && el.type !== 'checkbox') handled.add(el);
+      // Its fields are an entry's, never something to fill from the profile (a group that big isn't one entry).
+      if (controlsIn(blocks[i]).length <= 10) for (const el of controlsIn(blocks[i])) if (el.type !== 'radio' && el.type !== 'checkbox') handled.add(el);
     }
   }
 
@@ -1493,7 +1520,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (at >= 0) state.learn.splice(at, 1);
     state.learn.push({ question: q.slice(0, 300), answer: a, corrected: 'yes' });
   };
+  // Never learned: an email or other non-question as the label, alert settings, very long labels, and one- or two-letter values.
   const notLearned = (n, a) => !n || !a || never.test(n) || consent.test(n) || startDate.test(n) || graduationDate.test(n) || entryField.test(n) || a.length > 160 || placeholderText(a)
+    || /@|\balert/.test(n) || marketing.test(n) || n.length > 220 || a.trim().length < 2
     || /^\d{1,2}\/\d{1,2}(\/\d{2,4})?$|^\d{4}(-\d{2}){0,2}$/.test(a);
   function remember(question, answer) {
     const q = (question || '').trim().replace(/[*✱]\s*$/, '').trim();
@@ -1546,7 +1575,8 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const el = event.target;
       // Ignore everything while Apply Desk is filling: the browser marks the
       // change events its typing causes as trusted too.
-      if (window.__applyDeskBusy || !event.isTrusted || !el || !el.closest || el.type === 'file' || el.type === 'password' || isDatePart(el)) return;
+      // Essay boxes are this application's own words (a half-typed "Py" was learned and reused).
+      if (window.__applyDeskBusy || !event.isTrusted || !el || !el.closest || el.type === 'file' || el.type === 'password' || el.tagName === 'TEXTAREA' || isDatePart(el)) return;
       try {
         const seen = JSON.parse(sessionStorage.getItem('applyDeskSeen') || '{}');
         const value = el.type === 'radio' ? (el.checked ? textOf(el.labels && el.labels[0]) : '')
@@ -1700,7 +1730,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       }
       const value = answeredValue(el);
       // A date's month, day, or year box alone ("24") is never an answer to learn.
-      if (value) { if (!isDatePart(el)) remember(question, value); continue; }
+      if (value) { if (!isDatePart(el) && el.tagName !== 'TEXTAREA') remember(question, value); continue; }
       const detail = detailOf(el);
       await fillControl(el, question, wanted(el, question) || (detail ? wanted(el, `${question} ${detail}`) : null));
     }

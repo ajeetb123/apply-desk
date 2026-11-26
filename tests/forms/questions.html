@@ -17,5 +17,24 @@
   <fieldset><legend>U.S. Work Authorization Status</legend>
     <label><input type="radio" name="auth"> Can work for any employer</label><label><input type="radio" name="auth"> Can work for current employer</label><label><input type="radio" name="auth"> Seeking work authorization</label></fieldset>
   <p><label for="visa">Visa Support Do you require any visa support to work in the U.S.?</label><select id="visa" name="visa"><option value="">Select...</option><option>Yes</option><option>No</option></select></p>
+  <!-- Questions a real batch got wrong (2026-11-25). -->
+  <p><label for="fullname">First &amp; Last Name *</label><input id="fullname" name="fullname" required></p>
+  <p><label for="rolla">Do you live or go to school in Rolla, MO or the Kansas City or Johnson County metro area? *</label>
+    <select id="rolla" name="rolla" required><option value="">Select...</option><option>Yes</option><option>No</option></select></p>
+  <fieldset><legend>Are you the spouse, spousal equivalent, parent, dependent, nondependent child, or sibling of an employee of our independent auditor? *</legend>
+    <label><input type="radio" name="spouse" value="Yes"> Yes</label><label><input type="radio" name="spouse" value="No"> No</label></fieldset>
+  <p><label for="avail">When are you available to start?</label><input id="avail" name="avail"></p>
+  <fieldset><legend>What would be your preferred start date? Please select one of the two options below.</legend>
+    <label><input type="checkbox" name="startpick" value="May 31"> Monday May 31st, 2027</label>
+    <label><input type="checkbox" name="startpick" value="June 7"> Monday, June 7th, 2027</label></fieldset>
+  <p><label for="reel">What is the link to your portfolio/reel/code samples/website? If you do not have a portfolio, share your GitHub. *</label><textarea id="reel" name="reel" required></textarea></p>
+  <fieldset><legend>Application Verification: To confirm this application is submitted directly by the applicant, please select Option C.</legend>
+    <label><input type="radio" name="verify" value="A"> Option A</label><label><input type="radio" name="verify" value="B"> Option B</label><label><input type="radio" name="verify" value="C"> Option C</label></fieldset>
+  <p><label><input type="checkbox" id="campaign" name="campaign"> I agree to receive recruiting campaign communications.</label></p>
+  <p><label for="gradyear">Graduation Year *</label><select id="gradyear" name="gradyear" required><option value="">Select One</option><option>2026</option><option>2027</option><option>2028</option><option>2029</option></select></p>
+  <p><label for="gradmonth">Graduation Month *</label><select id="gradmonth" name="gradmonth" required><option value="">Select One</option><option>May</option><option>August</option><option>December</option></select></p>
+  <p><label for="more">Are you applying for more than one internship at EP Wealth? If so, why? *</label><textarea id="more" name="more" required></textarea></p>
+  <p><label for="else">Is there anything else you'd like us to know? *</label><textarea id="else" name="else" required></textarea></p>
+  <p><label for="langs">What languages and technologies have you worked with in previous projects or internships? *</label><textarea id="langs" name="langs" required></textarea></p>
 </form>
 </body></html>
