@@ -1182,11 +1182,39 @@ def listing_pay(description: str) -> dict:
     return {}
 
 
+class _Term:
+    """A found term, shaped like the regex match listing_facts used before."""
+    def __init__(self, season: str, year: str):
+        self.parts = (season, year)
+
+    def group(self, n: int) -> str:
+        return self.parts[n - 1]
+
+
+def listing_term(text: str):
+    """The internship's own term, "Summer 2027" or "2027 Summer" (Booz Allen's
+    titles), never a graduation or degree deadline ("a Bachelor's degree ... by
+    Summer 2028")."""
+    for found in re.finditer(r"\b(summer|fall|autumn|spring|winter)\s*(?:of\s*)?(20\d{2})\b|\b(20\d{2})\s+(summer|fall|autumn|spring|winter)\b", text, re.I):
+        before = text[max(0, found.start() - 80):found.start()].lower()
+        if re.search(r"graduat|degree|diploma|\bby\s*$|no later than|complet\w* (by|in)|obtain", before):
+            continue
+        return _Term(found.group(1) or found.group(4), found.group(2) or found.group(3))
+    return None
+
+
 def listing_facts(title: str, description: str, url: str) -> dict:
     """What the posting says about itself: its title, requisition ID, term
     ("Summer 2027"), work locations ("Reston, VA", "Remote"), and pay."""
     text = f"{title}\n{description}"
-    term = re.search(r"\b(summer|fall|autumn|spring|winter)\s*(?:of\s*)?(20\d{2})\b", text, re.I)
+    term = listing_term(title or "")
+    # "Summer Internship": the title's season, in the year the posting gives it, else the coming one.
+    season = None if term else re.search(r"\b(summer|fall|autumn|spring|winter)\b", title or "", re.I)
+    if season:
+        same = re.search(rf"\b{season.group(1)}\s*(?:of\s*)?(20\d{{2}})\b|\b(20\d{{2}})\s+{season.group(1)}\b", description or "", re.I)
+        today, month = date.today(), {"spring": 1, "summer": 6, "fall": 8, "autumn": 8, "winter": 12}[season.group(1).lower()]
+        term = _Term(season.group(1).title(), (same.group(1) or same.group(2)) if same else str(today.year if month > today.month else today.year + 1))
+    term = term or listing_term(description or "")
     job_id = (re.search(r"_((?:R|JR|REQ)-?\d{4,}(?:-\d+)?)(?:$|[/?#])", url or "")
               or re.search(r"(?:job|requisition|req|posting)\s*(?:id|#|number|no\.?)\s*[:#]?\s*([A-Z]{0,4}-?\d{4,}(?:-\d+)?)", text, re.I))
     kind = "Co-op" if re.search(r"\bco.?op\b", title or "", re.I) else "Intern" if re.search(r"\bintern", title or "", re.I) else ""

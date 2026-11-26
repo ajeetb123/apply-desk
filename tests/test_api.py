@@ -521,6 +521,13 @@ class ApplyDeskApiTests(unittest.TestCase):
         answers = {a["key"]: a for a in self.client.get(f"/api/fill-plan?job_id={same}").json["answers"]}
         self.assertEqual(answers["previously_employed"]["answer"], "Yes")
 
+    def test_listing_term_is_the_internship_never_a_degree_deadline(self):
+        term = lambda title, description: application.applying.listing_facts(title, description, "")["term"]
+        self.assertEqual(term("University, 2027 Summer Games Data Scientist Intern", "Obtain a Bachelor's degree by Summer 2028 or Summer 2029."), "Summer 2027")
+        self.assertEqual(term("Summer Internship | Front-End Engineer", "UI improvements planned for Winter-Spring 2027."), term("Software Intern", ""))
+        self.assertEqual(term("Software Engineering Intern", "Join us for Summer 2027. Students graduating in Spring 2029 preferred."), "Summer 2027")
+        self.assertEqual(term("Fall Co-op", "The Fall 2027 co-op runs August to December."), "Fall 2027")
+
     def test_listing_answers_and_open_locations(self):
         facts = application.applying.listing_facts("Software Engineer Intern, Summer 2027", "Locations: Reston, VA; Huntsville, AL. Hybrid.",
                                                    "https://acme.wd5.myworkdayjobs.com/External/job/Reston-VA/Software-Engineer-Intern_R-00157321")
@@ -1324,13 +1331,19 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(resumed["items"][0]["text"], "Acme Software Intern 1")
         self.assertEqual(self.client.post("/api/batch/resume", json={}).json["items"][0]["id"], ids[1])   # still queued until opened
 
+    def fresh_batch(self, rows):
+        """Each call is a new list on its own (a posting already queued from another list is a repeat)."""
+        with application.db() as conn:
+            conn.execute("DELETE FROM batch_items")
+        return [item["reason"] for item in self.client.post("/api/batch/start", json={"items": rows}).json["items"]]
+
     def test_batch_skips_wave_one_when_campaigns_leave_it_out(self):
         rows = [{"url": "https://jobs.example.com/jobs/1-intern", "text": "🔥 Example Big Software Engineer Intern Seattle, WA 3d"},
                 {"url": "https://jobs.example.com/jobs/2-intern", "text": "↳ Data Engineer Intern Seattle, WA 3d"},
                 {"url": "https://nvidia.wd5.myworkdayjobs.com/External/job/3-intern", "text": "NVIDIA Software Engineering Intern Santa Clara, CA"},
                 {"url": "https://jobs.example.com/jobs/4-intern", "text": "Acme Power Software Intern - AWS tooling Little Rock, AR"},
                 {"url": "https://jobs.example.com/jobs/5-intern", "text": "Acme Labs Research Intern 🎓 Columbus, OH"}]
-        decided = lambda: [item["reason"] for item in self.client.post("/api/batch/start", json={"items": rows}).json["items"]]
+        decided = lambda: self.fresh_batch(rows)
         self.assertEqual(decided(), ["", "", "", "", "Needs a master's or PhD"])   # no waves named: every company counts
         self.client.post("/profile", data={"role_campaigns": "Wave 2, Wave 3, Defense"})
         self.assertEqual(decided(), ["Wave 1 company", "Wave 1 company", "Wave 1 company", "", "Needs a master's or PhD"])
@@ -1340,7 +1353,7 @@ class ApplyDeskApiTests(unittest.TestCase):
             "Acme Software Engineer Intern London, UK 5d", "Acme Software Developer Intern Mississauga, ON, Canada 15d",
             "Acme Software Engineer Intern London, KY 3d", "Acme Research Intern Canada Santa Clara, CA United States",
             "Acme Applied AI Intern Remote in USA 14d", "Acme Software Engineering Intern 5 locations 5d"])]
-        decided = lambda: [item["reason"] for item in self.client.post("/api/batch/start", json={"items": rows}).json["items"]]
+        decided = lambda: self.fresh_batch(rows)
         self.client.post("/profile", data={"country": "Canada"})
         self.assertEqual(decided(), [""] * 6)   # someone outside the U.S.: nothing is skipped for it
         self.client.post("/profile", data={"country": "United States of America"})
@@ -1349,6 +1362,18 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.assertEqual(application.batch_decision(application.profile(), title="Software Engineer Intern", description="Software Engineer Intern\nReading, United Kingdom\nAbout the role",
                                                     url="https://acme.wd5.myworkdayjobs.com/Acme/job/GB---Reading-United-Kingdom/Intern_R1"), "Outside the U.S.")
         self.assertEqual(application.batch_decision(application.profile(), title="Software Engineer Intern", description="Location\n\nAustin, TX\nWe also have an office in London."), "")
+
+    def test_two_lists_are_one_batch(self):
+        first = self.client.post("/api/batch/start", json={"items": [{"url": f"https://jobs.lever.co/acme/{n}-intern", "text": f"Acme Software Intern {n}"} for n in range(3)]}).json
+        second = self.client.post("/api/batch/start", json={"items": [{"url": "https://jobs.lever.co/acme/1-intern?utm_source=board", "text": "#4 Acme Software Intern 1"},
+                                                                      {"url": "https://jobs.lever.co/globex/9-intern", "text": "#5 Globex Data Intern"}]}).json
+        # The posting already waiting from the first list isn't queued again.
+        self.assertEqual([item["reason"] for item in second["items"]], ["Listed twice", ""])
+        page = self.client.get("/batch").get_data(as_text=True)
+        self.assertIn("Acme Software Intern 0", page)   # the first list still shows
+        self.assertIn("Globex Data Intern", page)
+        resumed = self.client.post("/api/batch/resume", json={}).json["items"]
+        self.assertEqual([item["text"] for item in resumed], ["Acme Software Intern 0", "Acme Software Intern 1", "Acme Software Intern 2", "#5 Globex Data Intern"])
 
     def test_clean_record_and_asking_before_auto_submit(self):
         items = self.client.post("/api/batch/start", json={"items": [{"url": f"https://jobs.lever.co/acme/{n}-intern", "text": "Acme Software Intern"} for n in range(12)]}).json["items"]
