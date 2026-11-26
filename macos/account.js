@@ -28,7 +28,7 @@
   const CODE = /verification code|one.time (pass(word|code)?|code)|security code|enter (the )?code|\d.digit code|passcode/i;
   const VERIFY = /verify your (email|account)|check your (email|inbox)|we('ve| have)? (just )?sent (you )?(an? )?(email|link|verification)|confirm your email|activate your account|verification (email|link)/i;
   const EXISTS = /already (exists|registered|in use|have an account|associated)|account (with|for) this email (already )?exists/i;
-  const captcha = () => [...document.querySelectorAll('iframe')].some(f => visible(f) && /recaptcha\/api2\/(anchor|bframe)|hcaptcha|challenges\.cloudflare/i.test(f.src || ''))
+  const captcha = () => [...document.querySelectorAll('iframe')].some(f => visible(f) && /recaptcha\/api2\/(anchor|bframe)|hcaptcha|challenges\.cloudflare|captcha-delivery|datadome|arkoselabs|funcaptcha|px-captcha|perimeterx/i.test(f.src || ''))
     || /verify (that )?you('re| are) (a )?human|are you a robot/i.test(body());
 
   function press(el) {
@@ -59,6 +59,9 @@
     if (pw.length && EXISTS.test(body())) return 'exists';
     if (pw.length >= 2) return 'create';
     if (pw.length === 1) return 'signin';
+    // Oracle's email check: one email box and Next, then a code by email or the form.
+    if (emails().length === 1 && inputs().filter(el => !['checkbox', 'radio'].includes(el.type)).length <= 2
+        && /authentication screen|simply using your email|enter your email (address )?to (continue|get started|apply|begin)|sign in or create an account/i.test(body())) return 'email';
     if (find(GOOGLE)) return 'google';
     return 'none';
   }
@@ -89,6 +92,17 @@
       if (!button) return 'no_button';
       press(button);
       return 'created';
+    }
+    if (kind === 'email') {
+      emails().forEach(el => type(el, a.email));
+      for (const box of inputs().filter(el => el.type === 'checkbox' && !el.checked)) {
+        const about = labelOf(box) + ' ' + text(box.closest('label, div'));
+        if (a.agree && /agree|accept|terms|privacy|consent|acknowledg/i.test(about) && !/newsletter|marketing|job alerts?|updates|offers/i.test(about)) press(box);
+      }
+      const next = find(/^(next|continue|submit|get started|sign in|verify)$/i);
+      if (!next) return 'no_button';
+      press(next);
+      return 'email_sent';
     }
     if (kind === 'signin') {
       // Without a password Apply Desk made for this site, make an account here.

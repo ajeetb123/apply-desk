@@ -112,7 +112,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     }
     return clean(parts.join(' '));
   }
-  const controlPart = el => el.matches('select, option, textarea, button, [role="listbox"], [role="option"]')
+  const controlPart = el => el.matches('select, option, textarea, button, [role="listbox"], [role="option"], [class*="single-value"], [class*="singleValue"]')
     || (el.matches('ul, ol') && !!el.querySelector('input, [role="option"]'));
   function labelText(label) {
     if (!label || !label.querySelector('select, option, textarea, input, ul, button')) return textOf(label);
@@ -192,9 +192,10 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       const label = node.querySelector('label, legend, .application-label');
       if (label && textOf(label)) return textOf(label);
     }
-    // A dropdown with no label of its own (Rippling's custom questions): the
-    // text of the nearest wrapper that holds only this field.
-    if (isListbox(el) || isSearchSelect(el)) {
+    // A dropdown or box with no label of its own (Rippling's custom questions,
+    // Paylocity's "Available to Start"): the text of the nearest wrapper that
+    // holds only this field.
+    if (isListbox(el) || isSearchSelect(el) || (isText(el) && el.tagName === 'INPUT' && !own && !aria)) {
       for (let node = el.parentElement, depth = 0; node && node !== document.body && depth < 9; node = node.parentElement, depth += 1) {
         if (controlCount(node) > (el.tagName === 'INPUT' ? 1 : 0) || node.querySelectorAll('[role="combobox"]:not(input), button[aria-haspopup="listbox"]').length > (el.tagName === 'INPUT' ? 0 : 1)) break;
         const text = clean(textOf(node).replace(textOf(el), ' '));
@@ -220,7 +221,9 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
 
   const isText = el => el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && ['text', 'email', 'tel', 'url', 'number', 'search', ''].includes((el.type || 'text').toLowerCase()));
   const isPrompt = el => el.tagName === 'INPUT' && !isSearchSelect(el) && (el.getAttribute('data-automation-id') === 'searchBox'
-    || !!el.closest('[data-automation-id="multiselectInputContainer"]') || (el.getAttribute('role') === 'combobox' && el.getAttribute('aria-autocomplete') === 'list'));
+    || !!el.closest('[data-automation-id="multiselectInputContainer"]')
+    // Workday's own search boxes only: a suggestion box elsewhere (Paylocity's address) keeps its typed value.
+    || (el.getAttribute('role') === 'combobox' && el.getAttribute('aria-autocomplete') === 'list' && !!el.closest('[data-automation-id^="formField"]')));
   // Workday's list buttons, and dropdowns drawn as a box with role="combobox" (Rippling's Gender, Veteran Status).
   const isListbox = el => (el.tagName === 'BUTTON' && el.getAttribute('aria-haspopup') === 'listbox')
     || (el.tagName !== 'INPUT' && el.getAttribute('role') === 'combobox' && el.getAttribute('aria-haspopup') === 'listbox' && !el.querySelector('input, select, textarea'));
@@ -236,7 +239,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const comboToggle = el => el.getAttribute('aria-haspopup') === 'listbox' && el.parentElement ? el.parentElement.querySelector('button') : null;
   const isCombo = el => el.tagName === 'INPUT' && el.getAttribute('role') === 'combobox' && !isPromptBox(el) && (!!comboControl(el) || !!comboToggle(el));
   const isPromptBox = el => el.getAttribute('data-automation-id') === 'searchBox' || !!el.closest('[data-automation-id="multiselectInputContainer"]');
-  const placeholderText = s => /^(select( one| an option)?|choose( one| an option)?|please select( one| an option)?|--.*|)$/.test(norm(s).replace(/[.…]+$/, '').trim());
+  const placeholderText = s => /^(select( one| an option| an? \w+| your \w+)?|choose( one| an option| an? \w+| your \w+)?|please (select|choose)( one| an option| an? \w+)?|--.*|)$/.test(norm(s).replace(/[.…]+$/, '').trim());
 
   // ---------- Acting like a person ----------
   function glow(el) {
@@ -924,7 +927,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const otherPeople = /\breferences?\b|emergency|supervisor|manager|guardian|parent|spouse|high school|extension|\breferr(al|er|ed) (name|email|by)|\b(alternate|alternative|secondary|additional|backup) (phone|email|contact|number)/;
   // A start date at a past job ("Government Civilian Start Date") is not the user's to invent.
   const pastJob = /government|military|civilian|clearance|served|service|former|previous|prior/;
-  const startDate = /(start|availability|available|work) date|(preferred|desired) (start|work) (month|time)|when can you (start|begin)|earliest (start|date)|proposed start|date (you are )?available/;
+  const startDate = /(start|availability|available|work) date|^(date )?available to start$|availability to start|(preferred|desired) (start|work) (month|time)|when can you (start|begin)|earliest (start|date)|proposed start|date (you are )?available/;
   const graduationDate = /when .{0,25}graduate|anticipated graduation|graduation date|(expected|anticipated|projected) graduation|graduation (month|year|term)|date of graduation|completion date/;
   // Marketing's exception: contact a form requires, about this application.
   const aboutThisApplication = /(regarding|about|related to|concerning|for) (my|your|this|the) (application|candidacy|interview)/;
@@ -1147,6 +1150,10 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
       if (story) return { values: [story], source: 'draft', loose: true };
     }
     if (/\bwhy\b|describe|statement|cover letter|tell us|explain/.test(q)) return null;
+    // A box of skill tags (Paylocity's "Type a skill and press enter"): the resume's skills, best first.
+    if (el.tagName === 'INPUT' && isText(el) && /^(your |key |technical )?skills?$/.test(q) && /tag|press enter|add (a )?skill|type a skill/i.test(`${el.className} ${el.placeholder}`)) {
+      return (plan.skills || []).length ? { values: plan.skills.slice(0, 20), field: 'skill_tags', source: 'profile' } : null;
+    }
     const hints = el.closest ? hintsOf(el) : q;
     for (const [field, pattern, values, how] of contact) {
       if (field === 'state' && /\bcounty\b/.test(q)) continue;  // Workday's county field has "region" in its name
@@ -1165,6 +1172,29 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     current = want;
     try {
       if (want.date) return fillDate(el, want.date, question, want.fix);
+      // A street address box with suggestions (Paylocity, Google's place picker): the address is typed.
+      if (want.field === 'address' && el.tagName === 'INPUT' && isText(el)) {
+        if (el.value.trim()) return false;
+        typeInto(el, want.values[0]);
+        escape(el);
+        note(el, question, want.values[0]);
+        return true;
+      }
+      // A box of skill tags ("Type a skill and press enter"): each skill, then Enter.
+      if (want.field === 'skill_tags') {
+        const added = [];
+        escape(document.activeElement);   // a date picker left open keeps the focus
+        for (const skill of want.values) {
+          stopCheck();
+          press(el);
+          search(el, skill);
+          await sleep(150);
+          if (!el.value.trim()) added.push(skill);
+          else typeInto(el, '');
+        }
+        if (added.length) note(el, question, added.join(', '));
+        return added.length > 0;
+      }
       // The Profile's GPA range answers only a required GPA list with no N/A; an optional one stays blank.
       const optionalGpa = want.key === 'gpa' && !want.floor && !isRequired(el, question);
       const values = want.values.filter(value => value && !(optionalGpa && GPA_RANGE.test(norm(value))));
@@ -1485,13 +1515,27 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
     if (!state.learn.some(item => norm(item.question) === n)) state.learn.push({ question: q.slice(0, 300), answer: a });
   }
 
+  function shownChoice(el) {
+    for (let node = el.parentElement, depth = 0; node && depth < 3; node = node.parentElement, depth += 1) {
+      if (controlCount(node) > 1) break;
+      const shown = node.querySelector('[class*="single-value"], [class*="singleValue"]');
+      if (shown && !placeholderText(textOf(shown))) return textOf(shown);
+    }
+    return '';
+  }
+
+  // The tags a tag box holds beside its (emptied) input: "Python", "Java"...
+  const tagsOf = el => el.parentElement ? [...el.parentElement.children]
+    .filter(child => child !== el && /(^|[\s_-])tag($|[\s_-])|tagsinput-tag/i.test(child.getAttribute('class') || '')).map(textOf).filter(Boolean).join(', ') : '';
+
   function answeredValue(el) {
     if (el.tagName === 'SELECT') return el.selectedIndex > 0 ? el.options[el.selectedIndex].textContent.trim() : '';
     if (isListbox(el)) return placeholderText(textOf(el)) ? '' : textOf(el);
     if (isCombo(el)) return comboValue(el);
     if (isPrompt(el)) return selectedPills(el).join('; ');
-    // Any other input a person types or picks in, date and month pickers included.
-    if (el.tagName === 'INPUT' && !['radio', 'checkbox', 'file'].includes(el.type)) return el.value;
+    // Any other input a person types or picks in, date and month pickers included,
+    // or the choice a select-like box shows beside its empty search input (Paylocity's Country).
+    if (el.tagName === 'INPUT' && !['radio', 'checkbox', 'file'].includes(el.type)) return el.value || shownChoice(el) || tagsOf(el);
     return '';
   }
 
@@ -1807,12 +1851,19 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
   const openApplicationButton = () => {
     if (!/responsibilit|qualification|requirements|about (the|this) (role|job|position)|what you('|’)ll do/i.test(textOf(document.body).slice(0, 20000))) return null;
     return [...clickable(), ...document.querySelectorAll('a[href]')].filter(visible)
-      .find(b => /^(apply( now| for this (job|position|role))?|apply to (this )?(job|position|role)|i'?m interested|start (my |your )?application)$/i.test(buttonText(b))) || null;
+      .find(b => /^(apply( now| for this (job|position|role))?|apply to (this )?(job|position|role)|i'?m interested|start (my |your )?application)$/i.test(buttonText(b).replace(/[!.]+$/, ''))) || null;
   };
   // A password box, or a page asking for the code a site emailed (Oracle): the Mac
   // app's sign-in helper (account.js) takes over, or the user does.
   const signInPage = () => [...document.querySelectorAll('input[type=password]')].some(visible)
-    || (controls => controls.length <= 3 && controls.some(el => /verification code|one.time (pass(word|code)?|code)|security code|enter (the )?code|\d.digit code|passcode/i.test(questionOf(el))))(controlsIn(document));
+    || (controls => controls.length <= 3 && (controls.some(el => /verification code|one.time (pass(word|code)?|code)|security code|enter (the )?code|\d.digit code|passcode/i.test(questionOf(el)))
+      // An email check before the form (Oracle: "Authentication screen ... simply using your email").
+      || /authentication screen|simply using your email|enter your email (address )?to (continue|get started|apply|begin)|sign in or create an account/i.test(textOf(document.body).slice(0, 4000))))(controlsIn(document));
+  // A "prove you're human" page in front of the form (SmartRecruiters shows DataDome's): never
+  // solved or worked around; the user does it and presses ` again.
+  const captchaWall = () => controlsIn(document).length <= 1 && ([...document.querySelectorAll('iframe')]
+    .some(frame => visible(frame) && /captcha-delivery|datadome|hcaptcha|recaptcha\/api2\/bframe|challenges\.cloudflare|arkoselabs|funcaptcha|px-captcha|perimeterx/i.test(frame.src || ''))
+    || /^(security check|verify(ing)? you are (a )?human|checking your browser|just a moment|access denied|unusual traffic)\b/i.test(textOf(document.body)));
   const onReview = () => /^review\b/i.test(pageTitle());
   const loading = () => [...document.querySelectorAll('[data-automation-id="loadingSpinner"], [aria-busy="true"], [role="progressbar"]')].some(visible);
   const isRequired = (el, question) => el.required || el.getAttribute('aria-required') === 'true' || /[*✱]\s*$/.test(question || '');
@@ -2284,6 +2335,7 @@ function applyDeskFill(planB64, pdfB64, nameB64) {
         filledEls.clear();
         holdDrafts = !!plan.model;
         stopCheck();
+        if (captchaWall()) { state.stop = 'captcha'; break; }
         if (signInPage()) { state.stop = 'signin'; break; }
         if (onReview()) { showReview(); state.stop = 'review'; break; }
         if (step >= 20) { state.stop = 'limit'; break; }

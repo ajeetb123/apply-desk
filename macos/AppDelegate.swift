@@ -956,6 +956,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                      symbol: "hand.raised"), for: 14)
         case "signin":
             return toasts.show(Toast(title: "Sign in first", detail: "Sign in, then press ` on the application's first page. Profile → Signing in lets Apply Desk sign in with Google or make an account for you.", symbol: "person.badge.key"))
+        case "captcha":
+            return toasts.show(Toast(title: "\(label): prove you're human first", detail: "The site is checking that a person is applying. Apply Desk never gets around that: do it in the tab, then press ` there.", symbol: "hand.raised"))
         case "stopped":
             return toasts.show(Toast(title: "Stopped on \(pageName)", detail: "Press ` to continue. It only fills what's still blank, and what you change now is learned.", symbol: "pause.circle"))
         case "stuck":
@@ -1220,6 +1222,7 @@ extension AppDelegate {
             }
         } else {
             let reason = result.stop == "signin" ? "Sign in to this site, then press ` there (Profile → Signing in can do it for you)"
+                : result.stop == "captcha" ? "The site wants you to prove you're human. Do that, then press ` there"
                 : blanks > 0 ? "\(blanks) required question\(blanks == 1 ? "" : "s") only you can answer"
                 : result.stop == "stuck" ? "The next page didn't load"
                 : !result.needs.isEmpty ? "Answer " + result.needs.prefix(3).joined(separator: "; ")
@@ -1403,7 +1406,7 @@ extension AppDelegate {
         case "google":
             toasts.show(Toast(title: "\(label): signing in with Google…", detail: "Apply Desk picks \(signIn.email) in Google's window. If Chrome shows its own account prompt, choose it there.", symbol: "person.badge.key"), for: 20)
             watchGoogle(tabID, role: role, label: label, since: Date(), told: false)
-        case "created", "signed_in", "opened_create":
+        case "created", "signed_in", "opened_create", "email_sent":
             if did == "created" {
                 toasts.show(Toast(title: "Made an account on \(site)", detail: "With \(signIn.email) and a new password saved in your Keychain (Keychain Access, search \"Apply Desk\").", symbol: "person.crop.circle.badge.checkmark"), for: 10)
             }
