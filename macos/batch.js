@@ -37,7 +37,12 @@
   }
 
   const CONFIRM = /thank(s| you) for (applying|your application|submitting)|application (has been |was )?(submitted|received|complete)|we('ve| have) received your application|successfully (submitted|applied)|your application is (complete|in)|you('ve| have) (successfully )?applied/i;
-  const confirmed = () => CONFIRM.test(text(document.body).slice(0, 20000));
+  // Not a submission yet: a page asking for an emailed code or an email check, or an application left open.
+  const NOT_YET = /verification code|one.time pass ?code|confirm your (identity|email)|verify your (email|account|identity)|check your (email|inbox) to (continue|finish|complete)|(continue|finish|complete) (to apply|your application|applying)|application is incomplete|incomplete application|thank you for starting|you('ve| have) started (your|an) (job )?application/i;
+  const confirmed = () => {
+    const page = text(document.body).slice(0, 20000);
+    return CONFIRM.test(page) && !NOT_YET.test(page);
+  };
 
   function submit() {
     const label = b => (text(b) || b.value || b.getAttribute('aria-label') || '').trim();

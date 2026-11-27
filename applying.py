@@ -499,7 +499,7 @@ GENERIC_HEADINGS = r"^(careers?|jobs?|join (us|our team)|open (positions|roles)|
 def company_from_host(url: str) -> str:
     parsed = urlparse(url or "")
     host, parts = parsed.netloc.lower(), [p for p in parsed.path.split("/") if p]
-    if any(h in host for h in ("greenhouse.io", "lever.co", "ashbyhq.com", "workable.com", "smartrecruiters.com", "breezy.hr", "recruitee.com")) and parts:
+    if any(h in host for h in ("greenhouse.io", "lever.co", "ashbyhq.com", "workable.com", "smartrecruiters.com", "breezy.hr", "recruitee.com", "ats.rippling.com")) and parts:
         slug = parts[1] if parts[0] in {"embed", "v1"} and len(parts) > 1 else parts[0]
         # Ashby sometimes puts the organization's id, not its name, in the URL.
         return "" if re.fullmatch(r"[0-9a-f-]{20,}", slug) else slug
@@ -526,6 +526,8 @@ def proper_name(slug: str, text: str) -> str:
 
 LEGAL_SUFFIX = r"(inc|incorporated|llc|l\.l\.c|ltd|limited|limited partnership|lp|l\.p|llp|corp|corporation|co|plc|gmbh|n\.a|s\.a)\.?$"
 ENTITY_LABEL = r"^corp\b|corporate office|headquarters|\bhq\b|business unit|\bdivision\b"
+# The application system's own name in a posting's company field ("Rippling Recruiting").
+ATS_NAME = r"^(rippling|greenhouse|lever|ashby|workday|icims|smartrecruiters|jobvite|bamboohr|jazzhr|paylocity)( recruiting| ats| careers| hiring| jobs)?$"
 SITE_WORDS = r"\b(external|internal|career|careers|campus|site|jobs?|university|students?|early|global|us|usa|en)\b"
 
 
@@ -561,20 +563,31 @@ def company_name(raw: str, url: str, text: str) -> str:
     raw = (raw or "").strip()
     name = re.sub(r"^\d{2,}\s*[-–]?\s*", "", raw)
     coded = name != raw
+    # A careers site's title for itself: "GLOBEX Careers page" is Globex.
+    name = re.sub(r"(?<=\w)\s*[-–|]?\s+(careers?|jobs)( page| site| portal)?$", "", name, flags=re.I) or name
     # ", Inc." and ", Limited Partnership" go; "Example Corp" stays unless Workday's code came with it.
     suffix = (r",?\s+" if coded else r",\s*") + LEGAL_SUFFIX
     for _ in range(2):
         shorter = re.sub(suffix, "", name, flags=re.I).strip(" ,")
         name = shorter if len(shorter) >= 2 else name
-    if not name or (coded and re.search(ENTITY_LABEL, name, re.I)):
-        parts = urlparse(url or "")
-        path = [p for p in parts.path.split("/") if p and not re.fullmatch(r"[a-z]{2}-[A-Z]{2}", p)]
-        site = re.sub(SITE_WORDS, " ", re.sub(r"[_-]+", " ", path[0].lower())).strip() if "myworkdayjobs.com" in parts.netloc and path else ""
-        for slug in (site, company_from_host(url)):
+    parts = urlparse(url or "")
+    path = [p for p in parts.path.split("/") if p and not re.fullmatch(r"[a-z]{2}-[A-Z]{2}", p)]
+    site = re.sub(SITE_WORDS, " ", re.sub(r"[_-]+", " ", path[0].lower())).strip() if "myworkdayjobs.com" in parts.netloc and path else ""
+    host = re.sub(SITE_WORDS, " ", re.sub(r"[_-]+", " ", company_from_host(url).lower())).strip()
+
+    def site_name(shortest: int) -> str:
+        for slug in (site, host):
             letters = re.sub(r"[^a-z0-9]", "", slug)
-            if len(letters) >= 3 and re.search(r"[\s\-.&']?".join(map(re.escape, letters)), text or "", re.I):
+            if len(letters) >= shortest and re.search(r"[\s\-.&']?".join(map(re.escape, letters)), text or "", re.I):
                 return proper_name(slug, text)
-        return company_from_intro(text) or name
+        return ""
+
+    if not name or re.fullmatch(ATS_NAME, name, re.I) or (coded and re.search(ENTITY_LABEL, name, re.I)):
+        return site_name(3) or company_from_intro(text) or name
+    # A label the posting never uses on a site whose name it does: "ABC IT" on initech-bank.wd5.myworkdayjobs.com.
+    words = re.findall(r"[a-z][a-z0-9]{2,}", name.lower())
+    if text and words and not any(re.search(rf"\b{re.escape(word)}\b", text, re.I) for word in words):
+        name = site_name(4) or name
     # "LEIDOS" as the posting writes it: "Leidos".
     if name.isupper() and len(name) > 4:
         found = re.search(re.escape(name), text or "", re.I)

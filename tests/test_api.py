@@ -683,6 +683,14 @@ class ApplyDeskApiTests(unittest.TestCase):
             self.assertEqual(application.applying.company_name(raw, url, text), name)
             self.assertEqual(application.applying.company_name(name, url, text), name)  # already clean stays put
         self.assertEqual(application.applying.company_name("00100 LEIDOS, INC.", "", "At Leidos, we build."), "Leidos")
+        # The application system's name, or a department label the posting never uses, isn't the company.
+        self.assertEqual(application.applying.company_name("Rippling Recruiting", "https://ats.rippling.com/globex-careers/jobs/0ab7",
+                                                           "Globex Careers. At Globex, we build. Powered by Rippling"), "Globex")
+        self.assertEqual(application.applying.company_name("ABC IT", "https://initech-bank.wd5.myworkdayjobs.com/Careers/job/Example-City/Intern_R26",
+                                                           "When you join Initech Bank, you build."), "Initech Bank")
+        self.assertEqual(application.applying.company_name("Globex Entertainment", "https://hooligaming.wd1.myworkdayjobs.com/Globex_External/job/X",
+                                                           "Join Globex. Hooli Gaming teams too."), "Globex Entertainment")
+        self.assertEqual(application.applying.company_name("GLOBEX Careers page", "", "Globex is building machines."), "Globex")
         # Roles saved by earlier versions are renamed at startup.
         import sqlite3
         with sqlite3.connect(application.DB) as conn:
@@ -1341,6 +1349,39 @@ class ApplyDeskApiTests(unittest.TestCase):
         self.client.post("/api/submitted", json={"job_id": job, "when": "2026-11-20T10:00", "via": "Gmail"})
         with application.db() as conn:
             self.assertEqual(tuple(conn.execute("SELECT submitted, via FROM submissions WHERE job_id=?", (job,)).fetchone()), ("2026-11-20T10:00", "Gmail"))
+
+    def test_applied_means_submitted_everywhere(self):
+        self.add_resume("Riley Chen\nEXPERIENCE\nExample Labs    2026 – Present\nSWE Intern    Remote\n• Built tools in Python")
+        row = {"url": "https://jobs.lever.co/acme/77-intern", "text": "Acme Backend Intern Austin, TX"}
+        item = self.client.post("/api/batch/start", json={"items": [row]}).json["items"][0]
+        # Filled and waiting at review in an open tab: in progress, not applied.
+        self.client.post("/api/batch/update", json={"item": item["id"], "status": "ready"})
+        self.assertEqual([i["reason"] for i in self.client.post("/api/batch/start", json={"items": [row]}).json["items"]], ["Listed twice"])
+        self.assertEqual(self.fresh_batch([row]), [""])
+        # A confirmation email that names the role but no saved posting (no location):
+        # every posting with that title at that company counts as applied, other titles don't.
+        with application.db() as conn:
+            conn.execute("INSERT INTO submissions(job_id, company, title, submitted, via, created) VALUES(NULL,'Acme Inc.',"
+                         "'Software Engineer Intern - Summer 2027 - 5815','2026-11-25T17:44','Gmail','2026-11-27')")
+        def check(title, n):
+            url = f"https://jobs.lever.co/acme/{n}-intern"
+            item = self.client.post("/api/batch/start", json={"items": [{"url": url, "text": ""}]}).json["items"][0]
+            job = self.client.post("/api/evaluate", json={"title": title, "company": "Acme", "url": url,
+                                                          "description": "Software engineering internship building Python services. " * 8}).json
+            return self.client.post("/api/batch/check", json={"item": item["id"], "job_id": job["saved_job_id"]}).json["reason"]
+        self.assertEqual(check("Software Engineer Intern - Summer 2027", 81), "Already applied")
+        self.assertEqual(check("Data Engineer Intern - Summer 2027", 82), "")
+        # "Have you applied here before?" and "other roles you applied to" read submissions, never fills.
+        with application.db() as conn:
+            data_role = conn.execute("SELECT * FROM jobs WHERE title='Data Engineer Intern - Summer 2027'").fetchone()
+            software = conn.execute("SELECT id FROM jobs WHERE title='Software Engineer Intern - Summer 2027'").fetchone()[0]
+            conn.execute("DELETE FROM submissions")
+        self.client.post("/api/applications", json={"job_id": software, "url": "https://jobs.lever.co/acme/81-intern/apply", "attached": True,
+                                                     "fields": ["email"], "pages": 1, "pdf": base64.b64encode(b"%PDF-1.4 test").decode()})
+        self.assertEqual(application.other_roles(data_role), [])
+        self.assertEqual(application.submitted_at_company("Acme", data_role["id"]), [])
+        self.client.post("/api/submitted", json={"job_id": software, "via": "Gmail"})
+        self.assertEqual(application.other_roles(data_role), ["Software Engineer Intern - Summer 2027"])
 
     def test_batch_resume_picks_up_what_never_ran(self):
         items = self.client.post("/api/batch/start", json={"items": [{"url": f"https://jobs.lever.co/acme/{n}-intern", "text": f"Acme Software Intern {n}"} for n in range(5)]}).json["items"]

@@ -4,6 +4,7 @@ import atexit
 import base64
 import hashlib
 import hmac
+import html
 import ipaddress
 import json
 import os
@@ -1653,10 +1654,38 @@ def batch_clean(items: list) -> bool:
 
 def applied_keys() -> set:
     with db() as conn:
-        # Applied means submitted: a fill the user never sent doesn't count.
+        # Applied means submitted: a fill, an open tab, or a form waiting at review doesn't count.
         urls = [r[0] for r in conn.execute("SELECT jobs.url FROM submissions JOIN jobs ON jobs.id=submissions.job_id")]
-        urls += [r[0] for r in conn.execute("SELECT url FROM batch_items WHERE status IN ('ready','submitted')")]
+        urls += [r[0] for r in conn.execute("SELECT url FROM batch_items WHERE status='submitted'")]
     return {applying.posting_key(url) for url in urls if url}
+
+
+def title_key(title: str) -> str:
+    """A role's title without requisition numbers ("REQ380441", "- 5815") or punctuation."""
+    words = re.findall(r"[a-z0-9]+", html.unescape(title or "").lower())
+    return " ".join(word for word in words if not re.search(r"\d", word) or re.fullmatch(r"20\d\d", word))
+
+
+def submitted_unlinked(company: str, title: str) -> bool:
+    """A confirmation email named this company and role but no saved posting (some
+    don't say which location): every posting with that title there counts as applied."""
+    word, key = applying.company_word(company), title_key(title)
+    if not word or not key:
+        return False
+    with db() as conn:
+        rows = conn.execute("SELECT company, title FROM submissions WHERE job_id IS NULL").fetchall()
+    return any(applying.company_word(c) == word and title_key(t) == key for c, t in rows)
+
+
+def submitted_at_company(company: str, job_id: int = 0) -> list[str]:
+    """Titles of the other roles at this company the user submitted (saved roles or confirmation emails)."""
+    word = applying.company_word(company)
+    if not word:
+        return []
+    with db() as conn:
+        rows = conn.execute("SELECT COALESCE(NULLIF(j.company,''), s.company), COALESCE(NULLIF(j.title,''), s.title) "
+                            "FROM submissions s LEFT JOIN jobs j ON j.id=s.job_id WHERE s.job_id IS NULL OR s.job_id<>?", (job_id,)).fetchall()
+    return [html.unescape(title or "") for c, title in rows if applying.company_word(c) == word]
 
 
 @app.post("/api/batch/start")
@@ -1673,7 +1702,7 @@ def api_batch_start():
     lead_wave_one, lead_text = False, ""
     with db() as conn:
         # Already waiting from another list: one posting is applied to once.
-        seen |= {applying.posting_key(r[0]) for r in conn.execute("SELECT url FROM batch_items WHERE status IN ('queued','working','needs_you')")}
+        seen |= {applying.posting_key(r[0]) for r in conn.execute("SELECT url FROM batch_items WHERE status IN ('queued','working','needs_you','ready')")}
         for item in items[:150]:
             url = safe_http_url(str(item.get("url", "")))
             text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()[:400]
@@ -1759,7 +1788,7 @@ def api_batch_check():
         return {"apply": True, "reason": ""}
     reason = batch_decision(profile(), text=item["list_text"] or "", title=row["title"] or "", company=row["company"] or "",
                             description=row["description"] or "", url=row["url"] or "")
-    if not reason and applying.posting_key(row["url"] or "") in applied_keys():
+    if not reason and (applying.posting_key(row["url"] or "") in applied_keys() or submitted_unlinked(row["company"] or "", row["title"] or "")):
         reason = "Already applied"
     replacement = None
     with db() as conn:
@@ -2002,14 +2031,10 @@ def resume_skills(sections) -> list[str]:
 
 
 def other_roles(row) -> list[str]:
-    """Other roles at this company the user has applied to or queued in a batch."""
+    """Other roles at this company the user submitted (a fill or an open tab isn't one)."""
     if not row or not (row["company"] or "").strip():
         return []
-    with db() as conn:
-        found = conn.execute("SELECT DISTINCT j.title FROM jobs j WHERE j.company=? AND j.id<>? AND (j.id IN (SELECT job_id FROM applications) "
-                             "OR j.id IN (SELECT job_id FROM batch_items WHERE job_id IS NOT NULL AND status IN ('working','ready','needs_you','submitted')))",
-                             (row["company"], row["id"])).fetchall()
-    return [r[0] for r in found if r[0]][:4]
+    return list(dict.fromkeys(title for title in submitted_at_company(row["company"], row["id"]) if title))[:4]
 
 
 def coursework_topics(sections) -> list[str]:
@@ -2111,12 +2136,8 @@ def api_fill_plan():
         # "Are you able to work in our office?" with the offices as tick boxes: every real one.
         if answer["key"] in {"work_onsite", "relocate"} and open_to_all and answer["answer"].lower() == "yes":
             answer["open"] = True
-    applied_before = False
-    if role and role["company"]:
-        with db() as conn:
-            others = conn.execute("SELECT jobs.company FROM applications JOIN jobs ON jobs.id=applications.job_id "
-                                  "WHERE applications.job_id!=? AND applications.attached=1", (role["id"],)).fetchall()
-        applied_before = any(applying.company_word(other[0]) == applying.company_word(role["company"]) for other in others)
+    # "Have you applied here before?": only submitted applications count, never a fill.
+    applied_before = bool(role and role["company"] and submitted_at_company(role["company"], role["id"]))
     # Stories for essay drafts read in the resume's own order (its first line
     # of a project says what it is), not the order tuned for this posting.
     plain = resume_outline(resume["text"])[1] if resume else []
